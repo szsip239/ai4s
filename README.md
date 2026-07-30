@@ -13,10 +13,11 @@
 
 ## 当前状态
 
-立项调研阶段。脚手架选型调研已完成（2026-07-30，由 claude / codex / kimi 三方独立调研并交叉核验）：
+架构已定案（2026-07-30），进入落地阶段。组合：边界层（agentgateway/Higress）→ 控制面（**axonhub**）→ 上游层（metapi/CLIProxyAPI，OAuth 已法务放行）→ Langfuse 审计旁路。员工规模按数百人设计。
 
-- 调研报告：[`docs/research/2026-07-30-gateway-scaffolding-research.md`](docs/research/2026-07-30-gateway-scaffolding-research.md)
-- 待拍板决策点见报告第五节
+- 架构决策：[`docs/adr/0001-gateway-architecture-and-control-plane.md`](docs/adr/0001-gateway-architecture-and-control-plane.md)（含改选 LiteLLM 的触发条件）
+- 调研报告：[`docs/research/2026-07-30-gateway-scaffolding-research.md`](docs/research/2026-07-30-gateway-scaffolding-research.md)（全景）、[`docs/research/2026-07-30-litellm-vs-axonhub-control-plane.md`](docs/research/2026-07-30-litellm-vs-axonhub-control-plane.md)（控制面对比）
+- 下一步：按全景报告第六节路线落地——第 1 周控制面上线员工 key + 额度，Secrets 正则阻断先行
 
 ## 需求清单（v1）
 
