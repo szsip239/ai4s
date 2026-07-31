@@ -93,6 +93,11 @@ else
   CH_INPUT='{"input":{"type":"openai","name":"mock-upstream-tracer","baseURL":"http://mock-upstream:8080/v1","credentials":{"apiKey":"mock-key"},"supportedModels":["mock-gpt"],"defaultTestModel":"mock-gpt"}}'
 fi
 
+if [ "$MODE" = mock ]; then
+  echo "==> 确保 mock 上游容器运行"
+  docker compose --profile mock up -d --wait mock-upstream
+fi
+
 CH_ID=$(CH_NAME="$CH_NAME" CHANNELS_JSON_PATH="$STATE_DIR/channels.json" python3 -c '
 import json,os
 data=json.load(open(os.environ["CHANNELS_JSON_PATH"]))
@@ -103,9 +108,6 @@ for e in data["data"]["queryChannels"]["edges"]:
 
 if [ -z "$CH_ID" ]; then
   echo "==> 创建渠道 ${CH_NAME}（模式：${MODE}）"
-  if [ "$MODE" = mock ]; then
-    docker compose --profile mock up -d --wait mock-upstream
-  fi
   RESP=$(gql 'mutation CreateChannel($input: CreateChannelInput!) { createChannel(input: $input) { id name status } }' "$CH_INPUT")
   echo "$RESP"
   CH_ID=$(echo "$RESP" | python3 -c 'import json,sys;print(json.load(sys.stdin)["data"]["createChannel"]["id"])')
