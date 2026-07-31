@@ -1,0 +1,18 @@
+# yaml-language-server: $schema=https://agentgateway.dev/schema/config
+# agentgateway v1.4.1 standalone 配置（schema: https://raw.githubusercontent.com/agentgateway/agentgateway/v1.4.1/schema/config.json）
+#
+# ai4s 阶段 0：最小透传。agentgateway 在本链路中的位置是 axonhub 的入口反代
+# （后续在此落 DLP：Secrets reject / 商密词表 / PII，见票据 #5/#6，本文件刻意不含规则）。
+config:
+  # readiness 探针服务，健康判定：GET /healthz/ready
+  readinessAddr: 0.0.0.0:15001
+
+gateways:
+  default:
+    port: 3000
+    protocol: HTTP
+
+# catch-all：全部路径透传到 axonhub（OpenAI 兼容 /v1、Anthropic /anthropic、管理面 /admin 等）
+routes:
+  - backends:
+      - host: axonhub:8090

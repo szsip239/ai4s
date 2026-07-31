@@ -19,6 +19,10 @@
 - 调研报告：[`docs/research/2026-07-30-gateway-scaffolding-research.md`](docs/research/2026-07-30-gateway-scaffolding-research.md)（全景）、[`docs/research/2026-07-30-litellm-vs-axonhub-control-plane.md`](docs/research/2026-07-30-litellm-vs-axonhub-control-plane.md)（控制面对比）、[`docs/research/2026-07-30-confidential-data-detection-modules.md`](docs/research/2026-07-30-confidential-data-detection-modules.md)（商密语义检测模块）
 - 下一步：按 [`docs/plans/2026-07-30-phase-1-landing-plan.md`](docs/plans/2026-07-30-phase-1-landing-plan.md) 执行——当前阶段 0：本地 Docker 验证全链路 + Secrets 阻断；前端控制台设计已定稿（C 结构 × W 风格，见 [issue #7](https://github.com/szsip239/ai4s/issues/7)）
 
+## 本地运行（阶段 0）
+
+`deploy/` 已入库 compose 编排与配置：`docker compose up -d` 一条命令拉起 agentgateway + axonhub（均 pin 定版本）+ PostgreSQL，`deploy/scripts/` 含初始化/冒烟/PG 日备脚本。详见 [`deploy/README.md`](deploy/README.md)。
+
 ## 需求清单（v1）
 
 1. 上游聚合：多个 LLM 供应商/中转站 → 统一 OpenAI 兼容入口
