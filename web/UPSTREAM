@@ -1,0 +1,5 @@
+repo: https://github.com/looplj/axonhub
+remote-name: upstream
+vendored-at: v1.0.0-beta6 (tag, commit 439e115)
+vendored-on: 2026-08-01
+sync: 跟随 axonhub release，每 2-4 周评审窗口内 git merge upstream/<tag>（见 docs/contracts/vendor-isolation.md）

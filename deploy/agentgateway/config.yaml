@@ -106,6 +106,19 @@ routes:
             openAI: {}
           hostOverride: axonhub:8090
 
-  # catch-all：其余路径（/admin、/oauth、/health 等）原样透传到 axonhub
-  - backends:
+  # /admin、/oauth：axonhub 管理 API 与 SSO/OAuth 流程（契约 docs/contracts/ingress-proxy.md）
+  - matches:
+      - path:
+          pathPrefix: /admin
+    backends:
       - host: axonhub:8090
+
+  - matches:
+      - path:
+          pathPrefix: /oauth
+    backends:
+      - host: axonhub:8090
+
+  # catch-all：前端静态（web/dist，nginx SPA fallback）
+  - backends:
+      - host: web-static:80

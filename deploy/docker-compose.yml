@@ -77,6 +77,17 @@ services:
     # 镜像为 chainguard 最小底座，无 wget/curl，容器内无法做 exec 式 healthcheck；
     # 健康判定用宿主机 curl http://localhost:15001/healthz/ready（smoke-test.sh 内含）。
 
+  # 前端静态托管（issue #9）：web/dist（vendor 的 axonhub 前端独立构建产物）
+  web-static:
+    image: nginx:1.27-alpine
+    container_name: ai4s-web-static
+    volumes:
+      - ../web/dist:/usr/share/nginx/html:ro
+      - ./web-static/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    networks:
+      - ai4s
+    restart: unless-stopped
+
   # 商密词表检测（issue #6）：agentgateway webhook → shim → Presidio
   presidio:
     image: ghcr.io/data-privacy-stack/presidio-analyzer:2.2.364
