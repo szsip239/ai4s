@@ -17,11 +17,13 @@ function getModuleDefaultExport(module: unknown): Record<string, unknown> {
   return module as Record<string, unknown>;
 }
 
+import ai4sPatchZhCN from '../ai4s/locales/zh-CN/ai4s-patch.json'; // 挂载点 M6：ai4s zh-CN 补键包（issue #12）
+
 const enModules = import.meta.glob('../locales/en/*.json', { eager: true }) as Record<string, unknown>;
 const zhCNModules = import.meta.glob('../locales/zh-CN/*.json', { eager: true }) as Record<string, unknown>;
 
 const enTranslation = mergeTranslations(...Object.values(enModules).map(getModuleDefaultExport));
-const zhTranslation = mergeTranslations(...Object.values(zhCNModules).map(getModuleDefaultExport));
+const zhTranslation = mergeTranslations(...Object.values(zhCNModules).map(getModuleDefaultExport), ai4sPatchZhCN);
 
 const resources = {
   en: {

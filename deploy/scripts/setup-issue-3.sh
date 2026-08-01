@@ -35,6 +35,22 @@ if [ "$EMP_EXISTS" = "0" ]; then
   }}))')
   gql 'mutation CreateUser($input: CreateUserInput!) { createUser(input: $input) { id email status } }' "$CREATE_USER"
   echo
+  # createUser 的 projectIDs 实测不生效（静默忽略）——显式补项目成员关系
+  EMP_UID=$(gql 'query { users(first: 100) { edges { node { id email } } } }' '{}' \
+    | python3 -c 'import json,sys
+es=json.load(sys.stdin)["data"]["users"]["edges"]
+hit=[e["node"]["id"] for e in es if e["node"]["email"]=="employee-test@ai4s.local"]
+print(hit[0] if hit else "")')
+  if [ -n "$EMP_UID" ]; then
+    DEV_ROLE_ID=$(gql 'query { roles(first: 50) { edges { node { id name } } } }' '{}' \
+      | python3 -c 'import json,sys
+rs=json.load(sys.stdin)["data"]["roles"]["edges"]
+hit=[e["node"]["id"] for e in rs if e["node"]["name"]=="Developer"]
+print(hit[0] if hit else "")')
+    gql 'mutation AddToProject($input: AddUserToProjectInput!) { addUserToProject(input: $input) { id } }' \
+      "{\"input\":{\"projectId\":\"$PROJECT_ID\",\"userId\":\"$EMP_UID\",\"roleIDs\":[\"$DEV_ROLE_ID\"]}}" >/dev/null 2>&1 || true
+    echo "    已补 Default 项目成员关系 + Developer 角色（${EMP_UID}）"
+  fi
   echo "    已创建（口令存 $STATE_DIR/i3-employee-password）"
 else
   echo "    已存在，跳过"
