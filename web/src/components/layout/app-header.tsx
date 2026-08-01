@@ -3,7 +3,7 @@ import { Link } from '@tanstack/react-router';
 import { IconSettings } from '@tabler/icons-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTranslation } from 'react-i18next';
-import { SidebarTrigger, useSidebar } from '@/components/ui/sidebar';
+import { useSidebar } from '@/components/ui/sidebar';
 import { Button } from '@/components/ui/button';
 import { LanguageSwitch } from '@/components/language-switch';
 import { ThemeSwitch } from '@/components/theme-switch';
@@ -47,8 +47,7 @@ export function AppHeader() {
       <div className='flex h-14 items-center justify-between'>
         {/* Logo + Project Switcher - 左侧对齐 */}
         <div className='flex items-center gap-2 pl-6'>
-          {/* Sidebar Toggle - 与侧边栏图标垂直对齐 */}
-          <SidebarTrigger className='-ml-4 size-8' />
+          {/* 挂载点 M5：侧边栏移除后 SidebarTrigger 为死按钮，已删除（issue #11） */}
 
           {/* Logo */}
           <div className='flex items-center gap-2'>
