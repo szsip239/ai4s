@@ -1,0 +1,135 @@
+/* ai4s 设计 token 覆盖层（issue #10，定稿 C 结构 × W 风格）
+   蓝本：throwaway 分支 prototype/console/src/index.css 的 [data-style='W'|'D']。
+   机制：在上游 index.css 末尾 import 本文件（唯一挂载点），同特异性后加载胜出，
+   覆盖 :root / .claude / .dark 下的 shadcn 语义变量。上游组件零修改。 */
+
+@import '@fontsource/geist/400.css';
+@import '@fontsource/geist/500.css';
+@import '@fontsource/geist/600.css';
+@import '@fontsource/geist-mono/400.css';
+@import '@fontsource/geist-mono/500.css';
+
+@theme inline {
+  --font-sans: 'Geist', 'MiSans', 'PingFang SC', 'Noto Sans SC', system-ui, sans-serif;
+  --font-mono: 'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+}
+
+/* ===== W · 现代暖白（浅色，默认） ===== */
+:root,
+.claude {
+  --background: #faf8f5; /* 暖白，去"暖纸"感 */
+  --foreground: #1c1917; /* stone-900 */
+  --card: #ffffff;
+  --card-foreground: #1c1917;
+  --popover: #ffffff;
+  --popover-foreground: #1c1917;
+  --primary: #c2410c; /* terracotta，单一克制强调色 */
+  --primary-foreground: #ffffff;
+  --secondary: #f5f1ec; /* stone 暖灰 */
+  --secondary-foreground: #1c1917;
+  --muted: #f5f1ec;
+  --muted-foreground: #78716c; /* stone-500 */
+  --accent: rgb(194 65 12 / 0.08); /* terracotta soft */
+  --accent-foreground: #c2410c;
+  --destructive: #e11d48;
+  --destructive-foreground: #ffffff;
+  --border: #e7e5e4; /* stone-200 */
+  --input: #e7e5e4;
+  --ring: #c2410c;
+  --chart-1: #c2410c;
+  --chart-2: rgb(194 65 12 / 0.55);
+  --chart-3: rgb(194 65 12 / 0.3);
+  --chart-4: #a8a29e;
+  --chart-5: #d6d3d1;
+  --chart-6: #e7e5e4;
+
+  --sidebar: #ffffff;
+  --sidebar-foreground: #1c1917;
+  --sidebar-primary: #c2410c;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #f5f1ec;
+  --sidebar-accent-foreground: #1c1917;
+  --sidebar-border: #e7e5e4;
+  --sidebar-ring: #c2410c;
+
+  --radius: 0.625rem; /* 10px 卡片 / 8px 控件（W 圆角纪律） */
+
+  /* 阴影带暖色调，禁纯黑投影 */
+  --shadow-2xs: 0 1px 2px rgb(28 25 23 / 0.04);
+  --shadow-xs: 0 1px 2px rgb(28 25 23 / 0.04);
+  --shadow-sm: 0 20px 40px -15px rgb(28 25 23 / 0.08);
+  --shadow: 0 20px 40px -12px rgb(28 25 23 / 0.1);
+  --shadow-md: 0 20px 40px -12px rgb(28 25 23 / 0.1);
+  --shadow-lg: 0 0 20px rgb(28 25 23 / 0.12);
+  --shadow-xl: 0 8px 10px -1px rgb(28 25 23 / 0.06);
+  --shadow-2xl: 0 1px 3px rgb(28 25 23 / 0.12);
+
+  --table-background: var(--card);
+  --table-border: #f5f1ec;
+  --table-header: var(--muted);
+}
+
+/* ===== D · 深色科技（暗色） ===== */
+.dark,
+.dark.claude {
+  --background: #0a0a0b; /* 近黑非纯黑 */
+  --foreground: #f4f4f5; /* zinc-100 */
+  --card: #131316;
+  --card-foreground: #f4f4f5;
+  --popover: #1c1c21;
+  --popover-foreground: #f4f4f5;
+  --primary: #10b981; /* phosphor emerald */
+  --primary-foreground: #04241a; /* 亮强调色上用深文字保对比 */
+  --secondary: #1c1c21;
+  --secondary-foreground: #f4f4f5;
+  --muted: #1c1c21;
+  --muted-foreground: #a1a1aa; /* zinc-400 */
+  --accent: rgb(16 185 129 / 0.12);
+  --accent-foreground: #10b981;
+  --destructive: #fb7185;
+  --destructive-foreground: #04241a;
+  --border: rgb(255 255 255 / 0.08);
+  --input: rgb(255 255 255 / 0.08);
+  --ring: #10b981;
+  --chart-1: #10b981;
+  --chart-2: rgb(16 185 129 / 0.55);
+  --chart-3: rgb(16 185 129 / 0.3);
+  --chart-4: #8b8b94;
+  --chart-5: #52525b;
+  --chart-6: #3f3f46;
+
+  --sidebar: #131316;
+  --sidebar-foreground: #f4f4f5;
+  --sidebar-primary: #10b981;
+  --sidebar-primary-foreground: #04241a;
+  --sidebar-accent: #1c1c21;
+  --sidebar-accent-foreground: #f4f4f5;
+  --sidebar-border: rgb(255 255 255 / 0.08);
+  --sidebar-ring: #10b981;
+
+  /* 层次用 1px 内边框，禁外发光 */
+  --shadow-2xs: inset 0 1px 0 0 rgb(255 255 255 / 0.04);
+  --shadow-xs: inset 0 1px 0 0 rgb(255 255 255 / 0.04);
+  --shadow-sm: inset 0 1px 0 0 rgb(255 255 255 / 0.04);
+  --shadow: inset 0 1px 0 0 rgb(255 255 255 / 0.04);
+  --shadow-md: inset 0 1px 0 0 rgb(255 255 255 / 0.04);
+  --shadow-lg: inset 0 1px 0 0 rgb(255 255 255 / 0.04);
+  --shadow-xl: inset 0 1px 0 0 rgb(255 255 255 / 0.04);
+  --shadow-2xl: inset 0 1px 0 0 rgb(255 255 255 / 0.04);
+
+  --table-background: var(--card);
+  --table-border: rgb(255 255 255 / 0.06);
+  --table-header: var(--muted);
+}
+
+/* 数字/指标统一 mono + tabular-nums（W 风格字体纪律） */
+body {
+  font-family: var(--font-sans);
+}
+code,
+kbd,
+pre,
+.font-mono {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
