@@ -105,6 +105,7 @@ services:
       WORDLIST_PATH: /dlp/confidential-terms.json
     volumes:
       - ./dlp:/dlp:ro # 词表挂载，修改即热更新（shim 每请求重读）
+      - ../recognizers:/recognizers:ro # PII recognizer 定义（issue #15），热更新
     networks:
       - ai4s
     depends_on:

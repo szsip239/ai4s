@@ -19,7 +19,17 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PRESIDIO_URL = os.environ.get("PRESIDIO_URL", "http://presidio:3000")
 WORDLIST_PATH = os.environ.get("WORDLIST_PATH", "/dlp/confidential-terms.json")
+PII_RECOGNIZERS_PATH = os.environ.get("PII_RECOGNIZERS_PATH", "/recognizers/pii-zh.json")
 MAX_BODY = 256 * 1024  # 契约：请求体超限截断送检
+
+
+def load_pii_recognizers() -> list:
+    """PII recognizer 定义（issue #15，recognizers/ 首件）——每请求重读，热更新。"""
+    try:
+        with open(PII_RECOGNIZERS_PATH, encoding="utf-8") as f:
+            return json.load(f).get("recognizers", [])
+    except Exception:
+        return []
 
 
 def load_terms() -> list:
@@ -65,6 +75,9 @@ def presidio_hits(text: str, latin_terms: list) -> list:
         results = json.load(r)
     hits = []
     for res in results:
+        # 只认我们注入的 ad-hoc 实体的命中；Presidio 内置实体（US_BANK_NUMBER 等低分噪音）忽略
+        if res.get("entity_type") != "AI4S_CONFIDENTIAL":
+            continue
         snippet = text[res.get("start", 0) : res.get("end", 0)]
         term = next(
             (t for t in latin_terms if t["value"].lower() == snippet.lower()), None
@@ -91,6 +104,74 @@ def analyze(text: str, terms: list) -> list:
     return hits
 
 
+def pii_analyze_and_mask(text: str, recs: list) -> tuple:
+    """PII 识别 + 脱敏（issue #15）：Presidio ad-hoc pattern recognizer，命中区间替换为 replacement。
+    返回 (masked_text, hit_entities)。recs 为空时原样返回。"""
+    if not recs or not text:
+        return text, []
+    adhoc = [
+        {
+            "name": r["name"],
+            "supported_entity": r["entity"],
+            "supported_language": "en",
+            "patterns": r["patterns"],
+            "context": r.get("context", []),
+        }
+        for r in recs
+    ]
+    body = {"text": text, "language": "en", "ad_hoc_recognizers": adhoc}
+    req = urllib.request.Request(
+        PRESIDIO_URL + "/analyze",
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=3) as resp:
+        results = json.load(resp)
+    # 只认我们注入的 PII 实体的命中（内置实体噪音忽略）
+    own = {r["entity"] for r in recs}
+    results = [h for h in results if h.get("entity_type") in own]
+    if not results:
+        return text, []
+    repl = {r["entity"]: r.get("replacement", f"【PII:{r['entity']}】") for r in recs}
+    masked = text
+    for hit in sorted(results, key=lambda h: h.get("start", 0), reverse=True):
+        ent = hit.get("entity_type", "")
+        masked = masked[: hit["start"]] + repl.get(ent, "【PII】") + masked[hit["end"] :]
+    entities = sorted({h.get("entity_type", "") for h in results})
+    return masked, entities
+
+
+def mask_message_contents(messages, recs):
+    """逐消息脱敏；返回 (new_messages, any_masked, entities)。"""
+    if not recs:
+        return messages, False, []
+    all_entities = set()
+    any_masked = False
+    out = []
+    for m in messages or []:
+        m2 = dict(m)
+        c = m.get("content")
+        if isinstance(c, str):
+            masked, ents = pii_analyze_and_mask(c, recs)
+            if ents:
+                m2["content"] = masked
+                any_masked = True
+                all_entities |= set(ents)
+        elif isinstance(c, list):
+            parts = []
+            for p in c:
+                if isinstance(p, dict) and isinstance(p.get("text"), str):
+                    masked, ents = pii_analyze_and_mask(p["text"], recs)
+                    if ents:
+                        p = {**p, "text": masked}
+                        any_masked = True
+                        all_entities |= set(ents)
+                parts.append(p)
+            m2["content"] = parts
+        out.append(m2)
+    return out, any_masked, sorted(all_entities)
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):  # 静默（命中敏感值不进 shim 日志，契约）
         pass
@@ -113,7 +194,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length = min(int(self.headers.get("Content-Length") or 0), MAX_BODY)
             payload = json.loads(self.rfile.read(length) or b"{}")
-            text = extract_text((payload.get("body") or {}).get("messages"))
+            messages = (payload.get("body") or {}).get("messages") or []
+            text = extract_text(messages)
             hits = analyze(text, load_terms()) if text else []
         except Exception as e:
             # shim 自身异常 → 500，由 agentgateway failureMode=failOpen 放行（契约分级）
@@ -141,8 +223,26 @@ class Handler(BaseHTTPRequestHandler):
                     }
                 },
             )
+            return
+        # PII 脱敏（issue #15）：命中不阻断，返回改写后的消息体（MaskAction）
+        try:
+            recs = load_pii_recognizers()
+            masked_msgs, any_masked, entities = mask_message_contents(messages, recs)
+        except Exception as e:
+            self._json(500, {"error": str(e)[:200]})
+            return
+        if any_masked:
+            self._json(
+                200,
+                {
+                    "action": {
+                        "body": {"messages": masked_msgs},
+                        "reason": f"PII masked: {', '.join(entities)}",
+                    }
+                },
+            )
         else:
-            self._json(200, {"action": {"reason": "no confidential term hit"}})
+            self._json(200, {"action": {"reason": "pass"}})
 
 
 if __name__ == "__main__":

@@ -93,6 +93,13 @@ routes:
                     content-type: "application/json"
                 body: |
                   {"error":{"message":"Blocked by ai4s DLP: Aliyun access key detected","type":"content_policy_violation","code":"secrets.aliyun_ak"}}
+            # L1.5：格式型 PII mask（issue #15）——命中内容替换为掩码文本，请求继续放行
+            # \b 边界防误伤：19 位银行卡/时间戳等长数字串不误切（Rust regex 支持 \b，无 lookaround）
+            - regex:
+                action: mask
+                rules:
+                  - pattern: '\b1[3-9]\d{9}\b'
+                  - pattern: '\b\d{17}[\dXx]\b'
             # L2：商密词表（shim → Presidio；fail-open 分级，契约 docs/contracts/dlp-webhook-shim.md）
             - webhook:
                 target:

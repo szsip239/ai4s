@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "_comment": "ai4s PII 中文 recognizer 定义（issue #15，recognizers/ 首件自研）。经 shim 以 Presidio ad-hoc pattern recognizer 注入，改文件即热更新。replacement 为命中后的替换文本。",
+  "recognizers": [
+    {
+      "name": "zh_phone",
+      "entity": "ZH_PHONE",
+      "patterns": [{ "name": "zh_phone_v1", "regex": "(?<!\\d)1[3-9]\\d{9}(?!\\d)", "score": 0.7 }],
+      "context": ["手机", "电话", "手机号", "联系方式", "致电"],
+      "replacement": "【PII:手机号】"
+    },
+    {
+      "name": "zh_id_card",
+      "entity": "ZH_ID_CARD",
+      "patterns": [{ "name": "zh_id_card_v1", "regex": "(?<!\\d)\\d{17}[\\dXx](?!\\d)", "score": 0.7 }],
+      "context": ["身份证", "证件号", "公民身份"],
+      "replacement": "【PII:身份证号】"
+    },
+    {
+      "name": "zh_bank_card",
+      "entity": "ZH_BANK_CARD",
+      "patterns": [{ "name": "zh_bank_card_v1", "regex": "(?<!\\d)(?:62|4|5)\\d{14,17}(?!\\d)", "score": 0.6 }],
+      "context": ["银行卡", "卡号", "账号", "借记卡", "信用卡"],
+      "replacement": "【PII:银行卡号】"
+    }
+  ]
+}
