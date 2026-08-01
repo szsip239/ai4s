@@ -93,6 +93,11 @@ routes:
                     content-type: "application/json"
                 body: |
                   {"error":{"message":"Blocked by ai4s DLP: Aliyun access key detected","type":"content_policy_violation","code":"secrets.aliyun_ak"}}
+            # L2：商密词表（shim → Presidio；fail-open 分级，契约 docs/contracts/dlp-webhook-shim.md）
+            - webhook:
+                target:
+                  host: shim:8080
+                failureMode: failOpen
     backends:
       # AI backend：把 axonhub 声明为 OpenAI 协议上游（hostOverride），LLM 处理域生效
       - ai:

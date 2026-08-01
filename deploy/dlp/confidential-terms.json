@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "_comment": "ai4s 商密词表 v1（issue #6）。当前为占位示例词，正式上线前由负责人替换为真实项目代号/内部域名/未发布产品名。修改即热更新（shim 每请求重读，无需重启）。",
+  "terms": [
+    {
+      "value": "凤凰计划",
+      "rule_id": "confidential.codename"
+    },
+    {
+      "value": "蓝鲸系统",
+      "rule_id": "confidential.codename"
+    },
+    {
+      "value": "ProjectBlueWhale",
+      "rule_id": "confidential.codename"
+    },
+    {
+      "value": "internal.ai4s.local",
+      "rule_id": "confidential.internal_domain"
+    },
+    {
+      "value": "星云客服系统",
+      "rule_id": "confidential.unreleased_product"
+    }
+  ]
+}

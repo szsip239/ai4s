@@ -77,6 +77,29 @@ services:
     # 镜像为 chainguard 最小底座，无 wget/curl，容器内无法做 exec 式 healthcheck；
     # 健康判定用宿主机 curl http://localhost:15001/healthz/ready（smoke-test.sh 内含）。
 
+  # 商密词表检测（issue #6）：agentgateway webhook → shim → Presidio
+  presidio:
+    image: ghcr.io/data-privacy-stack/presidio-analyzer:2.2.364
+    container_name: ai4s-presidio
+    networks:
+      - ai4s
+    restart: unless-stopped
+    # 仅 shim 内部调用，不暴露宿主端口
+
+  shim:
+    build: ../shim
+    container_name: ai4s-shim
+    environment:
+      PRESIDIO_URL: http://presidio:3000
+      WORDLIST_PATH: /dlp/confidential-terms.json
+    volumes:
+      - ./dlp:/dlp:ro # 词表挂载，修改即热更新（shim 每请求重读）
+    networks:
+      - ai4s
+    depends_on:
+      - presidio
+    restart: unless-stopped
+
   # 占位/mock 上游：仅在拿不到 OAuth 订阅凭据时验证链路可达用。
   # 不参与默认启动；需要时 `docker compose --profile mock up -d`。
   mock-upstream:
