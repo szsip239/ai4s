@@ -10,3 +10,6 @@
 | `src/routes/_authenticated/index.tsx` | import 与组件 | Dashboard 换为 `@/ai4s/pages/dashboard/Ai4sDashboard` | issue #11 C 结构高密度看板 + 右侧信息面板；上游 Dashboard 保留于 features/dashboard 未动 | 2026-08-01 |
 | `src/components/layout/app-header.tsx` | 布局左区 | 删除 SidebarTrigger（无侧边栏后的死按钮）及其 import | issue #11 配套清理 | 2026-08-01 |
 | `src/lib/i18n.ts` | 顶部 +1 行 import、zhTranslation merge 参数 +1 | 引入 `src/ai4s/locales/zh-CN/ai4s-patch.json` 补键包（61 个 zh-CN 缺失键：profile/security/common 等） | issue #12 中文补键；补键包本体在隔离区 | 2026-08-02 |
+| `src/routes/_authenticated/project/requests/index.tsx` | import 与组件 | 审计日志换 `@/ai4s/pages/requests/Ai4sRequestsPage`（元数据抽屉 + warn 提示条，不展示原文） | issue #13 审计原则 | 2026-08-02 |
+| `src/routes/_authenticated/project/requests/$requestId.tsx` | 全文 | 深链统一 redirect 回 `/project/requests`（上游详情页含原文，禁用） | issue #13 配套 | 2026-08-02 |
+| `src/routes/_authenticated/prompt-protection-rules/index.tsx` | import 与组件 | 脱敏规则换 `@/ai4s/pages/rules/Ai4sRulesPage`（link-ai 式，类型/优先级展示层派生） | issue #13 | 2026-08-02 |
