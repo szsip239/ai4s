@@ -1,14 +1,14 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { ProjectGuard } from '@/components/project-guard';
 import { RouteGuard } from '@/components/route-guard';
-import Ai4sRequestsPage from '@/ai4s/pages/requests/Ai4sRequestsPage';
+import RequestsManagement from '@/features/requests';
 
-// 挂载点 M7：审计日志换 ai4s 元数据版（不展示请求/响应原文，issue #13）
+// 恢复上游原生审计日志（全量详情；M7 元数据化撤销——2026-08-02 用户拍板：审计日志不应该拿走）
 function ProtectedProjectRequests() {
   return (
     <ProjectGuard>
       <RouteGuard requiredScopes={['read_requests']} scopeLevel="any">
-        <Ai4sRequestsPage />
+        <RequestsManagement />
       </RouteGuard>
     </ProjectGuard>
   );

@@ -1,59 +1,62 @@
 import { Link, useRouterState } from '@tanstack/react-router';
-import { IconDots } from '@tabler/icons-react';
-import { TopNav } from '@/components/layout/top-nav';
-import { Button } from '@/components/ui/button';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import {
+  IconDashboard,
+  IconKey,
+  IconRoute,
+  IconShield,
+  IconFileText,
+  IconBoxModel,
+  IconFolders,
+  IconUsers,
+  IconUsersGroup,
+  IconDatabase,
+  IconSettings,
+} from '@tabler/icons-react';
+import { cn } from '@/lib/utils';
 
 /**
- * ai4s 顶部导航（C 结构，issue #11）
- * 五个主入口固定；其余管理页收进「更多」。与 AppHeader（h-14）组合为两行固定头部。
+ * ai4s 顶部导航（C 结构，全量展示版）
+ * 全部条目内联展示：图标 + 中文标签；激活项 = accent-soft 底 + accent 字（与 C×W token 联动）。
  * 新增代码按 vendor 隔离规则只落 src/ai4s/。
  */
 
-const MAIN_LINKS = [
-  { title: '仪表盘', href: '/' },
-  { title: '我的 Key', href: '/project/api-keys' },
-  { title: '渠道管理', href: '/channels' },
-  { title: '脱敏规则', href: '/prompt-protection-rules' },
-  { title: '审计日志', href: '/project/requests' },
-] as const;
-
-const MORE_LINKS = [
-  { title: '模型', href: '/models' },
-  { title: '项目', href: '/projects' },
-  { title: '用户', href: '/users' },
-  { title: '角色', href: '/roles' },
-  { title: '数据存储', href: '/data-storages' },
-  { title: '系统设置', href: '/system' },
+const NAV_ITEMS = [
+  { title: '仪表盘', href: '/', icon: IconDashboard },
+  { title: '我的 Key', href: '/project/api-keys', icon: IconKey },
+  { title: '渠道管理', href: '/channels', icon: IconRoute },
+  { title: '脱敏规则', href: '/prompt-protection-rules', icon: IconShield },
+  { title: '审计日志', href: '/project/requests', icon: IconFileText },
+  { title: '模型', href: '/models', icon: IconBoxModel },
+  { title: '项目', href: '/projects', icon: IconFolders },
+  { title: '用户', href: '/users', icon: IconUsers },
+  { title: '角色', href: '/roles', icon: IconUsersGroup },
+  { title: '数据存储', href: '/data-storages', icon: IconDatabase },
+  { title: '系统设置', href: '/system', icon: IconSettings },
 ] as const;
 
 export function Ai4sTopNavBar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
-  const links = MAIN_LINKS.map((l) => ({
-    ...l,
-    isActive: l.href === '/' ? pathname === '/' : pathname.startsWith(l.href),
-  }));
 
   return (
     <div className='bg-background/95 supports-[backdrop-filter]:bg-background/60 fixed top-14 z-40 w-full border-b backdrop-blur'>
-      <div className='flex h-11 items-center justify-between px-6'>
-        <TopNav links={links} />
-        <DropdownMenu modal={false}>
-          <DropdownMenuTrigger asChild>
-            <Button variant='ghost' size='sm' className='gap-1'>
-              <IconDots className='size-4' />
-              更多
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent side='bottom' align='end'>
-            {MORE_LINKS.map((l) => (
-              <DropdownMenuItem key={l.href} asChild>
-                <Link to={l.href}>{l.title}</Link>
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
+      <nav className='flex h-11 items-center gap-1 overflow-x-auto px-4'>
+        {NAV_ITEMS.map(({ title, href, icon: Icon }) => {
+          const active = href === '/' ? pathname === '/' : pathname.startsWith(href);
+          return (
+            <Link
+              key={href}
+              to={href}
+              className={cn(
+                'flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm whitespace-nowrap transition-colors',
+                active ? 'bg-accent font-medium text-accent-foreground' : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'
+              )}
+            >
+              <Icon className='size-4' />
+              {title}
+            </Link>
+          );
+        })}
+      </nav>
     </div>
   );
 }

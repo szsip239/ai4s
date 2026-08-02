@@ -11,7 +11,7 @@ import { Button, buttonVariants } from '@/components/ui/button';
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 
-const colorSchemes = ['blue', 'green', 'purple', 'orange', 'red', 'black', 'cream'] as const;
+const colorSchemes = ['blue', 'green', 'purple', 'orange', 'red', 'black', 'cream', 'claude'] as const;
 
 const appearanceFormSchema = z.object({
   theme: z.enum(['light', 'dark'], {
@@ -103,14 +103,14 @@ export function AppearanceForm() {
                   >
                     {colorSchemes.map((scheme) => (
                       <option key={scheme} value={scheme}>
-                        {scheme}
+                        {scheme === 'claude' ? 'claude (ai4s 定稿)' : scheme}
                       </option>
                     ))}
                   </select>
                 </FormControl>
                 <ChevronDownIcon className='absolute top-2.5 right-3 h-4 w-4 opacity-50' />
               </div>
-              <FormDescription className='font-manrope'>Choose your preferred color scheme for the interface.</FormDescription>
+              <FormDescription className='font-manrope'>选择界面配色（claude 为 ai4s 定稿暖白；其余为上游原生方案）</FormDescription>
               <FormMessage />
             </FormItem>
           )}

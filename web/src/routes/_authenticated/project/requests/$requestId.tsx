@@ -1,8 +1,19 @@
-import { createFileRoute, redirect } from '@tanstack/react-router';
+import { createFileRoute } from '@tanstack/react-router';
+import { ProjectGuard } from '@/components/project-guard';
+import { RouteGuard } from '@/components/route-guard';
+import RequestDetailPage from '@/features/requests/components/request-detail-page';
 
-// 挂载点 M8：请求详情深链不再进入含原文的上游详情页，统一回审计列表（issue #13）
+// 恢复上游原生请求详情页（M8 redirect 撤销，配套审计全量恢复）
+function ProtectedRequestDetail() {
+  return (
+    <ProjectGuard>
+      <RouteGuard requiredScopes={['read_requests']} scopeLevel="any">
+        <RequestDetailPage />
+      </RouteGuard>
+    </ProjectGuard>
+  );
+}
+
 export const Route = createFileRoute('/_authenticated/project/requests/$requestId')({
-  beforeLoad: () => {
-    throw redirect({ to: '/project/requests' });
-  },
+  component: ProtectedRequestDetail,
 });

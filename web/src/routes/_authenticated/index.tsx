@@ -1,12 +1,12 @@
 import { createFileRoute } from '@tanstack/react-router';
 import { RouteGuard } from '@/components/route-guard';
-import Ai4sDashboard from '@/ai4s/pages/dashboard/Ai4sDashboard';
+import Dashboard from '@/features/dashboard';
 
-// 挂载点 M4：dashboard 换成 ai4s C 结构看板（原上游 Dashboard 见 features/dashboard）
+// 恢复上游原生 dashboard（信息全量；M4 换皮撤销，C×W 主题经 token 层仍然生效）
 function ProtectedDashboard() {
   return (
     <RouteGuard requiredScopes={['read_dashboard']} scopeLevel="system">
-      <Ai4sDashboard />
+      <Dashboard />
     </RouteGuard>
   );
 }
