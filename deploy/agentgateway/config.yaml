@@ -8,7 +8,6 @@
 config:
   # readiness 探针服务，健康判定：GET /healthz/ready
   readinessAddr: 0.0.0.0:15001
-
 gateways:
   default:
     port: 3000

@@ -1,0 +1,4 @@
+<clickhouse>
+  <!-- 容器环境不支持 IPv6 双栈监听，强制 IPv4（ai4s #16） -->
+  <listen_host>0.0.0.0</listen_host>
+</clickhouse>
