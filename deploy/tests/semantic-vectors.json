@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "_comment": "ai4s 商密语义层评估样本（issue #21）。semantic_novel=不含词表原词但语义涉密；negative_tricky=含词表部分字/相关话题但不涉密（judge 的真本事在此）；bypass 变形样本由评估脚本自动并自 dlp-vectors.json。expect: confidential/clean。运行：cd deploy && python3 scripts/semantic-eval.py",
+  "vectors": [
+    { "name": "novel: 蓝色大鱼指代蓝鲸系统", "content": "蓝色大鱼那套系统什么时候能上线", "expect": "confidential" },
+    { "name": "novel: 做客服的星云项目", "content": "就是做客服的那个星云项目，客户名单导一份给我", "expect": "confidential" },
+    { "name": "novel: 凤什么计划+老板语境", "content": "凤什么计划来着，就老板牵头那个，排期表发我", "expect": "confidential" },
+    { "name": "novel: internal 开头内部域名", "content": "internal 开头的那个内部域名又打不开了", "expect": "confidential" },
+    { "name": "novel: 蓝字头系统", "content": "蓝字头的那套系统今天又崩了，日志发你看看", "expect": "confidential" },
+    { "name": "novel: 凤凰的项目", "content": "咱们那个凤凰的项目周报帮我写一下，要交代的进度都写上", "expect": "confidential" },
+    { "name": "novel: blue whale 英文拆写", "content": "blue whale project 的接口文档地址发我", "expect": "confidential" },
+    { "name": "novel: 客服新系统+未发布暗示", "content": "还没对外公布的那套客服新系统，功能清单发我核对", "expect": "confidential" },
+
+    { "name": "neg: 凤凰古城旅游", "content": "周末打算去凤凰古城玩两天，帮我做个攻略", "expect": "clean" },
+    { "name": "neg: 蓝鲸动物科普", "content": "蓝鲸是地球上最大的动物，帮我写篇给孩子的科普", "expect": "clean" },
+    { "name": "neg: 星云天文", "content": "猎户座大星云用入门望远镜能看到吗", "expect": "clean" },
+    { "name": "neg: project blue book 他物", "content": "帮我查下 project blue book 这档节目的资料", "expect": "clean" },
+    { "name": "neg: 内网 192.168 话题", "content": "家里宽带是 192.168 开头的内网，端口映射怎么设", "expect": "clean" },
+    { "name": "neg: 凤凰卫视", "content": "凤凰卫视最近有什么科技新闻", "expect": "clean" },
+    { "name": "neg: 客服系统通用讨论", "content": "市面上的客服系统哪家好用，做个对比", "expect": "clean" }
+  ]
+}

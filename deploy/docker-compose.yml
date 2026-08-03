@@ -120,12 +120,20 @@ services:
   shim:
     build: ../shim
     container_name: ai4s-shim
+    ports:
+      - "127.0.0.1:18080:8080" # 仅本地：DLP 回归/语义层直测用（issue #20/#21）
     environment:
       PRESIDIO_URL: http://presidio:3000
       WORDLIST_PATH: /dlp/confidential-terms.json
       # issue #17：axonhub webhook → 飞书适配器（签名+重试）；值在 .env，不落库
       FEISHU_ALERT_WEBHOOK: ${FEISHU_ALERT_WEBHOOK:-}
       FEISHU_ALERT_SECRET: ${FEISHU_ALERT_SECRET:-}
+      # issue #21 语义层 shadow：judge 经 axonhub 直连调 deepseek-flash（测试期，合成样本）；
+      # 真实流量启用前必须换内网模型。JUDGE_ENABLED=0 即关闭
+      JUDGE_ENABLED: ${JUDGE_ENABLED:-0}
+      JUDGE_BASE_URL: http://axonhub:8090/v1
+      JUDGE_API_KEY: ${JUDGE_API_KEY:-}
+      JUDGE_MODEL: ${JUDGE_MODEL:-deepseek-v4-flash}
     volumes:
       - ./dlp:/dlp:ro # 词表挂载，修改即热更新（shim 每请求重读）
       - ../recognizers:/recognizers:ro # PII recognizer 定义（issue #15），热更新

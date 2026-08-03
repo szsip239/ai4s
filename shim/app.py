@@ -31,6 +31,50 @@ FEISHU_WEBHOOK = os.environ.get("FEISHU_ALERT_WEBHOOK", "")
 FEISHU_SECRET = os.environ.get("FEISHU_ALERT_SECRET", "")
 ALERT_RETRIES = 2
 
+# 商密语义层 shadow（issue #21）：LLM judge 只记录不阻断。
+# 测试期 judge 经 axonhub:8090 直连（绕过 agentgateway DLP 防递归）调 deepseek-flash，样本全为合成占位词；
+# 真实流量启用前必须换内网模型（Ollama/vLLM）——judge 会扩大暴露面，生产不可外发。
+JUDGE_ENABLED = os.environ.get("JUDGE_ENABLED", "") == "1"
+JUDGE_BASE_URL = os.environ.get("JUDGE_BASE_URL", "http://axonhub:8090/v1")
+JUDGE_API_KEY = os.environ.get("JUDGE_API_KEY", "")
+JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "deepseek-v4-flash")
+JUDGE_TIMEOUT = int(os.environ.get("JUDGE_TIMEOUT", "8"))
+
+JUDGE_SYSTEM = """你是企业数据防泄漏（DLP）语义判定器。判定用户文本是否在语义上涉及公司商密：内部项目代号、未发布产品名、内部系统/域名。注意识别谐音、拼音、拆字、繁体、暗示性描述等变形指代。普通业务话术、与词表无关的同名事物（如旅游景点）不算涉密。
+已知商密词表（精确词由规则层拦截，你负责变形与语义指代）：{terms}
+只输出 JSON：{{"confidential": true|false, "entities": ["类型"], "confidence": 0.0~1.0}}"""
+
+
+def judge_text(text: str):
+    """语义涉密判定。返回 {"confidential": bool, "entities": [...], "confidence": float}；异常/未启用返回 None（fail-open）。"""
+    if not (JUDGE_ENABLED and JUDGE_API_KEY) or not text:
+        return None
+    terms = "、".join(t["value"] for t in load_terms())
+    body = json.dumps({
+        "model": JUDGE_MODEL,
+        "messages": [
+            {"role": "system", "content": JUDGE_SYSTEM.format(terms=terms)},
+            {"role": "user", "content": text[:4000]},
+        ],
+        "max_tokens": 300,
+        "temperature": 0,
+    }).encode()
+    req = urllib.request.Request(
+        JUDGE_BASE_URL + "/chat/completions", data=body,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {JUDGE_API_KEY}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=JUDGE_TIMEOUT) as r:
+            d = json.load(r)
+        content = (d["choices"][0]["message"].get("content") or "").strip()
+        content = content.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        v = json.loads(content)
+        return {"confidential": bool(v.get("confidential")),
+                "entities": [str(e) for e in v.get("entities") or []],
+                "confidence": float(v.get("confidence") or 0)}
+    except Exception:
+        return None
+
 
 def feishu_sign(ts: str, secret: str) -> str:
     digest = hmac.new(f"{ts}\n{secret}".encode(), b"", hashlib.sha256).digest()
@@ -254,6 +298,17 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._json(200 if ok else 502, {"ok": ok})
             return
+        if self.path == "/judge-test":
+            # 语义层直测端点（issue #21）：不进请求链，供回归脚本测 judge 准确率/延迟
+            try:
+                length = min(int(self.headers.get("Content-Length") or 0), MAX_BODY)
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                t0 = time.time()
+                verdict = judge_text(payload.get("text", ""))
+                self._json(200, {"verdict": verdict, "latency_ms": round((time.time() - t0) * 1000)})
+            except Exception as e:
+                self._json(500, {"error": str(e)[:200]})
+            return
         if self.path != "/request":
             self._json(404, {})
             return
@@ -309,6 +364,11 @@ class Handler(BaseHTTPRequestHandler):
             )
         else:
             self._json(200, {"action": {"reason": "pass"}})
+        # 语义层 shadow（issue #21）：响应已定后发 judge，只记录 verdict（不含原文），不影响本请求
+        if JUDGE_ENABLED:
+            v = judge_text(text)
+            if v is not None:
+                print(f"[semantic.shadow] confidential={v['confidential']} entities={','.join(v['entities']) or '-'} confidence={v['confidence']:.2f}", flush=True)
 
 
 if __name__ == "__main__":
