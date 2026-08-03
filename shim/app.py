@@ -17,6 +17,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -190,6 +191,110 @@ def is_simple_token(s: str) -> bool:
     return s.isascii() and s.replace("-", "").replace("_", "").isalnum()
 
 
+# ---- 归一化前置（issue #22）----
+# 只用于检测：全角→半角、词表字符繁简映射、空白/横线/下划线分隔容忍；
+# mask 经 index map 映射回原文位置，原文结构不丢。纯 stdlib，无新故障面。
+_FULLWIDTH = {i: chr(i - 0xFEE0) for i in range(0xFF01, 0xFF5F)}
+_FULLWIDTH[0x3000] = " "
+# 繁简映射：覆盖当前词表用字（词表扩词时按需补字，宁缺勿滥——错映射会误伤）
+_TRAD2SIMP = dict(zip("鳳計劃鯨藍號話統雲網內級鳳", "凤计划鲸蓝号话统云网内级凤"))
+_SEP = set(" \t\r\n-_")
+
+# 归一化后文本上匹配的 secrets 规则（分隔符已剔除，pattern 不含分隔符；顺序同 L1：具体在前）
+_NORM_SECRET_RULES = [
+    ("secrets.anthropic_sk", r"skant[A-Za-z0-9]{20,}"),
+    ("secrets.openai_sk", r"sk(?:proj)?[A-Za-z0-9]{20,}"),
+    ("secrets.github_token", r"gh[pousr][A-Za-z0-9]{20,}"),
+    ("secrets.github_token", r"githubpat[A-Za-z0-9]{20,}"),
+    ("secrets.aws_key", r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
+    ("secrets.aliyun_ak", r"LTAI[A-Za-z0-9]{12,}"),
+    ("secrets.private_key", r"BEGIN[A-Z0-9]*PRIVATEKEY"),
+]
+_NORM_SECRET_RES = [(rid, re.compile(p)) for rid, p in _NORM_SECRET_RULES]
+
+_NORM_PII_RES = [  # 与 recognizers/pii-zh.json 同族（归一化后无需 \b，用 (?<!\d) 防长数字串误切）
+    ("ZH_PHONE", re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)"), "【PII:手机号】"),
+    ("ZH_ID_CARD", re.compile(r"(?<!\d)\d{17}[\dXx](?!\d)"), "【PII:身份证号】"),
+    ("ZH_BANK_CARD", re.compile(r"(?<!\d)(?:62|4|5)\d{14,17}(?!\d)"), "【PII:银行卡号】"),
+]
+
+
+def normalize_hard(s: str):
+    """返回 (归一化文本, idx_map)：idx_map[归一化下标] = 原文下标。全角→半角、繁→简、剔除分隔符。"""
+    out, idx = [], []
+    for i, ch in enumerate(s):
+        c = _FULLWIDTH.get(ord(ch), ch)
+        c = _TRAD2SIMP.get(c, c)
+        if c in _SEP:
+            continue
+        out.append(c)
+        idx.append(i)
+    return "".join(out), idx
+
+
+def norm_secret_hits(norm: str) -> list:
+    return [rid for rid, rgx in _NORM_SECRET_RES if rgx.search(norm)]
+
+
+def norm_term_hits(norm_low: str, terms: list) -> list:
+    hits = []
+    for t in terms:
+        nv, _ = normalize_hard(t["value"])
+        if nv and nv.lower() in norm_low:
+            hits.append(t)
+    return hits
+
+
+def norm_pii_mask_in_text(s: str):
+    """对单段原文做归一化 PII 检测并回映 mask；返回 (新文本, 命中实体列表)。"""
+    norm, idx = normalize_hard(s)
+    if not norm:
+        return s, []
+    spans = []  # (orig_start, orig_end, replacement, entity)
+    for entity, rgx, repl in _NORM_PII_RES:
+        for m in rgx.finditer(norm):
+            spans.append((idx[m.start()], idx[m.end() - 1] + 1, repl, entity))
+    if not spans:
+        return s, []
+    spans.sort(key=lambda x: x[0], reverse=True)
+    out, entities = s, []
+    last_start = len(s) + 1
+    for st, en, repl, entity in spans:
+        if en > last_start:  # 重叠跨度跳过（先长后短原则已由排序保证大致正确）
+            continue
+        out = out[:st] + repl + out[en:]
+        last_start = st
+        entities.append(entity)
+    return out, entities
+
+
+def norm_mask_messages(messages):
+    """逐消息归一化 PII mask（issue #22）；返回 (new_messages, any_masked, entities)。"""
+    out, any_masked, all_entities = [], False, set()
+    for m in messages or []:
+        m2 = dict(m)
+        c = m.get("content")
+        if isinstance(c, str):
+            new_c, ents = norm_pii_mask_in_text(c)
+            if ents:
+                m2["content"] = new_c
+                any_masked = True
+                all_entities |= set(ents)
+        elif isinstance(c, list):
+            parts = []
+            for p in c:
+                if isinstance(p, dict) and isinstance(p.get("text"), str):
+                    new_t, ents = norm_pii_mask_in_text(p["text"])
+                    if ents:
+                        p = {**p, "text": new_t}
+                        any_masked = True
+                        all_entities |= set(ents)
+                parts.append(p)
+            m2["content"] = parts
+        out.append(m2)
+    return out, any_masked, sorted(all_entities)
+
+
 def analyze(text: str, terms: list) -> list:
     # Presidio deny-list 对含标点/中文的词会过度或不足匹配（实测）：
     # 仅简单 token 走 Presidio；其余一律 shim 子串直配（词表语义本来就是确定性子串）。
@@ -317,13 +422,17 @@ class Handler(BaseHTTPRequestHandler):
             payload = json.loads(self.rfile.read(length) or b"{}")
             messages = (payload.get("body") or {}).get("messages") or []
             text = extract_text(messages)
-            hits = analyze(text, load_terms()) if text else []
+            terms = load_terms()
+            # 归一化预检（issue #22）：全角/繁简/分隔归一后查 secrets + 词表
+            norm, _ = normalize_hard(text)
+            pre_rules = norm_secret_hits(norm) + [t["rule_id"] for t in norm_term_hits(norm.lower(), terms)] if text else []
+            hits = [] if pre_rules else (analyze(text, terms) if text else [])
         except Exception as e:
             # shim 自身异常 → 500，由 agentgateway failureMode=failOpen 放行（契约分级）
             self._json(500, {"error": str(e)[:200]})
             return
-        if hits:
-            rule_ids = sorted({h["rule_id"] for h in hits})
+        if pre_rules or hits:
+            rule_ids = sorted(set(pre_rules) | {h["rule_id"] for h in hits})
             body = json.dumps(
                 {
                     "error": {
@@ -346,9 +455,12 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         # PII 脱敏（issue #15）：命中不阻断，返回改写后的消息体（MaskAction）
+        # issue #22：先走归一化 mask（分隔/全角变形）；无命中再走 Presidio context 流程
         try:
-            recs = load_pii_recognizers()
-            masked_msgs, any_masked, entities = mask_message_contents(messages, recs)
+            masked_msgs, any_masked, entities = norm_mask_messages(messages)
+            if not any_masked:
+                recs = load_pii_recognizers()
+                masked_msgs, any_masked, entities = mask_message_contents(messages, recs)
         except Exception as e:
             self._json(500, {"error": str(e)[:200]})
             return

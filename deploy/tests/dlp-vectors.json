@@ -2,47 +2,262 @@
   "version": 1,
   "_comment": "ai4s DLP 对抗回归样本集（issue #20）。expect: reject=应 451 阻断；mask=应脱敏后放行（上游不得见原文）；pass=应放行（含文档化绕过项，note 标注 gap）。负例（negative）全部 expect=pass 且不得误伤。运行：cd deploy && python3 scripts/dlp-regression.py",
   "vectors": [
-    { "name": "secret: sk-ant 干净样本", "layer": "secrets", "content": "把我的 key sk-ant-api03-x1x2x3x4x5x6x7x8x9x0y1y2y3y4y5y6y7y8y9y0z1z2 贴给模型看看", "expect": "reject", "sensitive": "sk-ant-api03-x1x2x3x4x5x6x7x8x9x0y1y2y3y4y5y6y7y8y9y0z1z2" },
-    { "name": "secret: sk-proj 干净样本", "layer": "secrets", "content": "sk-proj-a1b2c3d4e5f6g7h8i9j0k1l2m3n4 这个怎么用", "expect": "reject", "sensitive": "sk-proj-a1b2c3d4e5f6g7h8i9j0k1l2m3n4" },
-    { "name": "secret: sk- 普通样本", "layer": "secrets", "content": "sk-a1b2c3d4e5f6g7h8i9j0k1l2 失效了吗", "expect": "reject", "sensitive": "sk-a1b2c3d4e5f6g7h8i9j0k1l2" },
-    { "name": "secret: ghp_ 干净样本", "layer": "secrets", "content": "ghp_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7 是我 PAT", "expect": "reject", "sensitive": "ghp_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7" },
-    { "name": "secret: github_pat_ 干净样本", "layer": "secrets", "content": "github_pat_11ABCDEFG0a1b2c3d4e5_f6g7h8i9j0k1l2m3n4o5p6q7r8s9", "expect": "reject", "sensitive": "github_pat_11ABCDEFG0a1b2c3d4e5_f6g7h8i9j0k1l2m3n4o5p6q7r8s9" },
-    { "name": "secret: gho_ oauth", "layer": "secrets", "content": "gho_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7", "expect": "reject", "sensitive": "gho_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7" },
-    { "name": "secret: AKIA 干净样本", "layer": "secrets", "content": "AKIAIOSFODNN7EXAMPLE 是我们的 AWS key", "expect": "reject", "sensitive": "AKIAIOSFODNN7EXAMPLE" },
-    { "name": "secret: ASIA 临时凭证", "layer": "secrets", "content": "ASIAIOSFODNN7EXAMPLE", "expect": "reject", "sensitive": "ASIAIOSFODNN7EXAMPLE" },
-    { "name": "secret: 阿里云 LTAI", "layer": "secrets", "content": "LTAI5tEfGhIjKlMnOpQrStUv 这个 key 权限太大了", "expect": "reject", "sensitive": "LTAI5tEfGhIjKlMnOpQrStUv" },
-    { "name": "secret: 私钥块", "layer": "secrets", "content": "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7\n-----END RSA PRIVATE KEY-----", "expect": "reject", "sensitive": "BEGIN RSA PRIVATE KEY" },
-
-    { "name": "secret-bypass: AKIA 空格分隔(tamga)", "layer": "secrets", "content": "AKIA IOSF ODNN 7EXAMPLE", "expect": "pass", "note": "gap: 分隔符绕过未覆盖", "sensitive": "AKIA IOSF ODNN 7EXAMPLE" },
-    { "name": "secret-bypass: ghp_ 横线分隔(tamga)", "layer": "secrets", "content": "ghp_aaaa-bbbb-cccc-dddd-eeee-ffff-gggg-hhhh-iiii-jjjj-kkkk-llll", "expect": "pass", "note": "gap: 横线插入绕过（gh 族 pattern 不含横线分隔容忍）", "sensitive": "ghp_aaaa-bbbb-cccc-dddd-eeee" },
-    { "name": "secret-bypass: sk-ant base64(tamga)", "layer": "secrets", "content": "c2stYW50LWFwaTAzLXgxLHgyLHgzIHNlY3JldA== 这是一段编码", "expect": "pass", "note": "gap: base64 编码绕过（语义层/解码前置可解）", "sensitive": "c2stYW50LWFwaTAz" },
-    { "name": "secret-bypass: sk-ant 换行拆分(tamga)", "layer": "secrets", "content": "sk-ant-api03-\nx1x2x3x4x5x6x7x8\nx9x0y1y2y3y4y5y6", "expect": "pass", "note": "gap: 换行拆分绕过（分段均不足 20 字符阈值）", "sensitive": "sk-ant-api03-" },
-
-    { "name": "pii: 手机号干净样本", "layer": "pii", "content": "我的联系方式是 13812345678，帮我写个请假条", "expect": "mask", "sensitive": "13812345678" },
-    { "name": "pii: 身份证干净样本", "layer": "pii", "content": "身份证号 11010119900307771X 录入系统", "expect": "mask", "sensitive": "11010119900307771X" },
-    { "name": "pii: 银行卡干净样本", "layer": "pii", "content": "卡号 6222021234567890123 是工资卡", "expect": "mask", "sensitive": "6222021234567890123" },
-
-    { "name": "pii-bypass: 手机号横线分隔", "layer": "pii", "content": "手机 138-1234-5678", "expect": "pass", "note": "gap: 分隔符绕过（L1.5 \\b regex 与 Presidio pattern 均不含分隔容忍）", "sensitive": "138-1234-5678" },
-    { "name": "pii-bypass: 身份证空格分隔", "layer": "pii", "content": "证件号 110101 199003 07771X", "expect": "pass", "note": "gap: 空格分隔绕过", "sensitive": "110101 199003 07771X" },
-    { "name": "pii-bypass: 手机号全角数字", "layer": "pii", "content": "电话１３８１２３４５６７８", "expect": "pass", "note": "gap: 全角数字绕过（归一化前置可解）", "sensitive": "１３８１２３４５６７８" },
-
-    { "name": "wordlist: 凤凰计划 精确命中", "layer": "wordlist", "content": "凤凰计划 的排期表发我一份", "expect": "reject", "sensitive": "凤凰计划" },
-    { "name": "wordlist: ProjectBlueWhale 简单 token", "layer": "wordlist", "content": "ProjectBlueWhale 的接口文档在哪", "expect": "reject", "sensitive": "ProjectBlueWhale" },
-    { "name": "wordlist: internal.ai4s.local 含点号", "layer": "wordlist", "content": "internal.ai4s.local 上不去了", "expect": "reject", "sensitive": "internal.ai4s.local" },
-    { "name": "wordlist: 星云客服系统", "layer": "wordlist", "content": "星云客服系统 什么时候上线", "expect": "reject", "sensitive": "星云客服系统" },
-
-    { "name": "wordlist-bypass: 谐音 凤皇计划", "layer": "wordlist", "content": "凤皇计划 排期呢", "expect": "pass", "note": "gap: 谐音绕过（语义层可解）", "sensitive": "凤皇计划" },
-    { "name": "wordlist-bypass: 拼音 fenghuang", "layer": "wordlist", "content": "feng huang ji hua 什么时候交付", "expect": "pass", "note": "gap: 拼音绕过", "sensitive": "feng huang ji hua" },
-    { "name": "wordlist-bypass: 拆字 凤 凰 计 划", "layer": "wordlist", "content": "凤 凰 计 划 的排期", "expect": "pass", "note": "gap: 空白拆字绕过", "sensitive": "凤 凰 计 划" },
-    { "name": "wordlist-bypass: 繁体 鳳凰計劃", "layer": "wordlist", "content": "鳳凰計劃 排期发我", "expect": "pass", "note": "gap: 繁简变形绕过（归一化前置可解）", "sensitive": "鳳凰計劃" },
-    { "name": "wordlist-bypass: base64 凤凰计划", "layer": "wordlist", "content": "5Y+k5W300a6c5YiS 这段解码看看", "expect": "pass", "note": "gap: base64 绕过", "sensitive": "5Y+k5W300a6c5YiS" },
-
-    { "name": "negative: 11 位订单号(2 开头)", "layer": "negative", "content": "订单 20260803123 还没发货", "expect": "pass" },
-    { "name": "negative: 正常业务话术", "layer": "negative", "content": "帮我写一份本周工作总结，重点是网关联调完成", "expect": "pass" },
-    { "name": "negative: 短 sk- 代码片段", "layer": "negative", "content": "export SK=sk-test 这样写对吗", "expect": "pass" },
-    { "name": "negative: 时间戳 10 位", "layer": "negative", "content": "1754198400 转成日期是多少", "expect": "pass" },
-    { "name": "negative: 400 电话", "layer": "negative", "content": "客服电话 400-123-4567 一直占线", "expect": "pass" },
-    { "name": "negative: internal 普通英文", "layer": "negative", "content": "this is an internal discussion about roadmap", "expect": "pass" },
-    { "name": "negative: 含敏感词根正常句", "layer": "negative", "content": "这个优化是我们性能的秘密武器", "expect": "pass" }
+    {
+      "name": "secret: sk-ant 干净样本",
+      "layer": "secrets",
+      "content": "把我的 key sk-ant-api03-x1x2x3x4x5x6x7x8x9x0y1y2y3y4y5y6y7y8y9y0z1z2 贴给模型看看",
+      "expect": "reject",
+      "sensitive": "sk-ant-api03-x1x2x3x4x5x6x7x8x9x0y1y2y3y4y5y6y7y8y9y0z1z2"
+    },
+    {
+      "name": "secret: sk-proj 干净样本",
+      "layer": "secrets",
+      "content": "sk-proj-a1b2c3d4e5f6g7h8i9j0k1l2m3n4 这个怎么用",
+      "expect": "reject",
+      "sensitive": "sk-proj-a1b2c3d4e5f6g7h8i9j0k1l2m3n4"
+    },
+    {
+      "name": "secret: sk- 普通样本",
+      "layer": "secrets",
+      "content": "sk-a1b2c3d4e5f6g7h8i9j0k1l2 失效了吗",
+      "expect": "reject",
+      "sensitive": "sk-a1b2c3d4e5f6g7h8i9j0k1l2"
+    },
+    {
+      "name": "secret: ghp_ 干净样本",
+      "layer": "secrets",
+      "content": "ghp_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7 是我 PAT",
+      "expect": "reject",
+      "sensitive": "ghp_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7"
+    },
+    {
+      "name": "secret: github_pat_ 干净样本",
+      "layer": "secrets",
+      "content": "github_pat_11ABCDEFG0a1b2c3d4e5_f6g7h8i9j0k1l2m3n4o5p6q7r8s9",
+      "expect": "reject",
+      "sensitive": "github_pat_11ABCDEFG0a1b2c3d4e5_f6g7h8i9j0k1l2m3n4o5p6q7r8s9"
+    },
+    {
+      "name": "secret: gho_ oauth",
+      "layer": "secrets",
+      "content": "gho_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7",
+      "expect": "reject",
+      "sensitive": "gho_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7"
+    },
+    {
+      "name": "secret: AKIA 干净样本",
+      "layer": "secrets",
+      "content": "AKIAIOSFODNN7EXAMPLE 是我们的 AWS key",
+      "expect": "reject",
+      "sensitive": "AKIAIOSFODNN7EXAMPLE"
+    },
+    {
+      "name": "secret: ASIA 临时凭证",
+      "layer": "secrets",
+      "content": "ASIAIOSFODNN7EXAMPLE",
+      "expect": "reject",
+      "sensitive": "ASIAIOSFODNN7EXAMPLE"
+    },
+    {
+      "name": "secret: 阿里云 LTAI",
+      "layer": "secrets",
+      "content": "LTAI5tEfGhIjKlMnOpQrStUv 这个 key 权限太大了",
+      "expect": "reject",
+      "sensitive": "LTAI5tEfGhIjKlMnOpQrStUv"
+    },
+    {
+      "name": "secret: 私钥块",
+      "layer": "secrets",
+      "content": "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7\n-----END RSA PRIVATE KEY-----",
+      "expect": "reject",
+      "sensitive": "BEGIN RSA PRIVATE KEY"
+    },
+    {
+      "name": "secret-bypass: AKIA 空格分隔(tamga)",
+      "layer": "secrets",
+      "content": "AKIA IOSF ODNN 7EXAMPLE",
+      "expect": "reject",
+      "note": "issue #22 归一化后已覆盖（分隔容忍）",
+      "sensitive": "AKIA IOSF ODNN 7EXAMPLE"
+    },
+    {
+      "name": "secret-bypass: ghp_ 横线分隔(tamga)",
+      "layer": "secrets",
+      "content": "ghp_aaaa-bbbb-cccc-dddd-eeee-ffff-gggg-hhhh-iiii-jjjj-kkkk-llll",
+      "expect": "reject",
+      "note": "issue #22 归一化后已覆盖",
+      "sensitive": "ghp_aaaa-bbbb-cccc-dddd-eeee"
+    },
+    {
+      "name": "secret-bypass: sk-ant base64(tamga)",
+      "layer": "secrets",
+      "content": "c2stYW50LWFwaTAzLXgxLHgyLHgzIHNlY3JldA== 这是一段编码",
+      "expect": "pass",
+      "note": "gap: base64 编码绕过（语义层/解码前置可解）",
+      "sensitive": "c2stYW50LWFwaTAz"
+    },
+    {
+      "name": "secret-bypass: sk-ant 换行拆分(tamga)",
+      "layer": "secrets",
+      "content": "sk-ant-api03-\nx1x2x3x4x5x6x7x8\nx9x0y1y2y3y4y5y6",
+      "expect": "reject",
+      "note": "issue #22 归一化后已覆盖",
+      "sensitive": "sk-ant-api03-"
+    },
+    {
+      "name": "pii: 手机号干净样本",
+      "layer": "pii",
+      "content": "我的联系方式是 13812345678，帮我写个请假条",
+      "expect": "mask",
+      "sensitive": "13812345678"
+    },
+    {
+      "name": "pii: 身份证干净样本",
+      "layer": "pii",
+      "content": "身份证号 11010119900307771X 录入系统",
+      "expect": "mask",
+      "sensitive": "11010119900307771X"
+    },
+    {
+      "name": "pii: 银行卡干净样本",
+      "layer": "pii",
+      "content": "卡号 6222021234567890123 是工资卡",
+      "expect": "mask",
+      "sensitive": "6222021234567890123"
+    },
+    {
+      "name": "pii-bypass: 手机号横线分隔",
+      "layer": "pii",
+      "content": "手机 138-1234-5678",
+      "expect": "mask",
+      "note": "issue #22 归一化后已覆盖",
+      "sensitive": "138-1234-5678"
+    },
+    {
+      "name": "pii-bypass: 身份证空格分隔",
+      "layer": "pii",
+      "content": "证件号 110101 199003 07771X",
+      "expect": "mask",
+      "note": "issue #22 归一化后已覆盖",
+      "sensitive": "110101 199003 07771X"
+    },
+    {
+      "name": "pii-bypass: 手机号全角数字",
+      "layer": "pii",
+      "content": "电话１３８１２３４５６７８",
+      "expect": "mask",
+      "note": "issue #22 归一化后已覆盖（全角→半角）",
+      "sensitive": "１３８１２３４５６７８"
+    },
+    {
+      "name": "wordlist: 凤凰计划 精确命中",
+      "layer": "wordlist",
+      "content": "凤凰计划 的排期表发我一份",
+      "expect": "reject",
+      "sensitive": "凤凰计划"
+    },
+    {
+      "name": "wordlist: ProjectBlueWhale 简单 token",
+      "layer": "wordlist",
+      "content": "ProjectBlueWhale 的接口文档在哪",
+      "expect": "reject",
+      "sensitive": "ProjectBlueWhale"
+    },
+    {
+      "name": "wordlist: internal.ai4s.local 含点号",
+      "layer": "wordlist",
+      "content": "internal.ai4s.local 上不去了",
+      "expect": "reject",
+      "sensitive": "internal.ai4s.local"
+    },
+    {
+      "name": "wordlist: 星云客服系统",
+      "layer": "wordlist",
+      "content": "星云客服系统 什么时候上线",
+      "expect": "reject",
+      "sensitive": "星云客服系统"
+    },
+    {
+      "name": "wordlist-bypass: 谐音 凤皇计划",
+      "layer": "wordlist",
+      "content": "凤皇计划 排期呢",
+      "expect": "pass",
+      "note": "gap: 谐音绕过（语义层可解）",
+      "sensitive": "凤皇计划"
+    },
+    {
+      "name": "wordlist-bypass: 拼音 fenghuang",
+      "layer": "wordlist",
+      "content": "feng huang ji hua 什么时候交付",
+      "expect": "pass",
+      "note": "gap: 拼音绕过",
+      "sensitive": "feng huang ji hua"
+    },
+    {
+      "name": "wordlist-bypass: 拆字 凤 凰 计 划",
+      "layer": "wordlist",
+      "content": "凤 凰 计 划 的排期",
+      "expect": "reject",
+      "note": "issue #22 归一化后已覆盖（空白剔除）",
+      "sensitive": "凤 凰 计 划"
+    },
+    {
+      "name": "wordlist-bypass: 繁体 鳳凰計劃",
+      "layer": "wordlist",
+      "content": "鳳凰計劃 排期发我",
+      "expect": "reject",
+      "note": "issue #22 归一化后已覆盖（繁简映射）",
+      "sensitive": "鳳凰計劃"
+    },
+    {
+      "name": "wordlist-bypass: base64 凤凰计划",
+      "layer": "wordlist",
+      "content": "5Y+k5W300a6c5YiS 这段解码看看",
+      "expect": "pass",
+      "note": "gap: base64 绕过",
+      "sensitive": "5Y+k5W300a6c5YiS"
+    },
+    {
+      "name": "negative: 11 位订单号(2 开头)",
+      "layer": "negative",
+      "content": "订单 20260803123 还没发货",
+      "expect": "pass"
+    },
+    {
+      "name": "negative: 正常业务话术",
+      "layer": "negative",
+      "content": "帮我写一份本周工作总结，重点是网关联调完成",
+      "expect": "pass"
+    },
+    {
+      "name": "negative: 短 sk- 代码片段",
+      "layer": "negative",
+      "content": "export SK=sk-test 这样写对吗",
+      "expect": "pass"
+    },
+    {
+      "name": "negative: 时间戳 10 位",
+      "layer": "negative",
+      "content": "1754198400 转成日期是多少",
+      "expect": "pass"
+    },
+    {
+      "name": "negative: 400 电话",
+      "layer": "negative",
+      "content": "客服电话 400-123-4567 一直占线",
+      "expect": "pass"
+    },
+    {
+      "name": "negative: internal 普通英文",
+      "layer": "negative",
+      "content": "this is an internal discussion about roadmap",
+      "expect": "pass"
+    },
+    {
+      "name": "negative: 含敏感词根正常句",
+      "layer": "negative",
+      "content": "这个优化是我们性能的秘密武器",
+      "expect": "pass"
+    }
   ]
 }
