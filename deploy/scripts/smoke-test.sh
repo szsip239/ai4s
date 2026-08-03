@@ -18,7 +18,7 @@ echo "==> POST $GATEWAY_BASE/v1/chat/completions (model=$MODEL)"
 RESP=$(curl -fsS -X POST "$GATEWAY_BASE/v1/chat/completions" \
   -H "Authorization: Bearer $API_KEY" \
   -H 'Content-Type: application/json' \
-  -d "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"reply with the word ok\"}],\"max_tokens\":16}")
+  -d "{\"model\":\"$MODEL\",\"messages\":[{\"role\":\"user\",\"content\":\"reply with the word ok\"}],\"max_tokens\":64}")
 echo "$RESP" | python3 -m json.tool
 echo "$RESP" | python3 -c "
 import json,sys

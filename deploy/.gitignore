@@ -1,3 +1,5 @@
 .env
 .local/
 backups/
+axonhub/config.yml
+casdoor/app.conf

@@ -35,6 +35,8 @@ services:
       # 环境变量优先级高于配置文件（官方约定），基本配置仅 env 即可
       AXONHUB_DB_DIALECT: postgres
       AXONHUB_DB_DSN: postgres://axonhub:${DB_PASSWORD:?DB_PASSWORD is required}@postgres:5432/axonhub?sslmode=disable
+    volumes:
+      - ./axonhub/config.yml:/etc/axonhub/config.yml:ro
     ports:
       # 管理面 / API 直连口（调试用）；员工流量走 agentgateway :3000
       - "127.0.0.1:8090:8090"
@@ -88,6 +90,24 @@ services:
       - ai4s
     restart: unless-stopped
 
+  # Casdoor SSO 枢纽（issue #14）：飞书 OAuth → 标准 OIDC → axonhub
+  casdoor:
+    image: casbin/casdoor:3.133.0
+    container_name: ai4s-casdoor
+    volumes:
+      - ./casdoor/app.conf:/conf/app.conf:ro
+      - casdoor_data:/data
+    ports:
+      - "8000:8000"
+    networks:
+      - ai4s
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
   # 商密词表检测（issue #6）：agentgateway webhook → shim → Presidio
   presidio:
     image: ghcr.io/data-privacy-stack/presidio-analyzer:2.2.364
@@ -136,6 +156,7 @@ services:
 
 volumes:
   postgres_data:
+  casdoor_data:
 
 networks:
   ai4s:

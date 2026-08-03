@@ -1,0 +1,27 @@
+# axonhub 运行时配置示例（issue #14 SSO）。
+# 复制为 config.yml 并填入实值；config.yml 含 client_secret，已 gitignore，不得入库。
+server:
+  public_url: http://localhost:3000
+
+oidc:
+  providers:
+    - id: casdoor
+      name: casdoor
+      display_name: Casdoor SSO（飞书）
+      # Casdoor 全局 issuer（= casdoor app.conf 的 origin）。必须用 LAN IP，
+      # host.docker.internal 从浏览器/宿主机不通（仅容器内通）。
+      issuer_url: http://192.168.31.x:8000
+      client_id: REPLACE_WITH_CASDOOR_APP_CLIENT_ID
+      client_secret: REPLACE_WITH_CASDOOR_APP_CLIENT_SECRET
+      jit_enabled: true
+      auto_link_by_email: true
+      require_email_verified: false
+      enable_pkce: true
+      # axonhub OIDC 端点在 /oauth/oidc/*（不是 /oidc/*）
+      redirect_url: http://localhost:3000/oauth/oidc/callback
+      oidc_login_only: false
+      group_claims: [groups]
+      # JIT 兜底姿态（未匹配部门映射时）：员工基础档——能 playground、能自建/管理自己的 Key。
+      # 部门映射（role_mappings）待飞书侧补 contact/部门 scope 后再配。
+      default_scopes: [read_api_keys, read_requests, read_users, write_requests, write_api_keys]
+      sync_role_strategy: create_only

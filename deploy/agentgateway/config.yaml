@@ -112,12 +112,21 @@ routes:
             openAI: {}
           hostOverride: axonhub:8090
 
-  # /admin、/oauth：axonhub 管理 API 与 SSO/OAuth 流程（契约 docs/contracts/ingress-proxy.md）
+  # /admin、/oidc、/oauth：axonhub 管理 API、SSO/OIDC 回调、OAuth 流程（契约 docs/contracts/ingress-proxy.md）
   - matches:
       - path:
           pathPrefix: /admin
     backends:
       - host: axonhub:8090
+
+  # 例外：/oauth/oidc/idp-callback 是前端 SPA 页面路由（web/dist 内），不是后端 API。
+  # 若落到 axonhub 会拿到其内嵌旧版 index.html（引用不存在的旧 bundle，页面空白）。
+  # exact 精确匹配优先于 /oauth 前缀匹配。
+  - matches:
+      - path:
+          exact: /oauth/oidc/idp-callback
+    backends:
+      - host: web-static:80
 
   - matches:
       - path:

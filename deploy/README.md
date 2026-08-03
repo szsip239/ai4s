@@ -22,6 +22,7 @@ docker compose up -d
 
 - 管理面：http://localhost:8090 ，用 `.env` 中的 `AXONHUB_ADMIN_EMAIL` / `AXONHUB_ADMIN_PASSWORD` 登录（本地账号；阶段 1 切 飞书 OAuth→Casdoor→OIDC）。
 - 员工入口：`http://localhost:3000/v1`（OpenAI 兼容），唯一对员工的端口。
+- SSO（issue #14 已上线）：员工在 http://localhost:3000/sign-in 点"Casdoor SSO（飞书）"登录，JIT 自动建号。axonhub 无 JIT 默认项目机制，首登后运行 `./scripts/assign-default-project.sh`（幂等，可加 cron）把新员工补进 Default 项目。
 
 ## OAuth 渠道凭据
 
