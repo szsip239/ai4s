@@ -40,7 +40,17 @@ class Handler(BaseHTTPRequestHandler):
 
         if self.path in ("/v1/chat/completions", "/chat/completions"):
             model = req.get("model", "mock-gpt")
-            content = "mock upstream reply: link OK"
+            # issue #20：回显用户消息原文——DLP 回归用，断言上游实际收到的内容（脱敏是否生效）
+            echo = ""
+            for m in reversed(req.get("messages") or []):
+                if m.get("role") == "user":
+                    c = m.get("content")
+                    if isinstance(c, str):
+                        echo = c
+                    elif isinstance(c, list):
+                        echo = " ".join(p.get("text", "") for p in c if isinstance(p, dict))
+                    break
+            content = "mock upstream reply: link OK | echo: " + echo[:2000]
             self._send_json(200, {
                 "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
                 "object": "chat.completion",
