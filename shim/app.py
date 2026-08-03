@@ -295,6 +295,45 @@ def norm_mask_messages(messages):
     return out, any_masked, sorted(all_entities)
 
 
+def mask_response_body(body):
+    """响应侧 mask（issue #23）：对 completion JSON 的 choices[].message.content/reasoning_content
+    做归一化 secrets/词表/PII 检测，命中字段整体替换为掩码。返回 (新body, 命中实体/规则列表)。
+    响应侧不 reject（员工看到莫名错误比截断更糟）；命中只记规则，不落原文。"""
+    if not isinstance(body, dict):
+        return body, []
+    choices = body.get("choices")
+    if not isinstance(choices, list):
+        return body, []
+    terms = load_terms()
+    hits = set()
+
+    def scan(text):
+        found = []
+        if not isinstance(text, str) or not text:
+            return found
+        norm, _ = normalize_hard(text)
+        found += norm_secret_hits(norm)
+        found += [t["rule_id"] for t in norm_term_hits(norm.lower(), terms)]
+        _, _, ents = norm_mask_messages([{"role": "assistant", "content": text}])
+        found += ents
+        return found
+
+    out = json.loads(json.dumps(body))  # 深拷贝
+    for ch in out.get("choices", []):
+        # 非流式 message.*；流式分片 delta.*（issue #23 实测：流式 chunk 走 delta）
+        for container in (ch.get("message"), ch.get("delta")):
+            if not isinstance(container, dict):
+                continue
+            for field in ("content", "reasoning_content"):
+                v = container.get(field)
+                if isinstance(v, str) and v:
+                    f = scan(v)
+                    if f:
+                        hits.update(f)
+                        container[field] = f"【ai4s DLP：应答含敏感内容已屏蔽（{', '.join(sorted(set(f)))}）】"
+    return out, sorted(hits)
+
+
 def analyze(text: str, terms: list) -> list:
     # Presidio deny-list 对含标点/中文的词会过度或不足匹配（实测）：
     # 仅简单 token 走 Presidio；其余一律 shim 子串直配（词表语义本来就是确定性子串）。
@@ -411,6 +450,29 @@ class Handler(BaseHTTPRequestHandler):
                 t0 = time.time()
                 verdict = judge_text(payload.get("text", ""))
                 self._json(200, {"verdict": verdict, "latency_ms": round((time.time() - t0) * 1000)})
+            except Exception as e:
+                self._json(500, {"error": str(e)[:200]})
+            return
+        if self.path == "/response":
+            # 响应侧 DLP（issue #23）：模型应答 secrets/词表/PII 命中 → 451 拒绝。
+            # 语义说明：流式（SSE）下 agentgateway 会缓冲整流后评估，mask 改写对流式无效（实测），
+            # 故响应侧命中统一拒绝——应答含敏感内容本身就是异常信号，阻断比部分遮盖更正确。
+            try:
+                length = min(int(self.headers.get("Content-Length") or 0), MAX_BODY)
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                resp_body = payload.get("body")
+                _, entities = mask_response_body(resp_body)
+                if entities:
+                    err = json.dumps(
+                        {"error": {"message": "Blocked by ai4s DLP: response contained sensitive content",
+                                   "type": "content_policy_violation",
+                                   "code": "response." + entities[0]}},
+                        ensure_ascii=False,
+                    )
+                    self._json(200, {"action": {"body": err, "status_code": 451,
+                                                "reason": f"response sensitive hit: {', '.join(entities)} (values withheld)"}})
+                else:
+                    self._json(200, {"action": {"reason": "pass"}})
             except Exception as e:
                 self._json(500, {"error": str(e)[:200]})
             return

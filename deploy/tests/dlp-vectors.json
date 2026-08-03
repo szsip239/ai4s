@@ -258,6 +258,19 @@
       "layer": "negative",
       "content": "这个优化是我们性能的秘密武器",
       "expect": "pass"
+    },
+    {
+      "name": "response: 泄漏全家族(非流式)",
+      "layer": "response",
+      "content": "模拟泄漏测试",
+      "expect": "reject",
+      "note": "issue #23：mock 拼出含手机号/身份证/代号/AWS key 的应答，响应侧应 451"
+    },
+    {
+      "name": "response: 干净应答放行",
+      "layer": "response",
+      "content": "你好",
+      "expect": "pass"
     }
   ]
 }

@@ -104,6 +104,14 @@ routes:
                 target:
                   host: shim:8080
                 failureMode: failOpen
+          # 响应侧（issue #23）：模型应答过 shim /response，命中即 mask（不 451，避免员工看到莫名错误）；
+          # fail-open 同契约分级；流式应答覆盖见 streaming 段
+          response:
+            - webhook:
+                target:
+                  host: shim:8080
+                failureMode: failOpen
+          streaming: Enabled
     backends:
       # AI backend：把 axonhub 声明为 OpenAI 协议上游（hostOverride），LLM 处理域生效
       - ai:
