@@ -50,12 +50,16 @@ i18n
       escapeValue: false, // React 已经默认转义了
       format: (value, format, lng, options) => {
         if (format === 'currency') {
-          return new Intl.NumberFormat(options?.locale || lng, {
-            style: 'currency',
-            currency: options?.currency || 'USD',
-             currencyDisplay: 'narrowSymbol',
-            ...options,
-          }).format(value);
+          // ai4s（issue #18）：cost 语义是 credit（1 credit = $1 官方原价 × 渠道倍率），
+          // 显示为"点 / credits"，不显示货币符号；档位：体验 3 / 标准 20 / 高档 80 点每自然月
+          const num = typeof value === 'number' ? value : Number(value);
+          if (Number.isNaN(num)) return String(value);
+          const isZh = (lng || '').startsWith('zh');
+          const text = new Intl.NumberFormat(options?.locale || lng, {
+            minimumFractionDigits: options?.minimumFractionDigits ?? (Math.abs(num) >= 1 ? 2 : 6),
+            maximumFractionDigits: options?.maximumFractionDigits ?? 6,
+          }).format(num);
+          return isZh ? `${text} 点` : `${text} credits`;
         }
         return value;
       },

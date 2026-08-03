@@ -1,0 +1,45 @@
+{
+  "version": "2026-08-03",
+  "note": "credit 定价（issue #18）：1 credit = $1 官方原价消耗；配额档位见 axonhub Profile 模板（体验 3 / 标准 20 / 高档 80 credits 自然月）。渠道倍率无默认值，必须由管理员显式配置（订阅渠道 <1，按量渠道 1.0）。改倍率后跑 deploy/scripts/apply-pricing.py 生效。",
+  "official_prices_per_million_usd": {
+    "gpt-5.6-sol": { "prompt": 5.00, "completion": 30.00, "cached": 0.50 },
+    "gpt-5.6-terra": { "prompt": 2.00, "completion": 12.00, "cached": 0.20 },
+    "gpt-5.6-luna": { "prompt": 0.20, "completion": 1.20, "cached": 0.02 },
+    "gpt-5.3-codex": { "prompt": 1.75, "completion": 14.00, "cached": 0.175 },
+    "kimi-k2.7-code": { "prompt": 0.95, "completion": 4.00, "cached": 0.19 },
+    "kimi-k2.7-code-highspeed": { "prompt": 1.90, "completion": 8.00, "cached": 0.38 },
+    "kimi-k3": { "prompt": 3.00, "completion": 15.00, "cached": 0.30 },
+    "deepseek-v4-flash": { "prompt": 0.14, "completion": 0.28, "cached": 0.0028 },
+    "deepseek-v4-pro": { "prompt": 0.435, "completion": 0.87, "cached": 0.003625 }
+  },
+  "channels": [
+    {
+      "name": "codex-main",
+      "multiplier": 0.2,
+      "models": {
+        "gpt-5.6-sol": "gpt-5.6-sol",
+        "gpt-5.6-terra": "gpt-5.6-terra",
+        "gpt-5.6-luna": "gpt-5.6-luna",
+        "gpt-5.3-codex-spark": "gpt-5.3-codex"
+      }
+    },
+    {
+      "name": "kimi",
+      "multiplier": 0.2,
+      "models": {
+        "kimi-for-coding": "kimi-k2.7-code",
+        "kimi-for-coding-highspeed": "kimi-k2.7-code-highspeed",
+        "k3": "kimi-k3",
+        "k3-256k": "kimi-k3"
+      }
+    },
+    {
+      "name": "deepseek",
+      "multiplier": 1.0,
+      "models": {
+        "deepseek-v4-flash": "deepseek-v4-flash",
+        "deepseek-v4-pro": "deepseek-v4-pro"
+      }
+    }
+  ]
+}

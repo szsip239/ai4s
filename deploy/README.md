@@ -21,6 +21,8 @@ cp .env.example .env       # 填 DB_PASSWORD 与管理面账号；OAuth 凭据�
 docker compose up -d
 ./scripts/bootstrap.sh     # 初始化管理账号 + 渠道 + 测试 API key（幂等）
 ./scripts/smoke-test.sh    # curl 经 agentgateway 完成一次 chat completion
+python3 scripts/apply-pricing.py  # credit 价格表落库（pricing.json：官方原价×渠道倍率，issue #18）
+./scripts/assign-default-project.sh  # JIT 新员工补进 Default 项目（幂等，可加 cron）
 ```
 
 - 管理面：http://localhost:8090 ，用 `.env` 中的 `AXONHUB_ADMIN_EMAIL` / `AXONHUB_ADMIN_PASSWORD` 登录（本地账号；阶段 1 切 飞书 OAuth→Casdoor→OIDC）。

@@ -176,17 +176,28 @@ def check_cycle(ax: Axonhub, state: dict) -> dict:
                 continue
             for u in usages:
                 q, g = u.get("quota") or {}, u.get("usage") or {}
-                hits = []
-                if q.get("requests") and (g.get("requestCount") or 0) >= q["requests"]:
-                    hits.append(f"请求数 {g.get('requestCount')}/{q['requests']}")
-                if q.get("totalTokens") and (g.get("totalTokens") or 0) >= q["totalTokens"]:
-                    hits.append(f"token {g.get('totalTokens')}/{q['totalTokens']}")
-                if q.get("cost") is not None and float(g.get("totalCost") or 0) >= float(q["cost"]):
-                    hits.append(f"费用 {g.get('totalCost')}/{q['cost']}")
+                # 各维度用量比率：requests / totalTokens / cost
+                dims = []
+                if q.get("requests"):
+                    dims.append(("请求数", (g.get("requestCount") or 0) / q["requests"], f"{g.get('requestCount')}/{q['requests']}"))
+                if q.get("totalTokens"):
+                    dims.append(("token", (g.get("totalTokens") or 0) / q["totalTokens"], f"{g.get('totalTokens')}/{q['totalTokens']}"))
+                if q.get("cost") is not None and float(q["cost"]):
+                    dims.append(("credit", float(g.get("totalCost") or 0) / float(q["cost"]), f"{g.get('totalCost')}/{q['cost']}"))
+                over = [d for d in dims if d[1] >= 1.0]
+                near = [d for d in dims if 0.8 <= d[1] < 1.0]
+                hits = [f"{name} {txt}" for name, _, txt in over]
                 findings[f"quota:apikey:{key['id']}:{u.get('profileName')}"] = (
-                    bool(hits),
+                    bool(over),
                     f"[ai4s 告警] 员工 API Key 额度耗尽\nKey: {key['name']}（profile {u.get('profileName')}）\n用量: {'; '.join(hits)}\n时间: {now_str()}",
                     f"[ai4s 恢复] API Key 额度已重置: {key['name']}（profile {u.get('profileName')}）",
+                )
+                # 80% 预警（issue #18）：赶在 403 之前提醒走提额审批
+                near_txt = "; ".join(f"{name} {txt}（{r:.0%}）" for name, r, txt in near)
+                findings[f"quota80:apikey:{key['id']}:{u.get('profileName')}"] = (
+                    bool(near) and not over,
+                    f"[ai4s 预警] 员工 API Key 额度将尽（≥80%）\nKey: {key['name']}（profile {u.get('profileName')}）\n用量: {near_txt}\n请在飞书提交提额审批，避免被 403 拒载\n时间: {now_str()}",
+                    f"[ai4s 恢复] API Key 额度预警解除（新周期/提额生效）: {key['name']}（profile {u.get('profileName')}）",
                 )
     except Exception as e:
         print(f"[alert-poller] API key 额度查询失败: {type(e).__name__}", flush=True)
