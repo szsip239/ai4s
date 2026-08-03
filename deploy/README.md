@@ -9,6 +9,9 @@
 | agentgateway | `cr.agentgateway.dev/agentgateway:v1.4.1`（digest `sha256:efd79355…`） | 最新稳定版（2026-07-29 发布） |
 | axonhub | `looplj/axonhub:v1.0.0-beta6`（digest `sha256:d41f3ca1…`） | pin 定 beta，不跟 latest/unstable |
 | PostgreSQL | `postgres:16-alpine`（digest `sha256:57c72fd2…`，实为 16.14） | axonhub 官方 compose 同款主版本 |
+| casdoor | `casbin/casdoor:3.133.0` | SSO 枢纽（issue #14）：飞书 OAuth → 标准 OIDC |
+| shim | 本地构建 `../shim`（python:3.12-alpine） | DLP 词表/PII 适配 + 飞书告警适配 `/feishu-alert`（issue #17） |
+| alert-poller | 本地构建 `../alert-poller`（python:3.12-alpine） | 告警巡检（issue #17）：DLP fail-open 探活 + 上游/员工额度轮询，30s 间隔 |
 | mock-upstream（可选） | `python:3.12-alpine` | 仅无 OAuth 凭据时验证链路用 |
 
 ## 快速开始

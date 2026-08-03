@@ -12,8 +12,12 @@
   - CJK 词：shim 直配兜底（Presidio deny-list 依赖 NLP 分词，中文不可靠）
 依赖仅标准库，镜像 python:3.12-alpine。
 """
+import base64
+import hashlib
+import hmac
 import json
 import os
+import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -21,6 +25,57 @@ PRESIDIO_URL = os.environ.get("PRESIDIO_URL", "http://presidio:3000")
 WORDLIST_PATH = os.environ.get("WORDLIST_PATH", "/dlp/confidential-terms.json")
 PII_RECOGNIZERS_PATH = os.environ.get("PII_RECOGNIZERS_PATH", "/recognizers/pii-zh.json")
 MAX_BODY = 256 * 1024  # 契约：请求体超限截断送检
+
+# 飞书告警适配（issue #17）：axonhub webhook → 群机器人（签名校验 + 有限重试，补 axonhub fire-and-forget 无重试）
+FEISHU_WEBHOOK = os.environ.get("FEISHU_ALERT_WEBHOOK", "")
+FEISHU_SECRET = os.environ.get("FEISHU_ALERT_SECRET", "")
+ALERT_RETRIES = 2
+
+
+def feishu_sign(ts: str, secret: str) -> str:
+    digest = hmac.new(f"{ts}\n{secret}".encode(), b"", hashlib.sha256).digest()
+    return base64.b64encode(digest).decode()
+
+
+def send_feishu_text(text: str) -> bool:
+    """签名发送飞书群机器人文本；成功返回 True。secret/URL 不进日志。"""
+    if not FEISHU_WEBHOOK:
+        return False
+    for attempt in range(ALERT_RETRIES + 1):
+        try:
+            body = {"msg_type": "text", "content": {"text": text}}
+            if FEISHU_SECRET:
+                ts = str(int(time.time()))
+                body["timestamp"] = ts
+                body["sign"] = feishu_sign(ts, FEISHU_SECRET)
+            req = urllib.request.Request(
+                FEISHU_WEBHOOK,
+                data=json.dumps(body, ensure_ascii=False).encode(),
+                headers={"Content-Type": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=5) as r:
+                resp = json.load(r)
+            if resp.get("code") == 0 or resp.get("StatusCode") == 0:
+                return True
+        except Exception:
+            pass
+        if attempt < ALERT_RETRIES:
+            time.sleep(1)
+    return False
+
+
+def format_axonhub_alert(p: dict) -> str:
+    """axonhub webhook payload（channel.auto_disabled）→ 飞书文本。"""
+    ch = p.get("channel") or {}
+    tr = p.get("trigger") or {}
+    return (
+        f"[ai4s 告警] 渠道被自动禁用\n"
+        f"事件: {p.get('event', '-')}\n"
+        f"渠道: {ch.get('name', '-')}（provider={ch.get('provider', '-')}）\n"
+        f"触发: 状态码 {tr.get('status_code', '-')} 连续 {tr.get('actual_count', '-')}/{tr.get('threshold', '-')} 次\n"
+        f"原因: {tr.get('reason', '-')}\n"
+        f"时间: {p.get('occurred_at', '-')}"
+    )
 
 
 def load_pii_recognizers() -> list:
@@ -188,6 +243,17 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200 if self.path == "/healthz" else 404, {"ok": self.path == "/healthz"})
 
     def do_POST(self):
+        if self.path == "/feishu-alert":
+            # axonhub webhook → 飞书适配（issue #17）
+            try:
+                length = min(int(self.headers.get("Content-Length") or 0), MAX_BODY)
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                ok = send_feishu_text(format_axonhub_alert(payload))
+            except Exception as e:
+                self._json(500, {"error": str(e)[:200]})
+                return
+            self._json(200 if ok else 502, {"ok": ok})
+            return
         if self.path != "/request":
             self._json(404, {})
             return

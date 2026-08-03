@@ -123,6 +123,9 @@ services:
     environment:
       PRESIDIO_URL: http://presidio:3000
       WORDLIST_PATH: /dlp/confidential-terms.json
+      # issue #17：axonhub webhook → 飞书适配器（签名+重试）；值在 .env，不落库
+      FEISHU_ALERT_WEBHOOK: ${FEISHU_ALERT_WEBHOOK:-}
+      FEISHU_ALERT_SECRET: ${FEISHU_ALERT_SECRET:-}
     volumes:
       - ./dlp:/dlp:ro # 词表挂载，修改即热更新（shim 每请求重读）
       - ../recognizers:/recognizers:ro # PII recognizer 定义（issue #15），热更新
@@ -130,6 +133,28 @@ services:
       - ai4s
     depends_on:
       - presidio
+    restart: unless-stopped
+
+  # 告警巡检（issue #17）：axonhub 无事件源的告警靠轮询补齐——DLP fail-open 探活 + 上游/员工额度
+  alert-poller:
+    build: ../alert-poller
+    container_name: ai4s-alert-poller
+    environment:
+      AXONHUB_BASE: http://axonhub:8090
+      AXONHUB_ADMIN_EMAIL: ${AXONHUB_ADMIN_EMAIL:?AXONHUB_ADMIN_EMAIL is required}
+      AXONHUB_ADMIN_PASSWORD: ${AXONHUB_ADMIN_PASSWORD:?AXONHUB_ADMIN_PASSWORD is required}
+      FEISHU_ALERT_WEBHOOK: ${FEISHU_ALERT_WEBHOOK:-}
+      FEISHU_ALERT_SECRET: ${FEISHU_ALERT_SECRET:-}
+      SHIM_URL: http://shim:8080
+      PRESIDIO_URL: http://presidio:3000
+      POLL_INTERVAL: "30"
+    volumes:
+      - ./.local/alert-state:/state # 告警防抖状态（gitignored）
+    networks:
+      - ai4s
+    depends_on:
+      - axonhub
+      - shim
     restart: unless-stopped
 
   # 占位/mock 上游：仅在拿不到 OAuth 订阅凭据时验证链路可达用。
