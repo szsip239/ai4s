@@ -169,6 +169,21 @@ services:
       - shim
     restart: unless-stopped
 
+  # GLiNER 商密 NER 实测（issue #26）：profile=gliner，不进默认栈（评估完决定去留）
+  gliner:
+    build: ../gliner
+    profiles: ["gliner"]
+    container_name: ai4s-gliner
+    environment:
+      HF_HUB_OFFLINE: "1"
+    ports:
+      - "127.0.0.1:18090:8090" # 仅本地：评估脚本直测
+    volumes:
+      - ./.local/gliner-onnx:/models/gliner-onnx:ro # 宿主机预下载的 ONNX 模型（issue #26）
+    networks:
+      - ai4s
+    restart: unless-stopped
+
   # 占位/mock 上游：仅在拿不到 OAuth 订阅凭据时验证链路可达用。
   # 不参与默认启动；需要时 `docker compose --profile mock up -d`。
   mock-upstream:
