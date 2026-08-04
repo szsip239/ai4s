@@ -10,7 +10,10 @@
     "kimi-k2.7-code-highspeed": { "prompt": 1.90, "completion": 8.00, "cached": 0.38 },
     "kimi-k3": { "prompt": 3.00, "completion": 15.00, "cached": 0.30 },
     "deepseek-v4-flash": { "prompt": 0.14, "completion": 0.28, "cached": 0.0028 },
-    "deepseek-v4-pro": { "prompt": 0.435, "completion": 0.87, "cached": 0.003625 }
+    "deepseek-v4-pro": { "prompt": 0.435, "completion": 0.87, "cached": 0.003625 },
+    "glm-5.1": { "prompt": 1.40, "completion": 4.40, "cached": 0.26 },
+    "glm-5.2": { "prompt": 1.40, "completion": 4.40, "cached": 0.26 },
+    "qwen3.6-27b": { "prompt": 0.20, "completion": 1.50, "cached": 0.04 }
   },
   "channels": [
     {
@@ -39,6 +42,17 @@
       "models": {
         "deepseek-v4-flash": "deepseek-v4-flash",
         "deepseek-v4-pro": "deepseek-v4-pro"
+      }
+    },
+    {
+      "name": "tokenhub",
+      "multiplier": 1.0,
+      "models": {
+        "glm-5.1": "glm-5.1",
+        "glm-5.2": "glm-5.2",
+        "deepseek-v4-flash": "deepseek-v4-flash",
+        "kimi-k3": "kimi-k3",
+        "qwen3.6-27b": "qwen3.6-27b"
       }
     }
   ]
