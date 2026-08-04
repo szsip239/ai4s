@@ -12,6 +12,7 @@ import { PermissionGuard } from '@/components/permission-guard';
 import { checkProviderQuotas } from '@/features/system/data/quotas';
 import { useBrandSettings } from '@/features/system/data/system';
 import { ProjectSwitcher } from './project-switcher';
+import { Ai4sUserMenu } from '@/ai4s/components/Ai4sUserMenu';
 import { toast } from 'sonner';
 
 export function AppHeader() {
@@ -98,6 +99,9 @@ export function AppHeader() {
               <ThemeSwitch />
             </>
           )}
+
+          {/* 用户菜单（账户/退出登录）——C 结构移除侧边栏后 NavUser 失挂载的补位（2026-08-03 用户反馈） */}
+          <Ai4sUserMenu />
         </div>
       </div>
     </header>

@@ -16,3 +16,4 @@
 | `src/features/settings/appearance/appearance-form.tsx` | colorScheme 字段 | 移除 colorScheme 选择器（9 个上游 scheme 与 ai4s 定稿主题冲突；tokens.css 已全类覆盖，明暗设置与显示强制一致） | 配色设置与显示不符 bug（2026-08-02 用户反馈） | 2026-08-02 |
 | `src/routes/_authenticated/index.tsx` | import 与组件 | **恢复上游原生 dashboard**（M4 换皮撤销；信息全量，C×W 主题经 token 层生效） | 用户反馈：信息不应缩减（2026-08-02） | 2026-08-02 |
 | `src/routes/_authenticated/project/requests/index.tsx` + `$requestId.tsx` | import 与组件 | **恢复上游原生审计日志与详情**（M7/M8 撤销；用户拍板"审计日志不应该拿走"） | 同上 | 2026-08-02 |
+| `src/components/layout/app-header.tsx` | 右侧控件区末尾 + import 1 行 | 挂载 `Ai4sUserMenu`（顶栏用户菜单：账户信息/个人资料/退出登录） | C 结构移除侧边栏后上游 NavUser 失挂载，用户无退出入口（2026-08-03 用户反馈）；组件本体在 `src/ai4s/components/` | 2026-08-03 |
