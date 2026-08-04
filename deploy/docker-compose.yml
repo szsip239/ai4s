@@ -131,7 +131,7 @@ services:
       # issue #21 语义层 shadow：judge 经 axonhub 直连调 deepseek-flash（测试期，合成样本）；
       # 真实流量启用前必须换内网模型。JUDGE_ENABLED=0 即关闭
       JUDGE_ENABLED: ${JUDGE_ENABLED:-0}
-      JUDGE_BASE_URL: http://axonhub:8090/v1
+      JUDGE_BASE_URL: ${JUDGE_BASE_URL:-http://axonhub:8090/v1}
       JUDGE_API_KEY: ${JUDGE_API_KEY:-}
       JUDGE_MODEL: ${JUDGE_MODEL:-deepseek-v4-flash}
     volumes:
