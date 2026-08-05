@@ -139,6 +139,10 @@ services:
       # issue #29 EDM 文档指纹（PoC）
       EDM_ENABLED: ${EDM_ENABLED:-0}
       EDM_MIN_HITS: ${EDM_MIN_HITS:-2}
+      # issue #30 PromptGuard 2 注入检测 shadow（检出记日志不阻断）
+      PG_ENABLED: ${PG_ENABLED:-0}
+      PG_URL: http://promptguard:8092/guard
+      PG_THRESHOLD: ${PG_THRESHOLD:-0.7}
     volumes:
       - ./dlp:/dlp:ro # 词表挂载，修改即热更新（shim 每请求重读）
       - ../recognizers:/recognizers:ro # PII recognizer 定义（issue #15），热更新
@@ -201,6 +205,20 @@ services:
       - "127.0.0.1:18091:8091" # 仅本地：评估脚本直测
     volumes:
       - ./.local/zeroshot-model:/models/zeroshot:ro
+    networks:
+      - ai4s
+    restart: unless-stopped
+
+  # PromptGuard 2 注入检测实测（issue #30）：profile=promptguard，不进默认栈
+  promptguard:
+    build: ../promptguard
+    container_name: ai4s-promptguard
+    environment:
+      HF_HUB_OFFLINE: "1"
+    ports:
+      - "127.0.0.1:18092:8092" # 仅本地：评估脚本直测
+    volumes:
+      - ./.local/promptguard-model:/models/promptguard:ro
     networks:
       - ai4s
     restart: unless-stopped

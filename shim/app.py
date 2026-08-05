@@ -255,6 +255,26 @@ def is_simple_token(s: str) -> bool:
     return s.isascii() and s.replace("-", "").replace("_", "").isalnum()
 
 
+# PromptGuard 2 注入检测 shadow（issue #30）：检出记日志不阻断，fail-open。
+PG_ENABLED = os.environ.get("PG_ENABLED", "") == "1"
+PG_URL = os.environ.get("PG_URL", "http://promptguard:8092/guard")
+PG_THRESHOLD = float(os.environ.get("PG_THRESHOLD", "0.7"))
+
+
+def pg_guard(text: str):
+    """PromptGuard 2 MALICIOUS 概率；异常返回 None（fail-open）。"""
+    if not PG_ENABLED or not text:
+        return None
+    body = json.dumps({"text": text[:4000]}).encode()
+    req = urllib.request.Request(PG_URL, data=body, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=3) as r:
+            d = json.load(r)
+        return float(d.get("malicious", 0))
+    except Exception:
+        return None
+
+
 # ---- 归一化前置（issue #22）----
 # 只用于检测：全角→半角、词表字符繁简映射、空白/横线/下划线分隔容忍；
 # mask 经 index map 映射回原文位置，原文结构不丢。纯 stdlib，无新故障面。
@@ -610,6 +630,10 @@ class Handler(BaseHTTPRequestHandler):
             v = judge_text(text)
             if v is not None:
                 print(f"[semantic.shadow] confidential={v['confidential']} entities={','.join(v['entities']) or '-'} confidence={v['confidence']:.2f}", flush=True)
+        # 注入检测 shadow（issue #30）：PromptGuard 2 评分 ≥阈值记日志，不阻断
+        score = pg_guard(text)
+        if score is not None and score >= PG_THRESHOLD:
+            print(f"[injection.shadow] malicious={score:.3f} >= {PG_THRESHOLD}", flush=True)
 
 
 if __name__ == "__main__":
