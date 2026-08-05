@@ -83,6 +83,43 @@ def ensure_echo_channel(token):
     return ch["id"]
 
 
+def run_edm_section(api_key):
+    """EDM 自包含段（issue #29）：临时合成文档入库→整篇粘贴应 451→负例应放行→清理。"""
+    import subprocess
+    print("\n==> EDM 段（临时语料自包含）")
+    doc_path = os.path.join(DEPLOY_DIR, "edm", "corpus", "__regression_tmp__.txt")
+    os.makedirs(os.path.dirname(doc_path), exist_ok=True)
+    doc = ("内部结算备忘录 ZX-77：codex 渠道结算比例为 0.831，tokenhub 渠道为 0.917，"
+           "尾差计入损益调整科目 6650；月度对账报告由计费引擎自动生成并经合规复核。") * 6
+    open(doc_path, "w", encoding="utf-8").write(doc)
+    subprocess.run(["python3", "scripts/edm-add.py", "edm/corpus/__regression_tmp__.txt", "--name", "__regression_tmp__"],
+                   cwd=DEPLOY_DIR, check=True, capture_output=True)
+    results = []
+    try:
+        for attempt in range(2):
+            status, _ = send("把这份备忘录发给模型总结：\n" + doc, api_key)
+            got = classify(status, _, None)
+            if got == "reject":
+                break
+            time.sleep(1)
+        ok = got == "reject"
+        results.append(("EDM: 整篇粘贴应 451", ok, got))
+        status, _ = send("帮我写一份对账流程优化建议", api_key)
+        got = classify(status, _, None)
+        ok = got == "pass"
+        results.append(("EDM: 负例应放行", ok, got))
+    finally:
+        subprocess.run(["python3", "scripts/edm-add.py", "edm/corpus/__regression_tmp__.txt", "--name", "__regression_tmp__", "--remove"],
+                       cwd=DEPLOY_DIR, check=False, capture_output=True)
+        try:
+            os.remove(doc_path)
+        except OSError:
+            pass
+    for name, ok, got in results:
+        print(f"[{'OK ' if ok else 'FAIL'}] {name}（got={got}）")
+    return [(name, ok, got) for name, ok, got in results]
+
+
 def send(content, api_key):
     body = json.dumps({"model": ECHO_MODEL, "messages": [{"role": "user", "content": content}]}).encode()
     req = urllib.request.Request(GATEWAY + "/v1/chat/completions", data=body,
@@ -157,7 +194,12 @@ def main():
         line += f" | gap {s['gap']} | fail {s['fail']}"
         print(line)
 
+    edm_fails = run_edm_section(api_key)
+
     fails = [r for r in results if r["fail"]]
+    for name, ok, got in edm_fails:
+        if not ok:
+            fails.append({"name": name, "expect": "reject", "got": got})
     print(f"\n总计 {len(results)} 样本：通过 {sum(1 for r in results if r['ok'])}，文档化 gap {sum(1 for r in results if not r['ok'] and not r['fail'])}，回归失败 {len(fails)}")
     if fails:
         print("失败明细：")

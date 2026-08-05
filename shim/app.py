@@ -41,9 +41,72 @@ JUDGE_API_KEY = os.environ.get("JUDGE_API_KEY", "")
 JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "deepseek-v4-flash")
 JUDGE_TIMEOUT = int(os.environ.get("JUDGE_TIMEOUT", "8"))
 
+# EDM 文档指纹（issue #29，L3 层 PoC）：归一化 shingle + SHA-256，命中≥阈值即 451。
+# 语料/指纹库 gitignored；指纹是单向哈希，不存原文。
+EDM_ENABLED = os.environ.get("EDM_ENABLED", "") == "1"
+EDM_FP_PATH = os.environ.get("EDM_FP_PATH", "/edm/fingerprints.json")
+EDM_MIN_HITS = int(os.environ.get("EDM_MIN_HITS", "2"))
+_EDM_WINDOW = 50
+_EDM_STEP = 1
+
+
+def load_edm_fps():
+    """指纹库（每请求重读，热更新）。读不到 → 两个空集（fail-open 语义）。
+    返回 (shingle哈希集, 行级哈希集)。"""
+    shingles_set, lines_set = set(), set()
+    try:
+        d = json.load(open(EDM_FP_PATH, encoding="utf-8"))
+        for v in (d.get("docs") or {}).values():
+            if isinstance(v, list):
+                shingles_set.update(v)
+            else:
+                shingles_set.update(v.get("shingles") or [])
+                lines_set.update(v.get("lines") or [])
+    except Exception:
+        pass
+    return shingles_set, lines_set
+
+
+def edm_shingles(text: str):
+    t = " ".join(text.lower().split())
+    if len(t) < _EDM_WINDOW:
+        return [t] if t else []
+    return [t[i:i + _EDM_WINDOW] for i in range(0, len(t) - _EDM_WINDOW + 1, _EDM_STEP)]
+
+
+_EDM_LINE_MIN = 12
+
+
+def edm_hit_count(text: str, fps) -> int:
+    """双通道命中数（issue #29）：char-shingle（整段/连续片段）+ 行级（抗乱序）。任一通道达阈即命中。"""
+    shingle_fps, line_fps = fps
+    if not text:
+        return 0
+    import hashlib
+    hits = 0
+    if shingle_fps:
+        sh = {hashlib.sha256(s.encode()).hexdigest() for s in edm_shingles(text)}
+        hits = max(hits, len(sh & shingle_fps))
+    if line_fps:
+        lh = set()
+        for line in text.splitlines():
+            n = " ".join(line.lower().split())
+            if len(n) >= _EDM_LINE_MIN:
+                lh.add(hashlib.sha256(n.encode()).hexdigest())
+        hits = max(hits, len(lh & line_fps))
+    return hits
+
 JUDGE_SYSTEM = """你是企业数据防泄漏（DLP）语义判定器。判定用户文本是否在语义上涉及公司商密：内部项目代号、未发布产品名、内部系统/域名。注意识别谐音、拼音、拆字、繁体、暗示性描述等变形指代。普通业务话术、与词表无关的同名事物（如旅游景点）不算涉密。
 已知商密词表（精确词由规则层拦截，你负责变形与语义指代）：{terms}
 只输出 JSON：{{"confidential": true|false, "entities": ["类型"], "confidence": 0.0~1.0}}"""
+
+# few-shot 示例（issue #24：1.5b 小模型零样本判别力不足，few-shot 补救实测）
+JUDGE_FEWSHOT = """示例：
+文本："凤皇计划的排期发我" → {{"confidential": true, "entities": ["项目代号"], "confidence": 0.9}}（谐音变形指代代号）
+文本："周末去凤凰古城玩，求攻略" → {{"confidential": false, "entities": [], "confidence": 0.95}}（旅游景点，非公司项目）
+文本："蓝色大鱼那套系统什么时候上" → {{"confidential": true, "entities": ["内部系统"], "confidence": 0.85}}（描述性指代）
+文本："蓝鲸是地球上最大的动物" → {{"confidential": false, "entities": [], "confidence": 0.95}}（动物科普）
+文本："帮我写本周工作总结" → {{"confidential": false, "entities": [], "confidence": 1.0}}（普通业务）"""
 
 
 def judge_text(text: str):
@@ -55,6 +118,7 @@ def judge_text(text: str):
         "model": JUDGE_MODEL,
         "messages": [
             {"role": "system", "content": JUDGE_SYSTEM.format(terms=terms)},
+            {"role": "user", "content": JUDGE_FEWSHOT},
             {"role": "user", "content": text[:4000]},
         ],
         "max_tokens": 300,
@@ -488,6 +552,9 @@ class Handler(BaseHTTPRequestHandler):
             # 归一化预检（issue #22）：全角/繁简/分隔归一后查 secrets + 词表
             norm, _ = normalize_hard(text)
             pre_rules = norm_secret_hits(norm) + [t["rule_id"] for t in norm_term_hits(norm.lower(), terms)] if text else []
+            # EDM 文档指纹（issue #29，L3）：整段粘贴商密文档 → 命中阈值即拦
+            if EDM_ENABLED and not pre_rules and edm_hit_count(text, load_edm_fps()) >= EDM_MIN_HITS:
+                pre_rules = ["edm.doc_match"]
             hits = [] if pre_rules else (analyze(text, terms) if text else [])
         except Exception as e:
             # shim 自身异常 → 500，由 agentgateway failureMode=failOpen 放行（契约分级）

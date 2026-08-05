@@ -24,6 +24,7 @@ docker compose up -d
 python3 scripts/apply-pricing.py  # credit 价格表落库（pricing.json：官方原价×渠道倍率，issue #18）
 ./scripts/assign-default-project.sh  # JIT 新员工补进 Default 项目（幂等，可加 cron）
 python3 scripts/dlp-regression.py    # DLP 对抗回归（issue #20）：改词表/规则后必跑
+python3 scripts/edm-add.py <文件>    # EDM 商密文档指纹入库（issue #29，指纹库 gitignored）
 ```
 
 - 管理面：http://localhost:8090 ，用 `.env` 中的 `AXONHUB_ADMIN_EMAIL` / `AXONHUB_ADMIN_PASSWORD` 登录（本地账号；阶段 1 切 飞书 OAuth→Casdoor→OIDC）。

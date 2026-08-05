@@ -3,3 +3,5 @@
 backups/
 axonhub/config.yml
 casdoor/app.conf
+edm/fingerprints.json
+edm/corpus/
