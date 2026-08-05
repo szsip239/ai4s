@@ -184,6 +184,21 @@ services:
       - ai4s
     restart: unless-stopped
 
+  # zero-shot 主题分类实测（issue #27）：profile=zeroshot，不进默认栈
+  zeroshot:
+    build: ../zeroshot
+    profiles: ["zeroshot"]
+    container_name: ai4s-zeroshot
+    environment:
+      HF_HUB_OFFLINE: "1"
+    ports:
+      - "127.0.0.1:18091:8091" # 仅本地：评估脚本直测
+    volumes:
+      - ./.local/zeroshot-model:/models/zeroshot:ro
+    networks:
+      - ai4s
+    restart: unless-stopped
+
   # 占位/mock 上游：仅在拿不到 OAuth 订阅凭据时验证链路可达用。
   # 不参与默认启动；需要时 `docker compose --profile mock up -d`。
   mock-upstream:
