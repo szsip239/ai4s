@@ -8,15 +8,11 @@
 config:
   # readiness 探针服务，健康判定：GET /healthz/ready
   readinessAddr: 0.0.0.0:15001
-gateways:
-  default:
-    port: 3000
-    protocol: HTTP
-
 routes:
   # /v1：LLM 流量。ai policy 将该路由标记为 LLM 处理域，挂 Secrets promptGuard。
   # 阻断语义：reject 返回 451 + 规则 ID，且不触发渠道切换（agentgateway 层直接终答，请求不进入 axonhub）。
-  - matches:
+  - gateways: [default, mtls]
+    matches:
       - path:
           pathPrefix: /v1
     policies:
@@ -121,7 +117,8 @@ routes:
           hostOverride: axonhub:8090
 
   # /admin、/oidc、/oauth：axonhub 管理 API、SSO/OIDC 回调、OAuth 流程（契约 docs/contracts/ingress-proxy.md）
-  - matches:
+  - gateways: [default, mtls]
+    matches:
       - path:
           pathPrefix: /admin
     backends:
@@ -130,12 +127,14 @@ routes:
   # 例外：/oauth/oidc/idp-callback 是前端 SPA 页面路由（web/dist 内），不是后端 API。
   # 若落到 axonhub 会拿到其内嵌旧版 index.html（引用不存在的旧 bundle，页面空白）。
   # exact 精确匹配优先于 /oauth 前缀匹配。
-  - matches:
+  - gateways: [default, mtls]
+    matches:
       - path:
           exact: /oauth/oidc/idp-callback
     backends:
       - host: web-static:80
 
+  - gateways: [default, mtls]
   - matches:
       - path:
           pathPrefix: /oauth
@@ -143,5 +142,21 @@ routes:
       - host: axonhub:8090
 
   # catch-all：前端静态（web/dist，nginx SPA fallback）
+  - gateways: [default, mtls]
   - backends:
       - host: web-static:80
+
+gateways:
+  default:
+    port: 3000
+    protocol: HTTP
+  # mTLS 设备身份（issue #28）：客户端证书由 deploy/.local/mtls/ca.crt 校验。
+  # 与 :3000 共用全部路由（下方 YAML 锚点 &shared_routes，防双份漂移）；生产 HTTPS 终结形态的前身
+  mtls:
+    port: 3443
+    protocol: HTTPS
+    tls:
+      cert: /etc/agentgateway/mtls/server.crt
+      key: /etc/agentgateway/mtls/server.key
+      root: /etc/agentgateway/mtls/ca.crt
+

@@ -67,8 +67,10 @@ services:
     command: ["-f", "/etc/agentgateway/config.yaml"]
     volumes:
       - ./agentgateway/config.yaml:/etc/agentgateway/config.yaml:ro
+      - ./.local/mtls:/etc/agentgateway/mtls:ro # mTLS 证书（issue #28，gitignored）
     ports:
       - "127.0.0.1:3000:3000" # 员工流量入口（唯一对员工的端口）
+      - "127.0.0.1:3443:3443" # mTLS 设备身份入口（issue #28，客户端证书校验）
       - "127.0.0.1:15001:15001" # readiness 探针（/healthz/ready）
     networks:
       - ai4s
