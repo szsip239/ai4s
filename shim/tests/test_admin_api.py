@@ -885,5 +885,235 @@ class FormatRulesLoaderTest(unittest.TestCase):
         self.assertEqual(shim_app.norm_secret_hits(norm2, [{**gw_only[0], "shim_patterns": []}]), [])
 
 
+# EDM fixture（issue #34）：三条目覆盖三种形态——带 added_at、无 added_at（旧文档）、旧格式纯 shingle 数组
+_EDM_FP_FIXTURE = {
+    "version": 1,
+    "docs": {
+        "alpha": {"shingles": ["aa", "bb"], "lines": ["cc"], "added_at": "2026-08-01T00:00:00Z"},
+        "beta": {"shingles": ["dd"], "lines": []},
+        "legacy": ["ee", "ff"],
+    },
+    "updated_at": "2026-08-01T00:00:00Z",
+}
+
+
+class AdminEdmCorpusTest(unittest.TestCase):
+    """EDM 语料管理（issue #34）：corpus CRUD + 指纹库维护。
+    fixture：每用例临时 fingerprints.json / corpus 目录，覆写 admin_api 模块级路径；不动真实库。"""
+
+    def setUp(self):
+        _FAKE_STATE["mode"] = "ok"
+        _FAKE_STATE["tokens"] = {
+            "reader-token": {"id": "42", "isOwner": False, "scopes": ["read_channels"]},
+            "writer-token": {"id": "7", "isOwner": False, "scopes": ["read_channels", "write_channels"]},
+        }
+        self._tmp = tempfile.TemporaryDirectory()
+        d = self._tmp.name
+        self.fp_path = os.path.join(d, "fingerprints.json")
+        self.corpus_dir = os.path.join(d, "corpus")
+        os.makedirs(self.corpus_dir)
+        with open(self.fp_path, "w", encoding="utf-8") as f:
+            json.dump(_EDM_FP_FIXTURE, f, ensure_ascii=False)
+        self._saved = (admin_api.EDM_FP_PATH, admin_api.EDM_CORPUS_DIR)
+        admin_api.EDM_FP_PATH = self.fp_path
+        admin_api.EDM_CORPUS_DIR = self.corpus_dir
+
+    def tearDown(self):
+        admin_api.EDM_FP_PATH, admin_api.EDM_CORPUS_DIR = self._saved
+        self._tmp.cleanup()
+
+    def _read_fp(self):
+        with open(self.fp_path, encoding="utf-8") as f:
+            return json.load(f)
+
+    def test_get_corpus_list(self):
+        """GET /dlp-admin/edm/corpus（读级）→ 文档列表（名称/指纹数/入库时间；旧文档 added_at 为 null）。"""
+        status, body = _get("/dlp-admin/edm/corpus", token="reader-token")
+        self.assertEqual(status, 200)
+        by_name = {d["name"]: d for d in body}
+        self.assertEqual(set(by_name), {"alpha", "beta", "legacy"})
+        self.assertEqual(by_name["alpha"], {"name": "alpha", "shingle_count": 2, "line_count": 1,
+                                            "added_at": "2026-08-01T00:00:00Z"})
+        self.assertEqual(by_name["beta"]["shingle_count"], 1)
+        self.assertEqual(by_name["beta"]["line_count"], 0)
+        self.assertIsNone(by_name["beta"]["added_at"])  # 旧文档缺字段 → null
+        self.assertEqual(by_name["legacy"]["shingle_count"], 2)  # 旧格式纯数组兼容
+        self.assertEqual(by_name["legacy"]["line_count"], 0)
+
+    def test_post_corpus_invalid_400(self):
+        """POST 校验逐条 400（issue #34）：name 空/非法字符/超长/重复；text 空/过短（归一化 <12 字符）。"""
+        good = {"name": "newdoc", "text": "这是一段足够长的测试文档内容 abcdefghijklmnop"}
+        cases = {
+            "name 缺失": {"text": good["text"]},
+            "name 空": {**good, "name": ""},
+            "name 非法字符": {**good, "name": "a/b"},
+            "name 中文": {**good, "name": "采购协议"},
+            "name 超长": {**good, "name": "a" * 65},
+            "name 重复": {**good, "name": "alpha"},
+            "text 缺失": {"name": "newdoc"},
+            "text 空": {**good, "text": "   "},
+            "text 过短": {**good, "text": "short"},  # 归一化后 5 < 12，双通道均无有效指纹
+        }
+        for name, payload in cases.items():
+            with self.subTest(case=name):
+                status, body = _request("POST", "/dlp-admin/edm/corpus", token="writer-token", payload=payload)
+                self.assertEqual(status, 400)
+                self.assertTrue(body.get("error"))
+        # 非法写：指纹库与 corpus 目录均未动
+        self.assertEqual(self._read_fp(), _EDM_FP_FIXTURE)
+        self.assertEqual(os.listdir(self.corpus_dir), [])
+        # review #1：过短消息如实描述（行级通道无有效指纹 + 达不到命中阈值），不谎称"双通道均无"
+        status, body = _request("POST", "/dlp-admin/edm/corpus", token="writer-token",
+                                payload={"name": "shorty", "text": "short"})
+        self.assertEqual(status, 400)
+        self.assertIn("行级指纹", body.get("error", ""))
+        self.assertNotIn("双通道均无", body.get("error", ""))
+
+    def test_post_corpus_fingerprints_correct(self):
+        """POST 指纹入库正确性（issue #34，tautology 警戒）：期望值=独立手工算出的 hash 字面量，不经 edm_lib。
+        锚定归一化（大小写/空白折叠）、短文档单 shingle 分支、双通道、added_at 与 corpus 落盘。"""
+        # 独立手工计算（python3 -c 'import hashlib; ...' 算出后硬编码）：
+        h1 = "f39dac6cbaba535e2c207cd0cd8f154974223c848f727f98b3564cea569b41cf"  # sha256("abcdefghijklmnop")
+        h2 = "7efe4fb36a6f29488d7c1f3aad313ea73358776a5b626c4266d74aaa5add9c6b"  # sha256("abc def ghijklmnop")
+        status, body = _request("POST", "/dlp-admin/edm/corpus", token="writer-token",
+                                payload={"name": "doc1", "text": "abcdefghijklmnop"})
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["shingle_count"], 1)
+        self.assertEqual(body["line_count"], 1)
+        self.assertTrue(body["added_at"])
+        store = self._read_fp()
+        self.assertEqual(store["docs"]["doc1"]["shingles"], [h1])
+        self.assertEqual(store["docs"]["doc1"]["lines"], [h1])  # 短文档两通道同 hash
+        self.assertTrue(store["docs"]["doc1"]["added_at"])
+        with open(os.path.join(self.corpus_dir, "doc1.txt"), encoding="utf-8") as f:
+            self.assertEqual(f.read(), "abcdefghijklmnop")  # corpus 原文落盘
+        # 归一化锚：大小写折叠 + 连续空白折叠为单空格
+        status, _ = _request("POST", "/dlp-admin/edm/corpus", token="writer-token",
+                             payload={"name": "doc2", "text": "  ABC def  GHIjklmnop  "})
+        self.assertEqual(status, 200)
+        store = self._read_fp()
+        self.assertEqual(store["docs"]["doc2"]["shingles"], [h2])
+        self.assertEqual(store["docs"]["doc2"]["lines"], [h2])
+        # 其他文档条目未动
+        self.assertEqual(store["docs"]["alpha"], _EDM_FP_FIXTURE["docs"]["alpha"])
+
+    def test_delete_corpus_item(self):
+        """DELETE /dlp-admin/edm/corpus/<name>（issue #34）：删指纹条目 + 语料文件；
+        不存在 → 404；corpus 文件缺失容忍（指纹库为权威列表），其他条目不动。"""
+        with open(os.path.join(self.corpus_dir, "alpha.txt"), "w", encoding="utf-8") as f:
+            f.write("corpus 原文")
+        status, _ = _request("DELETE", "/dlp-admin/edm/corpus/alpha", token="writer-token")
+        self.assertEqual(status, 200)
+        store = self._read_fp()
+        self.assertNotIn("alpha", store["docs"])
+        self.assertIn("beta", store["docs"])  # 其他条目未动
+        self.assertFalse(os.path.exists(os.path.join(self.corpus_dir, "alpha.txt")))
+        # 再删 → 404
+        status, body = _request("DELETE", "/dlp-admin/edm/corpus/alpha", token="writer-token")
+        self.assertEqual(status, 404)
+        self.assertTrue(body.get("error"))
+        # beta 无 corpus 文件（缺失容忍）也删除成功
+        status, _ = _request("DELETE", "/dlp-admin/edm/corpus/beta", token="writer-token")
+        self.assertEqual(status, 200)
+        self.assertNotIn("beta", self._read_fp()["docs"])
+
+    def test_delete_corpus_invalid_name_400(self):
+        """DELETE name 正则校验（review #4 双保险）：非法字符 → 400（与 POST 同款），指纹库不动。"""
+        for bad in ("bad!name", "bad%20name", "a" * 65):
+            with self.subTest(name=bad):
+                status, body = _request("DELETE", f"/dlp-admin/edm/corpus/{bad}", token="writer-token")
+                self.assertEqual(status, 400)
+                self.assertTrue(body.get("error"))
+        self.assertEqual(self._read_fp(), _EDM_FP_FIXTURE)
+
+    def test_delete_corpus_fp_write_failure_500(self):
+        """DELETE 指纹库写失败（review #6）→ 干净 500（与 POST 对称），条目未删、corpus 文件未删。"""
+        with open(os.path.join(self.corpus_dir, "alpha.txt"), "w", encoding="utf-8") as f:
+            f.write("corpus 原文")
+        with mock.patch.object(admin_api, "write_json_atomic", side_effect=OSError("disk full")):
+            status, body = _request("DELETE", "/dlp-admin/edm/corpus/alpha", token="writer-token")
+        self.assertEqual(status, 500)
+        self.assertTrue(body.get("error"))
+        self.assertIn("alpha", self._read_fp()["docs"])  # 条目未删
+        self.assertTrue(os.path.exists(os.path.join(self.corpus_dir, "alpha.txt")))  # 文件未删
+
+    def test_edm_post_large_document_200(self):
+        """EDM corpus POST 体上限放宽 16MB（review #5）：~1.5MB 真实规模商密文档 → 200
+        （旧 1MB 上限会截断误杀：报 invalid JSON 而非真实原因）。"""
+        line = ("内部结算备忘录 ZX-77：codex 渠道结算比例为 0.831，tokenhub 渠道为 0.917，"
+                "尾差计入损益调整科目 6650；月度对账报告由计费引擎自动生成并经合规复核。\n")
+        text = line * 12000  # UTF-8 约 1.5MB
+        self.assertGreater(len(text.encode("utf-8")), 1024 * 1024)  # 超旧 1MB 上限
+        status, body = _request("POST", "/dlp-admin/edm/corpus", token="writer-token",
+                                payload={"name": "bigdoc", "text": text})
+        self.assertEqual(status, 200, body)
+        self.assertGreater(body["shingle_count"], 0)
+        status, _ = _request("DELETE", "/dlp-admin/edm/corpus/bigdoc", token="writer-token")  # 清理
+        self.assertEqual(status, 200)
+
+    def test_body_oversize_413(self):
+        """体超限统一 413（review #5）：超限如实报"超限"，不再截断后误报 invalid JSON。
+        EDM 上限 16MB；其余端点维持默认 1MB。"""
+        status, body = _request("POST", "/dlp-admin/edm/corpus", token="writer-token",
+                                payload={"name": "huge", "text": "x" * (16 * 1024 * 1024 + 1)})
+        self.assertEqual(status, 413)
+        self.assertIn("超限", body.get("error", ""))
+        status, body = _request("PUT", "/dlp-admin/wordlist", token="writer-token",
+                                payload={"version": 2, "terms": [{"value": "x" * (1024 * 1024 + 100), "rule_id": "r1"}]})
+        self.assertEqual(status, 413)
+        self.assertIn("超限", body.get("error", ""))
+
+
+class EdmLibParityTest(unittest.TestCase):
+    """edm_lib 收编等价裁判（issue #34）：入库与检测同法（契约铁律）。
+    现 fingerprints.json 对现 corpus 逐文件重算并集，须与磁盘条目一致（真实库只读，不写）。"""
+
+    def test_recompute_matches_disk_store(self):
+        import edm_lib
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        fp_path = os.path.join(repo_root, "deploy", "edm", "fingerprints.json")
+        corpus_dir = os.path.join(repo_root, "deploy", "edm", "corpus")
+        if not os.path.exists(fp_path):
+            self.skipTest("真实指纹库不存在")
+        with open(fp_path, encoding="utf-8") as f:
+            store = json.load(f)
+        # 语料侧：corpus/ 现存全部文档逐文件重算的分通道并集（过滤隐藏文件与原子写副产物）
+        hashes, lhashes = set(), set()
+        for fn in sorted(os.listdir(corpus_dir)):
+            if fn.startswith(".") or fn.endswith((".bak", ".tmp")):
+                continue
+            with open(os.path.join(corpus_dir, fn), encoding="utf-8", errors="ignore") as f:
+                fps = edm_lib.doc_fingerprints(f.read())
+            hashes |= set(fps["shingles"])
+            lhashes |= set(fps["lines"])
+        # 库侧：全部条目分通道并集（review #7：与条目数无关——单条目聚合库/多条目分篇/零篇均成立）
+        lib_shingles, lib_lines = set(), set()
+        for doc in (store.get("docs") or {}).values():
+            if isinstance(doc, list):  # 旧格式纯 shingle 数组
+                lib_shingles |= set(doc)
+            else:
+                lib_shingles |= set(doc.get("shingles") or [])
+                lib_lines |= set(doc.get("lines") or [])
+        self.assertEqual(sorted(hashes), sorted(lib_shingles))
+        self.assertEqual(sorted(lhashes), sorted(lib_lines))
+
+    def test_edm_lib_shingles_behavior_and_hit_count(self):
+        """edm_lib.shingles 行为锚（review #3：app 主路径直调 edm_lib，包装函数已删，改为直测算法本身）+
+        app 检测主路径 edm_hit_count 命中数与 edm_lib 直算一致。"""
+        import edm_lib
+        # shingles 算法锚：短文档整段单 shingle；空文本空；归一化折叠；窗口 50 步长 1（60 字符 → 11 窗）
+        self.assertEqual(edm_lib.shingles("abc"), ["abc"])
+        self.assertEqual(edm_lib.shingles("   "), [])
+        self.assertEqual(edm_lib.shingles("  AB  cd "), ["ab cd"])
+        self.assertEqual(edm_lib.shingles("x" * 60), ["x" * 50] * 11)
+        text = "  Mixed CASE 文本\nwith 多余   空白 and lines  \n短行\n" + "x" * 60
+        shingle_fps = {edm_lib.fp_of(s) for s in edm_lib.shingles(text)}
+        line_fps = edm_lib.line_hashes(text)
+        self.assertEqual(shim_app.edm_hit_count(text, (shingle_fps, line_fps)),
+                         max(len(shingle_fps), len(line_fps)))
+        self.assertEqual(shim_app.edm_hit_count(text, (set(), set())), 0)
+        self.assertEqual(shim_app.edm_hit_count("无关文本", (shingle_fps, line_fps)), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,63 +1,53 @@
 #!/usr/bin/env python3
-"""ai4s EDM 指纹入库（issue #29）：把商密文档转成 shingle SHA-256 指纹。
+"""ai4s EDM 指纹入库 CLI（issue #34 起为 admin API 薄壳；原直写文件逻辑已收编进 shim admin 平面）。
 
 用法：cd deploy && python3 scripts/edm-add.py <文件或目录> [--name 文档名] [--remove]
-- 归一化：lowercase + 连续空白折叠为单空格 + strip（与 shim 检测侧同法，改动须同步）
-- shingle：50 字符滑窗、步长 1（全位置，对齐无关——粘贴起点任意）
-- 指纹库 deploy/edm/fingerprints.json（gitignored）：只存哈希与文档名，不存原文
+- 地址：env DLP_ADMIN_URL（默认 http://localhost:18080）
+- 凭据：env DLP_ADMIN_TOKEN，缺省读 deploy/.local/admin-jwt
+- 单一写入路径：指纹算法/原子写纪律在 shim admin_api + edm_lib（入库/检测同法，契约铁律）
+- name 校验 [A-Za-z0-9_.-]{1,64}（API 侧强制；中文文件名请用 --name 指定 ASCII 名）
+- 同名重复入库会被 400 拒绝（原直写时代为指纹并集累加）：更新文档请 --remove 后重新入库
+- 目录场景：多文件内容聚合为单文档一次入库；与历史"逐文件指纹并集"相比，跨文件拼接边界
+  会多出永不命中的 shingle（原指纹全保留，漏检为零；行级通道不受影响）
 """
-import hashlib
 import json
 import os
 import sys
-import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 DEPLOY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FP_PATH = os.path.join(DEPLOY_DIR, "edm", "fingerprints.json")
-WINDOW = 50
-STEP = 1
+ADMIN_URL = os.environ.get("DLP_ADMIN_URL", "http://localhost:18080").rstrip("/")
 
 
-def normalize(text: str) -> str:
-    return " ".join(text.lower().split())
-
-
-def shingles(text: str):
-    t = normalize(text)
-    if len(t) < WINDOW:
-        return [t] if t else []
-    return [t[i:i + WINDOW] for i in range(0, len(t) - WINDOW + 1, STEP)]
-
-
-def fp_of(shingle: str) -> str:
-    return hashlib.sha256(shingle.encode()).hexdigest()
-
-
-LINE_MIN = 12  # 行级指纹最小行长（防 "import os" 类超短行误伤）
-
-
-def line_hashes(text: str):
-    out = set()
-    for line in text.splitlines():
-        n = normalize(line)
-        if len(n) >= LINE_MIN:
-            out.add(fp_of(n))
-    return out
-
-
-def load_store() -> dict:
+def _token() -> str:
+    t = os.environ.get("DLP_ADMIN_TOKEN")
+    if t:
+        return t.strip()
+    p = os.path.join(DEPLOY_DIR, ".local", "admin-jwt")
     try:
-        return json.load(open(FP_PATH, encoding="utf-8"))
-    except Exception:
-        return {"version": 1, "docs": {}}
+        return open(p, encoding="utf-8").read().strip()
+    except OSError:
+        sys.exit(f"无凭据：env DLP_ADMIN_TOKEN 未设且 {p} 不可读")
 
 
-def save_store(store: dict):
-    os.makedirs(os.path.dirname(FP_PATH), exist_ok=True)
-    tmp = FP_PATH + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(store, f, ensure_ascii=False, indent=1)
-    os.replace(tmp, FP_PATH)  # 原子替换：shim 每请求重读，防截断读
+def _api(method: str, path: str, payload=None):
+    data = json.dumps(payload, ensure_ascii=False).encode() if payload is not None else None
+    req = urllib.request.Request(ADMIN_URL + path, data=data, method=method)
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    req.add_header("Authorization", f"Bearer {_token()}")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status, json.loads(r.read() or b"null")
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read() or b"{}")
+        except ValueError:
+            return e.code, {}
+    except urllib.error.URLError as e:
+        sys.exit(f"admin API 不可达 {ADMIN_URL}: {e}")
 
 
 def iter_files(path: str):
@@ -80,38 +70,33 @@ def main():
     if "--name" in sys.argv:
         i = sys.argv.index("--name")
         name = sys.argv[i + 1] if i + 1 < len(sys.argv) else None
-    store = load_store()
 
     if remove:
         key = name or os.path.basename(target)
-        if store["docs"].pop(key, None) is not None:
-            save_store(store)
+        status, body = _api("DELETE", "/dlp-admin/edm/corpus/" + urllib.parse.quote(key, safe=""))
+        if status == 200:
             print(f"已移除 {key} 的指纹")
-        else:
+        elif status == 404:
             print(f"指纹库中无 {key}")
+        else:
+            sys.exit(f"删除失败 ({status}): {body.get('error', body)}")
         return
 
     key = name or os.path.basename(target.rstrip("/"))
-    hashes, lhashes = set(), set()
+    texts = []
     for f in iter_files(target):
         try:
-            text = open(f, encoding="utf-8", errors="ignore").read()
-        except Exception as e:
+            texts.append(open(f, encoding="utf-8", errors="ignore").read())
+        except OSError as e:
             print(f"跳过不可读文件 {f}: {e}")
-            continue
-        for sh in shingles(text):
-            hashes.add(fp_of(sh))
-        lhashes |= line_hashes(text)
-    doc = store["docs"].get(key) or {"shingles": [], "lines": []}
-    if isinstance(doc, list):  # 兼容旧格式
-        doc = {"shingles": doc, "lines": []}
-    doc["shingles"] = sorted(set(doc["shingles"]) | hashes)
-    doc["lines"] = sorted(set(doc["lines"]) | lhashes)
-    store["docs"][key] = doc
-    store["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
-    save_store(store)
-    total = sum(len(v["shingles"]) + len(v["lines"]) for v in store["docs"].values())
-    print(f"{key}: shingle 指纹 {len(doc['shingles'])}、行级指纹 {len(doc['lines'])}；全库 {total}")
+    if not texts:
+        sys.exit("无可读文件")
+    status, body = _api("POST", "/dlp-admin/edm/corpus", {"name": key, "text": "\n".join(texts)})
+    if status != 200:
+        sys.exit(f"入库失败 ({status}): {body.get('error', body)}")
+    _, docs = _api("GET", "/dlp-admin/edm/corpus")  # 全库指纹总数（对齐原输出格式）
+    total = sum(d["shingle_count"] + d["line_count"] for d in docs) if isinstance(docs, list) else 0
+    print(f"{key}: shingle 指纹 {body['shingle_count']}、行级指纹 {body['line_count']}；全库 {total}")
 
 
 if __name__ == "__main__":

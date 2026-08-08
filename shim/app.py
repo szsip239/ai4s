@@ -23,6 +23,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import admin_api  # DLP 统一配置 admin 平面（issue #31）：/dlp-admin/*，与检测路径隔离
+import edm_lib    # EDM 指纹算法共享库（issue #34）：入库/检测同法（契约铁律）
 
 PRESIDIO_URL = os.environ.get("PRESIDIO_URL", "http://presidio:3000")
 WORDLIST_PATH = os.environ.get("WORDLIST_PATH", "/dlp/confidential-terms.json")
@@ -45,11 +46,10 @@ JUDGE_TIMEOUT = int(os.environ.get("JUDGE_TIMEOUT", "8"))
 
 # EDM 文档指纹（issue #29，L3 层 PoC）：归一化 shingle + SHA-256，命中≥阈值即 451。
 # 语料/指纹库 gitignored；指纹是单向哈希，不存原文。
+# 算法收编 shim/edm_lib.py（issue #34）：归一化/窗口/行级阈值与入库侧同法。
 EDM_ENABLED = os.environ.get("EDM_ENABLED", "") == "1"
 EDM_FP_PATH = os.environ.get("EDM_FP_PATH", "/edm/fingerprints.json")
 EDM_MIN_HITS = int(os.environ.get("EDM_MIN_HITS", "2"))
-_EDM_WINDOW = 50
-_EDM_STEP = 1
 
 
 def load_edm_fps():
@@ -68,34 +68,18 @@ def load_edm_fps():
         pass
     return shingles_set, lines_set
 
-
-def edm_shingles(text: str):
-    t = " ".join(text.lower().split())
-    if len(t) < _EDM_WINDOW:
-        return [t] if t else []
-    return [t[i:i + _EDM_WINDOW] for i in range(0, len(t) - _EDM_WINDOW + 1, _EDM_STEP)]
-
-
-_EDM_LINE_MIN = 12
-
-
 def edm_hit_count(text: str, fps) -> int:
-    """双通道命中数（issue #29）：char-shingle（整段/连续片段）+ 行级（抗乱序）。任一通道达阈即命中。"""
+    """双通道命中数（issue #29）：char-shingle（整段/连续片段）+ 行级（抗乱序）。任一通道达阈即命中。
+    算法走 edm_lib（issue #34）：归一化/哈希与入库侧同法。"""
     shingle_fps, line_fps = fps
     if not text:
         return 0
-    import hashlib
     hits = 0
     if shingle_fps:
-        sh = {hashlib.sha256(s.encode()).hexdigest() for s in edm_shingles(text)}
+        sh = {edm_lib.fp_of(s) for s in edm_lib.shingles(text)}
         hits = max(hits, len(sh & shingle_fps))
     if line_fps:
-        lh = set()
-        for line in text.splitlines():
-            n = " ".join(line.lower().split())
-            if len(n) >= _EDM_LINE_MIN:
-                lh.add(hashlib.sha256(n.encode()).hexdigest())
-        hits = max(hits, len(lh & line_fps))
+        hits = max(hits, len(edm_lib.line_hashes(text) & line_fps))
     return hits
 
 JUDGE_SYSTEM = """你是企业数据防泄漏（DLP）语义判定器。判定用户文本是否在语义上涉及公司商密：内部项目代号、未发布产品名、内部系统/域名。注意识别谐音、拼音、拆字、繁体、暗示性描述等变形指代。普通业务话术、与词表无关的同名事物（如旅游景点）不算涉密。

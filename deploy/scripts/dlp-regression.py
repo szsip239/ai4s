@@ -108,11 +108,26 @@ def run_edm_section(api_key):
         got = classify(status, _, None)
         ok = got == "pass"
         results.append(("EDM: 负例应放行", ok, got))
+        # 删除腿（review #8）：删语料 → 指纹移除 → 同文档放行（删除语义全链路验证；finally 的 --remove 幂等兜底）
+        subprocess.run(["python3", "scripts/edm-add.py", "edm/corpus/__regression_tmp__.txt", "--name", "__regression_tmp__", "--remove"],
+                       cwd=DEPLOY_DIR, check=True, capture_output=True)
+        for attempt in range(2):
+            status, _ = send("把这份备忘录发给模型总结：\n" + doc, api_key)
+            got = classify(status, _, None)
+            if got == "pass":
+                break
+            time.sleep(1)
+        ok = got == "pass"
+        results.append(("EDM: 删除语料后同文档放行", ok, got))
     finally:
         subprocess.run(["python3", "scripts/edm-add.py", "edm/corpus/__regression_tmp__.txt", "--name", "__regression_tmp__", "--remove"],
                        cwd=DEPLOY_DIR, check=False, capture_output=True)
         try:
             os.remove(doc_path)
+        except OSError:
+            pass
+        try:
+            os.remove(doc_path + ".bak")  # admin 原子写备份副产物（issue #34：薄壳覆盖已存在文件产生）
         except OSError:
             pass
     for name, ok, got in results:

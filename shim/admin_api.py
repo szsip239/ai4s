@@ -13,8 +13,11 @@ import os
 import re
 import shutil
 import threading
+import time
 import urllib.error
 import urllib.request
+
+import edm_lib  # EDM 指纹算法共享库（issue #34）：入库/检测同法（契约铁律）
 
 # axonhub 内省端点（容器内默认同栈服务名；测试经环境变量指向本地假服务）
 AXONHUB_ADMIN_URL = os.environ.get("AXONHUB_ADMIN_URL", "http://axonhub:8090/admin/graphql")
@@ -26,7 +29,10 @@ WORDLIST_PATH = os.environ.get("WORDLIST_PATH", "/dlp/confidential-terms.json")
 PII_RECOGNIZERS_PATH = os.environ.get("PII_RECOGNIZERS_PATH", "/recognizers/pii-zh.json")
 FORMAT_RULES_PATH = os.environ.get("FORMAT_RULES_PATH", "/dlp/format-rules.json")
 AGENTGW_CONFIG_PATH = os.environ.get("AGENTGW_CONFIG_PATH", "/agentgateway/config.yaml")
+EDM_FP_PATH = os.environ.get("EDM_FP_PATH", "/edm/fingerprints.json")  # 与 app.py 同 env/默认
+EDM_CORPUS_DIR = os.environ.get("EDM_CORPUS_DIR", "/edm/corpus")
 _MAX_ADMIN_BODY = 1024 * 1024  # admin 请求体上限（配置文本足够）
+_MAX_EDM_BODY = 16 * 1024 * 1024  # EDM corpus POST 放宽（review #5：真实商密文档规模可达数 MB）
 
 # 端点级别 → 所需系统 scope（2026-08-06 定案：读 read_channels / 写 write_channels；isOwner 直通）。
 _LEVEL_SCOPES = {"read": "read_channels", "write": "write_channels"}
@@ -99,11 +105,22 @@ def _load_json_file(path):
         return None
 
 
-def _read_body(handler):
-    """读 admin 请求体 JSON；非法 → 已回 400，返回 None。"""
+def _read_body(handler, max_body=_MAX_ADMIN_BODY):
+    """读 admin 请求体 JSON；超限 → 已回 413，非法 → 已回 400，返回 None。
+    路由级上限（review #5）：默认 _MAX_ADMIN_BODY（1MB），EDM corpus POST 放宽 _MAX_EDM_BODY。
+    超限先分块 drain 再响应——否则客户端发送中途断连，看到 BrokenPipe 而非干净 413。"""
+    raw_len = int(handler.headers.get("Content-Length") or 0)
+    if raw_len > max_body:
+        remaining = raw_len
+        while remaining > 0:
+            chunk = handler.rfile.read(min(remaining, 256 * 1024))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+        _respond(handler, 413, {"error": f"body 超限: {raw_len} 字节 > 上限 {max_body}"})
+        return None
     try:
-        length = min(int(handler.headers.get("Content-Length") or 0), _MAX_ADMIN_BODY)
-        return json.loads(handler.rfile.read(length) or b"{}")
+        return json.loads(handler.rfile.read(raw_len) or b"{}")
     except Exception:
         _respond(handler, 400, {"error": "invalid JSON body"})
         return None
@@ -382,6 +399,122 @@ def _format_rules_render_post(handler, _me):
     _respond(handler, 200, {"rendered": rendered})
 
 
+def _edm_doc_summary(name: str, doc) -> dict:
+    """单文档列表项（issue #34）：兼容旧格式纯 shingle 数组；旧文档无 added_at → None。"""
+    if isinstance(doc, list):  # 旧格式（issue #29 初版）：纯 shingle 数组，无行级/时间
+        return {"name": name, "shingle_count": len(doc), "line_count": 0, "added_at": None}
+    return {"name": name,
+            "shingle_count": len(doc.get("shingles") or []),
+            "line_count": len(doc.get("lines") or []),
+            "added_at": doc.get("added_at")}
+
+
+def _edm_corpus_get(handler, _me):
+    """GET EDM 语料文档列表（issue #34）：名称/shingle 数/行级数/入库时间。"""
+    data = _load_json_file(EDM_FP_PATH)
+    if not isinstance(data, dict) or not isinstance(data.get("docs"), dict):
+        _respond(handler, 500, {"error": "edm fingerprints unreadable"})
+        return
+    out = [_edm_doc_summary(name, doc) for name, doc in sorted(data["docs"].items())]
+    _respond(handler, 200, out)
+
+
+_EDM_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]{1,64}$")  # 禁 / 防路径穿越；corpus 文件名 = <name>.txt
+# 整文档归一化最小长度（review #1）：值与 edm_lib.LINE_MIN 对齐，但语义独立——
+# 这是入库下限（低于此：行级通道无有效指纹，整段 shingle 单指纹也达不到 EDM_MIN_HITS=2，入库即死规则），
+# 不借用 LINE_MIN 以免两处语义耦合演化。
+_EDM_MIN_TEXT = 12
+
+
+def _edm_now() -> str:
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+
+
+def _edm_corpus_post(handler, _me):
+    """POST 新增 EDM 语料文档（issue #34）：name/text 校验 → corpus 原文原子写 →
+    该文档指纹全量重算并入 fingerprints.json（不动其他文档）→ 原子写。
+    指纹写失败时回滚删 corpus 文件，两侧不留半更新。"""
+    payload = _read_body(handler, _MAX_EDM_BODY)  # EDM 文档放宽 16MB（review #5）
+    if payload is None:
+        return
+    name = payload.get("name") if isinstance(payload, dict) else None
+    if not isinstance(name, str) or not _EDM_NAME_RE.match(name):
+        _respond(handler, 400, {"error": "name 必须匹配 [A-Za-z0-9_.-]{1,64}"})
+        return
+    text = payload.get("text")
+    if not isinstance(text, str) or not text.strip():
+        _respond(handler, 400, {"error": "text 必须是非空字符串"})
+        return
+    if len(edm_lib.normalize(text)) < _EDM_MIN_TEXT:
+        _respond(handler, 400, {"error": f"text 过短：归一化后不足 {_EDM_MIN_TEXT} 字符，无法产生有效行级指纹"
+                                          "（整段 shingle 单指纹也达不到命中阈值 2，入库即死规则）"})
+        return
+    store, lerr = _load_for_write(EDM_FP_PATH, {"version": 1, "docs": {}}, "edm fingerprints")
+    if lerr:
+        _respond(handler, 500, {"error": lerr})
+        return
+    if not isinstance(store.get("docs"), dict):  # schema 检查（非 _load_for_write 职责）：docs 必须对象
+        _respond(handler, 500, {"error": "edm fingerprints unreadable，拒绝覆盖写入"})
+        return
+    if name in store["docs"]:
+        _respond(handler, 400, {"error": f"文档已存在: {name}"})
+        return
+    now = _edm_now()
+    fps = edm_lib.doc_fingerprints(text)
+    os.makedirs(EDM_CORPUS_DIR, exist_ok=True)
+    corpus_path = os.path.join(EDM_CORPUS_DIR, name + ".txt")
+    try:
+        write_text_atomic(corpus_path, text)
+    except OSError as e:
+        _respond(handler, 500, {"error": f"corpus 写入失败: {e}"})
+        return
+    store["docs"][name] = {"shingles": fps["shingles"], "lines": fps["lines"], "added_at": now}
+    store["updated_at"] = now
+    try:
+        write_json_atomic(EDM_FP_PATH, store)
+    except OSError as e:
+        try:
+            os.unlink(corpus_path)  # 回滚刚写的 corpus 文件，两侧不留半更新
+        except OSError:
+            pass
+        _respond(handler, 500, {"error": f"fingerprints 写入失败（corpus 已回滚）: {e}"})
+        return
+    _respond(handler, 200, {"name": name, "shingle_count": len(fps["shingles"]),
+                            "line_count": len(fps["lines"]), "added_at": now})
+
+
+def _edm_corpus_delete_item(handler, _me, name):
+    """DELETE 删除 EDM 语料文档（issue #34）：指纹条目（权威）+ corpus 文件；不存在 → 404。
+    name 正则校验与 POST 同款（review #4 双保险：薄壳 quote 误放行的分隔符等在此兜底）。
+    先写指纹库（检测权威源），corpus 文件缺失容忍（孤儿文件不阻断删除）。"""
+    if not _EDM_NAME_RE.match(name):
+        _respond(handler, 400, {"error": "name 必须匹配 [A-Za-z0-9_.-]{1,64}"})
+        return
+    store = _load_json_file(EDM_FP_PATH)
+    if not isinstance(store, dict) or not isinstance(store.get("docs"), dict):
+        _respond(handler, 500, {"error": "edm fingerprints unreadable"})
+        return
+    if name not in store["docs"]:
+        _respond(handler, 404, {"error": f"文档不存在: {name}"})
+        return
+    del store["docs"][name]
+    store["updated_at"] = _edm_now()
+    try:
+        write_json_atomic(EDM_FP_PATH, store)
+    except OSError as e:
+        # 与 POST 对称（review #6）：指纹写失败干净 500，corpus 文件不动（条目仍在库，两侧一致）
+        _respond(handler, 500, {"error": f"fingerprints 写入失败: {e}"})
+        return
+    try:
+        os.unlink(os.path.join(EDM_CORPUS_DIR, name + ".txt"))
+    except FileNotFoundError:
+        pass  # corpus 缺失容忍：指纹库为权威列表
+    except OSError as e:
+        _respond(handler, 500, {"error": f"指纹已删除但 corpus 文件删除失败（残留孤儿）: {e}"})
+        return
+    _respond(handler, 200, {"deleted": name})
+
+
 def _validate_recognizer_fields(rec) -> str | None:
     """recognizer 字段校验（issue #32，POST/PUT 共用）：合法返回 None，非法返回具体原因。
     regex 必须过 re.compile（错误带 re 原因）；score 0~1 数值；entity/replacement 非空。"""
@@ -503,13 +636,16 @@ _ROUTES = {
     ("GET", "/dlp-admin/format-rules"): ("read", _format_rules_get),
     ("PUT", "/dlp-admin/format-rules"): ("write", _format_rules_put),
     ("POST", "/dlp-admin/format-rules/render"): ("write", _format_rules_render_post),
+    ("GET", "/dlp-admin/edm/corpus"): ("read", _edm_corpus_get),
+    ("POST", "/dlp-admin/edm/corpus"): ("write", _edm_corpus_post),
 }
 
 
-# 参数化路由：/dlp-admin/recognizers/<name>（URL 末段为 name 参数，PUT/DELETE 用）
+# 参数化路由：/dlp-admin/recognizers/<name>、/dlp-admin/edm/corpus/<name>（URL 末段为 name 参数，PUT/DELETE 用）
 _ITEM_ROUTES = {
     ("PUT", "/dlp-admin/recognizers/"): ("write", _recognizer_put_item),
     ("DELETE", "/dlp-admin/recognizers/"): ("write", _recognizer_delete_item),
+    ("DELETE", "/dlp-admin/edm/corpus/"): ("write", _edm_corpus_delete_item),
 }
 
 
