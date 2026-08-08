@@ -1,9 +1,10 @@
 /**
- * ai4s 脱敏规则页 = DLP 统一配置中心（issue #36 正式替换；#38 UX 修正）。
+ * ai4s 脱敏规则页 = DLP 统一配置中心（issue #36 正式替换；#38 UX 修正；#39 导航精简）。
  * 布局：顶部检测管线条（节点状态=真实 settings）→ master-detail（左层导航 + 右配置面板），无常驻区块。
  * 五个可配面板对接 shim /dlp-admin/*（React Query，写后 invalidate）：
  *   商密词表 / PII 规则 / 格式规则 L1·L1.5 / EDM 语料 / 开关与阈值（judge、PG 为独立面板，另含整体视图）。
  * 纵深层规则（只读）为普通导航选中项（#38：不再常驻页底）；管线点击与左导航选中联动同一 state；
+ * 左导航只显示层名（#39：状态徽标与顶部管线重复，去掉；纵深层保留「只读」说明徽标）；
  * 离开有未保存修改的面板时 confirm 提示（dirty 标记由面板上报）。
  */
 import { useCallback, useMemo, useRef, useState } from 'react';
@@ -69,8 +70,8 @@ export default function Ai4sRulesPage() {
 
   const nodes = useMemo<Record<PanelKey, Ai4sPipelineNodeView>>(() => {
     const rules = formatRules.data?.rules ?? [];
-    const l1Count = rules.filter((r) => r.layer === 'L1' && r.enabled).length;
-    const l15Count = rules.filter((r) => r.layer === 'L1.5' && r.enabled).length;
+    // L1/L1.5 合并节点（#39）：规则数为启用规则合计（action 列区分 reject/mask）
+    const enabledCount = rules.filter((r) => r.enabled).length;
     const cfgBadges = (enabled: boolean | null, shadow: boolean): StatusBadge[] => {
       // enabled=null：settings 查询失败（401/404/故障）→ 状态未知，不臆造
       if (enabled === null) return [UNKNOWN];
@@ -83,8 +84,7 @@ export default function Ai4sRulesPage() {
     // l2 与响应侧同数据源（响应侧复用 L2 规则集）：词表/识别器任一失败即未知
     const l2Badges = wordlist.isError || recognizers.isError ? [UNKNOWN] : [ON];
     return {
-      l1: { key: 'l1', name: LAYER_LABEL.l1, badges: l1Badges, count: `${l1Count} 条 reject` },
-      l15: { key: 'l15', name: LAYER_LABEL.l15, badges: l1Badges, count: `${l15Count} 条 mask` },
+      l1: { key: 'l1', name: LAYER_LABEL.l1, badges: l1Badges, count: `${enabledCount} 条规则` },
       l2: {
         key: 'l2',
         name: LAYER_LABEL.l2,
@@ -135,15 +135,10 @@ export default function Ai4sRulesPage() {
     setSelected(key);
   };
 
-  // 左导航徽标：管线层与节点同构；toggles 汇总三个开关的启用数；deep 只读
+  // 左导航徽标（#39：各层只显示层名，状态与顶部管线重复不再重复展示；纵深层保留「只读」说明徽标）
   const navBadges = (key: PanelKey): StatusBadge[] => {
-    if (key === 'toggles') {
-      if (!settingsDoc) return [];
-      const n = [settingsDoc.judge.enabled, settingsDoc.edm.enabled, settingsDoc.pg.enabled].filter(Boolean).length;
-      return [{ label: `${n}/3 启用`, variant: 'outline' }];
-    }
     if (key === 'deep') return [{ label: '只读', variant: 'outline' }];
-    return nodes[key].badges;
+    return [];
   };
 
   return (
@@ -183,7 +178,7 @@ export default function Ai4sRulesPage() {
             </nav>
           </aside>
           <div className='min-w-0 flex-1'>
-            {(selected === 'l1' || selected === 'l15') && <Ai4sFormatRulesPanel onDirtyChange={setDirty} />}
+            {selected === 'l1' && <Ai4sFormatRulesPanel onDirtyChange={setDirty} />}
             {selected === 'l2' && (
               <div className='space-y-6'>
                 <Ai4sWordlistPanel onDirtyChange={setDirty} />

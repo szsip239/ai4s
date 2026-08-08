@@ -1,5 +1,5 @@
 /**
- * 顶部检测管线条（issue #36，Variant C 血统重写）：请求 → L1 → L1.5 → L2 → L3 → judge → PG → 上游 → 响应侧。
+ * 顶部检测管线条（issue #36，Variant C 血统重写）：请求 → L1 格式规则（#39 起 L1/L1.5 合并）→ L2 → L3 → judge → PG → 上游 → 响应侧。
  * 节点为可点卡片（点击=选中该层，与左侧导航同一 state）；状态徽标/规模摘要由调用方按真实查询数据组装。
  */
 import { IconArrowRight } from '@tabler/icons-react';
@@ -12,7 +12,7 @@ export interface Ai4sPipelineNodeView {
   key: string;
   name: string;
   badges: StatusBadge[];
-  /** 节点上的规则数/规模摘要（如 "6 条 reject"、"阈值 0.7"） */
+  /** 节点上的规则数/规模摘要（如 "6 条规则"、"阈值 0.7"） */
   count: string;
 }
 
