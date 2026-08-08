@@ -641,6 +641,19 @@ class Handler(BaseHTTPRequestHandler):
         if score is not None and score >= PG_THRESHOLD:
             print(f"[injection.shadow] malicious={score:.3f} >= {PG_THRESHOLD}", flush=True)
 
+    def do_PUT(self):
+        # 非 admin 路径回 404 而非 BaseHTTPRequestHandler 默认 501：有意语义——
+        # 对外统一"未知写操作路径 404"，不暴露服务未实现 PUT 的内部细节。
+        if admin_api.handle(self, "PUT"):  # admin 平面（issue #32）：/dlp-admin/* 写端点
+            return
+        self._json(404, {})
+
+    def do_DELETE(self):
+        # 同 do_PUT：非 admin 路径有意回 404（非 501）。
+        if admin_api.handle(self, "DELETE"):  # admin 平面（issue #32）
+            return
+        self._json(404, {})
+
 
 if __name__ == "__main__":
     ThreadingHTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
