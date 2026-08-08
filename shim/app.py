@@ -22,6 +22,8 @@ import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+import admin_api  # DLP 统一配置 admin 平面（issue #31）：/dlp-admin/*，与检测路径隔离
+
 PRESIDIO_URL = os.environ.get("PRESIDIO_URL", "http://presidio:3000")
 WORDLIST_PATH = os.environ.get("WORDLIST_PATH", "/dlp/confidential-terms.json")
 PII_RECOGNIZERS_PATH = os.environ.get("PII_RECOGNIZERS_PATH", "/recognizers/pii-zh.json")
@@ -512,9 +514,13 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
+        if admin_api.handle(self, "GET"):  # admin 平面（issue #31）：/dlp-admin/* 优先分流
+            return
         self._json(200 if self.path == "/healthz" else 404, {"ok": self.path == "/healthz"})
 
     def do_POST(self):
+        if admin_api.handle(self, "POST"):  # admin 平面（issue #31）：/dlp-admin/* 优先分流
+            return
         if self.path == "/feishu-alert":
             # axonhub webhook → 飞书适配（issue #17）
             try:

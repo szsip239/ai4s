@@ -141,6 +141,14 @@ routes:
     backends:
       - host: axonhub:8090
 
+  # DLP 统一配置 admin API（issue #31）：shim 管理面；仅 default 网关（admin 不经 mTLS 设备口）
+  - gateways: [default]
+    matches:
+      - path:
+          pathPrefix: /dlp-admin
+    backends:
+      - host: shim:8080
+
   # catch-all：前端静态（web/dist，nginx SPA fallback）
   - gateways: [default, mtls]
     backends:

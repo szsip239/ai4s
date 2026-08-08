@@ -144,9 +144,10 @@ services:
       PG_URL: http://promptguard:8092/guard
       PG_THRESHOLD: ${PG_THRESHOLD:-0.7}
     volumes:
-      - ./dlp:/dlp:ro # 词表挂载，修改即热更新（shim 每请求重读）
-      - ../recognizers:/recognizers:ro # PII recognizer 定义（issue #15），热更新
-      - ./edm:/edm:ro # EDM 指纹库（issue #29），热更新
+      - ./dlp:/dlp:rw # 词表挂载（issue #31 起 rw：admin API 写回）；shim 每请求重读热更新
+      - ../recognizers:/recognizers:rw # PII recognizer 定义（issue #15），issue #31 起 rw
+      - ./edm:/edm:rw # EDM 指纹库（issue #29），issue #31 起 rw
+      - ./agentgateway:/agentgateway:rw # L1 规则渲染写回（issue #33 用，#31 预挂）
     networks:
       - ai4s
     depends_on:
