@@ -1,0 +1,127 @@
+{
+  "version": 1,
+  "_comment": "L1/L1.5 格式规则单一源（issue #33）。gateway_patterns 渲染进 agentgateway YAML（Rust regex，禁 lookaround/backreference）；shim_patterns 为归一化检测变体（Python regex）——无 shim_patterns 的规则不参与 shim 归一化检测（不静默回退 gateway_patterns，漏检面显式可见，review #5）。gateway_patterns 为空的规则是 shim-only（不渲染进网关）。",
+  "rules": [
+    {
+      "code": "secrets.anthropic_sk",
+      "layer": "L1",
+      "action": "reject",
+      "enabled": true,
+      "message": "Anthropic secret key detected",
+      "gateway_patterns": [
+        "sk-ant-[A-Za-z0-9_\\-]{20,}"
+      ],
+      "shim_patterns": [
+        "skant[A-Za-z0-9]{20,}"
+      ]
+    },
+    {
+      "code": "secrets.openai_sk",
+      "layer": "L1",
+      "action": "reject",
+      "enabled": true,
+      "message": "OpenAI secret key detected",
+      "gateway_patterns": [
+        "sk-(proj-)?[A-Za-z0-9_\\-]{20,}"
+      ],
+      "shim_patterns": [
+        "sk(?:proj)?[A-Za-z0-9]{20,}"
+      ]
+    },
+    {
+      "code": "secrets.github_token",
+      "layer": "L1",
+      "action": "reject",
+      "enabled": true,
+      "message": "GitHub token detected",
+      "gateway_patterns": [
+        "gh[pousr]_[A-Za-z0-9]{20,}",
+        "github_pat_[A-Za-z0-9_]{20,}"
+      ],
+      "shim_patterns": [
+        "gh[pousr][A-Za-z0-9]{20,}",
+        "githubpat[A-Za-z0-9]{20,}"
+      ]
+    },
+    {
+      "code": "secrets.aws_key",
+      "layer": "L1",
+      "action": "reject",
+      "enabled": true,
+      "message": "AWS access key detected",
+      "gateway_patterns": [
+        "AKIA[0-9A-Z]{16}",
+        "ASIA[0-9A-Z]{16}"
+      ],
+      "shim_patterns": [
+        "(?:AKIA|ASIA)[0-9A-Z]{16}"
+      ]
+    },
+    {
+      "code": "secrets.private_key",
+      "layer": "L1",
+      "action": "reject",
+      "enabled": true,
+      "message": "private key material detected",
+      "gateway_patterns": [
+        "-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"
+      ],
+      "shim_patterns": [
+        "BEGIN[A-Z0-9]*PRIVATEKEY"
+      ]
+    },
+    {
+      "code": "secrets.aliyun_ak",
+      "layer": "L1",
+      "action": "reject",
+      "enabled": true,
+      "message": "Aliyun access key detected",
+      "gateway_patterns": [
+        "LTAI[A-Za-z0-9]{12,}"
+      ],
+      "shim_patterns": [
+        "LTAI[A-Za-z0-9]{12,}"
+      ]
+    },
+    {
+      "code": "pii.phone",
+      "layer": "L1.5",
+      "action": "mask",
+      "enabled": true,
+      "entity": "ZH_PHONE",
+      "replacement": "【PII:手机号】",
+      "gateway_patterns": [
+        "\\b1[3-9]\\d{9}\\b"
+      ],
+      "shim_patterns": [
+        "(?<!\\d)1[3-9]\\d{9}(?!\\d)"
+      ]
+    },
+    {
+      "code": "pii.id_card",
+      "layer": "L1.5",
+      "action": "mask",
+      "enabled": true,
+      "entity": "ZH_ID_CARD",
+      "replacement": "【PII:身份证号】",
+      "gateway_patterns": [
+        "\\b\\d{17}[\\dXx]\\b"
+      ],
+      "shim_patterns": [
+        "(?<!\\d)\\d{17}[\\dXx](?!\\d)"
+      ]
+    },
+    {
+      "code": "pii.bank_card",
+      "layer": "L1.5",
+      "action": "mask",
+      "enabled": true,
+      "entity": "ZH_BANK_CARD",
+      "replacement": "【PII:银行卡号】",
+      "gateway_patterns": [],
+      "shim_patterns": [
+        "(?<!\\d)(?:62|4|5)\\d{14,17}(?!\\d)"
+      ]
+    }
+  ]
+}

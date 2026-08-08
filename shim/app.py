@@ -286,23 +286,36 @@ _FULLWIDTH[0x3000] = " "
 _TRAD2SIMP = dict(zip("鳳計劃鯨藍號話統雲網內級鳳", "凤计划鲸蓝号话统云网内级凤"))
 _SEP = set(" \t\r\n-_")
 
-# 归一化后文本上匹配的 secrets 规则（分隔符已剔除，pattern 不含分隔符；顺序同 L1：具体在前）
-_NORM_SECRET_RULES = [
-    ("secrets.anthropic_sk", r"skant[A-Za-z0-9]{20,}"),
-    ("secrets.openai_sk", r"sk(?:proj)?[A-Za-z0-9]{20,}"),
-    ("secrets.github_token", r"gh[pousr][A-Za-z0-9]{20,}"),
-    ("secrets.github_token", r"githubpat[A-Za-z0-9]{20,}"),
-    ("secrets.aws_key", r"(?:AKIA|ASIA)[0-9A-Z]{16}"),
-    ("secrets.aliyun_ak", r"LTAI[A-Za-z0-9]{12,}"),
-    ("secrets.private_key", r"BEGIN[A-Z0-9]*PRIVATEKEY"),
-]
-_NORM_SECRET_RES = [(rid, re.compile(p)) for rid, p in _NORM_SECRET_RULES]
+# L1/L1.5 格式规则统一源（issue #33）：每请求重读（与 load_terms 同纪律，热更新免重启）；
+# fail-open：文件缺失/损坏 → 空规则（格式检测层失效但不 500，同契约 fail-open 分级）。
+# shim_patterns 为归一化检测变体（分隔符已剔除，Python regex 支持 lookaround）；
+# 无 shim_patterns 的规则不参与归一化检测（review #5：不静默回退 gateway_patterns）。
+FORMAT_RULES_PATH = os.environ.get("FORMAT_RULES_PATH", "/dlp/format-rules.json")
 
-_NORM_PII_RES = [  # 与 recognizers/pii-zh.json 同族（归一化后无需 \b，用 (?<!\d) 防长数字串误切）
-    ("ZH_PHONE", re.compile(r"(?<!\d)1[3-9]\d{9}(?!\d)"), "【PII:手机号】"),
-    ("ZH_ID_CARD", re.compile(r"(?<!\d)\d{17}[\dXx](?!\d)"), "【PII:身份证号】"),
-    ("ZH_BANK_CARD", re.compile(r"(?<!\d)(?:62|4|5)\d{14,17}(?!\d)"), "【PII:银行卡号】"),
-]
+
+def load_format_rules() -> list:
+    try:
+        with open(FORMAT_RULES_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as e:
+        # fail-open 必须留痕（契约硬性配套）：只记路径与错误类型，不含敏感值
+        print(f"[format-rules] fail-open: {FORMAT_RULES_PATH}: {type(e).__name__}", flush=True)
+        return []
+    rules = data.get("rules", []) if isinstance(data, dict) else []
+    return rules if isinstance(rules, list) else []
+
+
+def _norm_compiled(rule: dict) -> list:
+    """编译单条规则的 shim 侧归一化 pattern（shim_patterns）；坏 pattern 跳过。
+    无 shim_patterns 的规则不参与归一化检测（review #5：删 gateway_patterns 静默回退——
+    两栈 pattern 语义不同（归一化文本 vs 原文），静默回退是漏检面，显式不写才可见）。"""
+    out = []
+    for p in rule.get("shim_patterns") or []:
+        try:
+            out.append(re.compile(p))
+        except re.error:
+            continue
+    return out
 
 
 def normalize_hard(s: str):
@@ -318,8 +331,20 @@ def normalize_hard(s: str):
     return "".join(out), idx
 
 
-def norm_secret_hits(norm: str) -> list:
-    return [rid for rid, rgx in _NORM_SECRET_RES if rgx.search(norm)]
+def norm_secret_hits(norm: str, rules: list = None) -> list:
+    """归一化文本上的 L1 reject 命中（issue #33 起读 format-rules.json）。
+    逐 pattern 命中逐条 append（同规则多 pattern 全中会出现多次，下游 set 化，行为同原硬编码表）。
+    rules 缺省内部加载；调用方在循环中使用时传入一次加载的结果（review #4）。"""
+    if rules is None:
+        rules = load_format_rules()
+    hits = []
+    for rule in rules:
+        if not rule.get("enabled") or rule.get("action") != "reject" or not rule.get("code"):
+            continue
+        for rgx in _norm_compiled(rule):
+            if rgx.search(norm):
+                hits.append(rule["code"])
+    return hits
 
 
 def norm_term_hits(norm_low: str, terms: list) -> list:
@@ -331,15 +356,23 @@ def norm_term_hits(norm_low: str, terms: list) -> list:
     return hits
 
 
-def norm_pii_mask_in_text(s: str):
-    """对单段原文做归一化 PII 检测并回映 mask；返回 (新文本, 命中实体列表)。"""
+def norm_pii_mask_in_text(s: str, rules: list = None):
+    """对单段原文做归一化 PII 检测并回映 mask；返回 (新文本, 命中实体列表)。
+    issue #33 起规则读 format-rules.json（action=mask 项；entity/replacement 取自规则）。"""
     norm, idx = normalize_hard(s)
     if not norm:
         return s, []
+    if rules is None:
+        rules = load_format_rules()
     spans = []  # (orig_start, orig_end, replacement, entity)
-    for entity, rgx, repl in _NORM_PII_RES:
-        for m in rgx.finditer(norm):
-            spans.append((idx[m.start()], idx[m.end() - 1] + 1, repl, entity))
+    for rule in rules:
+        if not rule.get("enabled") or rule.get("action") != "mask":
+            continue
+        entity = rule.get("entity") or rule.get("code") or "PII"
+        repl = rule.get("replacement") or f"【PII:{entity}】"
+        for rgx in _norm_compiled(rule):
+            for m in rgx.finditer(norm):
+                spans.append((idx[m.start()], idx[m.end() - 1] + 1, repl, entity))
     if not spans:
         return s, []
     spans.sort(key=lambda x: x[0], reverse=True)
@@ -354,14 +387,18 @@ def norm_pii_mask_in_text(s: str):
     return out, entities
 
 
-def norm_mask_messages(messages):
-    """逐消息归一化 PII mask（issue #22）；返回 (new_messages, any_masked, entities)。"""
+def norm_mask_messages(messages, rules: list = None):
+    """逐消息归一化 PII mask（issue #22）；返回 (new_messages, any_masked, entities)。
+    规则一次加载传入各消息（issue #33：避免逐消息重读文件）；
+    rules 缺省内部加载，调用方在循环中使用时传入一次加载的结果（review #4）。"""
+    if rules is None:
+        rules = load_format_rules()
     out, any_masked, all_entities = [], False, set()
     for m in messages or []:
         m2 = dict(m)
         c = m.get("content")
         if isinstance(c, str):
-            new_c, ents = norm_pii_mask_in_text(c)
+            new_c, ents = norm_pii_mask_in_text(c, rules)
             if ents:
                 m2["content"] = new_c
                 any_masked = True
@@ -370,7 +407,7 @@ def norm_mask_messages(messages):
             parts = []
             for p in c:
                 if isinstance(p, dict) and isinstance(p.get("text"), str):
-                    new_t, ents = norm_pii_mask_in_text(p["text"])
+                    new_t, ents = norm_pii_mask_in_text(p["text"], rules)
                     if ents:
                         p = {**p, "text": new_t}
                         any_masked = True
@@ -391,6 +428,7 @@ def mask_response_body(body):
     if not isinstance(choices, list):
         return body, []
     terms = load_terms()
+    rules = load_format_rules()  # 响应级一次加载（review #4）：scan 按字段调用，避免逐字段重读+编译
     hits = set()
 
     def scan(text):
@@ -398,9 +436,9 @@ def mask_response_body(body):
         if not isinstance(text, str) or not text:
             return found
         norm, _ = normalize_hard(text)
-        found += norm_secret_hits(norm)
+        found += norm_secret_hits(norm, rules)
         found += [t["rule_id"] for t in norm_term_hits(norm.lower(), terms)]
-        _, _, ents = norm_mask_messages([{"role": "assistant", "content": text}])
+        _, _, ents = norm_mask_messages([{"role": "assistant", "content": text}], rules)
         found += ents
         return found
 

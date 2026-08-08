@@ -66,7 +66,10 @@ services:
     container_name: ai4s-agentgateway
     command: ["-f", "/etc/agentgateway/config.yaml"]
     volumes:
-      - ./agentgateway/config.yaml:/etc/agentgateway/config.yaml:ro
+      # 目录挂载（issue #33）：单文件 bind mount 下 shim 原子写（os.replace 换 inode）后容器内不可见、
+      # watch 不触发热重载；目录挂载共享目录项，rename 语义跨容器正常，与 k8s ConfigMap 同原理。
+      # 需 rw：ro 时 docker 无法在其中创建 mtls 嵌套挂载点；agentgateway File 模式本身不写配置。
+      - ./agentgateway:/etc/agentgateway
       - ./.local/mtls:/etc/agentgateway/mtls:ro # mTLS 证书（issue #28，gitignored）
     ports:
       - "127.0.0.1:3000:3000" # 员工流量入口（唯一对员工的端口）

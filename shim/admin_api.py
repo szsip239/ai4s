@@ -24,6 +24,8 @@ _ME_QUERY = "query Me { me { id isOwner scopes } }"
 # 配置文件路径（与 app.py 相同 env/默认值；测试用临时文件覆写模块属性）
 WORDLIST_PATH = os.environ.get("WORDLIST_PATH", "/dlp/confidential-terms.json")
 PII_RECOGNIZERS_PATH = os.environ.get("PII_RECOGNIZERS_PATH", "/recognizers/pii-zh.json")
+FORMAT_RULES_PATH = os.environ.get("FORMAT_RULES_PATH", "/dlp/format-rules.json")
+AGENTGW_CONFIG_PATH = os.environ.get("AGENTGW_CONFIG_PATH", "/agentgateway/config.yaml")
 _MAX_ADMIN_BODY = 1024 * 1024  # admin 请求体上限（配置文本足够）
 
 # 端点级别 → 所需系统 scope（2026-08-06 定案：读 read_channels / 写 write_channels；isOwner 直通）。
@@ -175,6 +177,211 @@ def _recognizers_get(handler, _me):
     _respond(handler, 200, data)
 
 
+def _format_rules_get(handler, _me):
+    """GET format-rules 全文（issue #33）。"""
+    data = _load_json_file(FORMAT_RULES_PATH)
+    if data is None:
+        _respond(handler, 500, {"error": "format-rules unreadable"})
+        return
+    _respond(handler, 200, data)
+
+
+# gateway_patterns 禁用的 Rust regex 不支持构造（lookaround；backreference 另行 \1~\9 扫描）
+_RUST_UNSUPPORTED = ("(?=", "(?!", "(?<=", "(?<!")
+_BACKREF_RE = re.compile(r"\\[1-9]")
+
+
+def _check_pattern(p, label: str) -> str | None:
+    """单条 pattern 校验：非空字符串 + 过 re.compile。"""
+    if not isinstance(p, str) or not p:
+        return f"{label} 必须是非空字符串"
+    try:
+        re.compile(p)
+    except re.error as e:
+        return f"{label} 非法: {e}"
+    return None
+
+
+def _validate_format_rules(data) -> str | None:
+    """format-rules JSON 校验（issue #33）：合法返回 None，非法返回具体原因。
+    schema：每条 code/layer/action/enabled 必填，action∈{reject,mask}，layer∈{L1,L1.5}；
+    全部 patterns 过 re.compile；gateway_patterns 禁 Rust regex 不支持构造（lookaround/backreference）。"""
+    if not isinstance(data, dict):
+        return "format-rules 必须是对象"
+    rules = data.get("rules")
+    if not isinstance(rules, list):
+        return "rules 必须是数组"
+    seen = set()
+    for i, r in enumerate(rules):
+        if not isinstance(r, dict):
+            return f"rules[{i}] 必须是对象"
+        code = r.get("code")
+        if not isinstance(code, str) or not code:
+            return f"rules[{i}].code 必须是非空字符串"
+        if code in seen:
+            return f"rules[{i}].code 重复: {code}"
+        seen.add(code)
+        if r.get("layer") not in ("L1", "L1.5"):
+            return f"rules[{i}].layer 必须是 L1/L1.5"
+        action = r.get("action")
+        if action not in ("reject", "mask"):
+            return f"rules[{i}].action 必须是 reject/mask"
+        if not isinstance(r.get("enabled"), bool):
+            return f"rules[{i}].enabled 必须是布尔值"
+        if action == "reject" and (not isinstance(r.get("message"), str) or not r["message"]):
+            return f"rules[{i}].message 必须是非空字符串（reject 需要，用于 rejection body）"
+        gp = r.get("gateway_patterns")
+        if not isinstance(gp, list):
+            return f"rules[{i}].gateway_patterns 必须是数组"
+        for j, p in enumerate(gp):
+            err = _check_pattern(p, f"rules[{i}].gateway_patterns[{j}]")
+            if err:
+                return err
+            for bad in _RUST_UNSUPPORTED:
+                if bad in p:
+                    return f"rules[{i}].gateway_patterns[{j}] 含 Rust regex 不支持的构造: {bad}"
+            if _BACKREF_RE.search(p):
+                return f"rules[{i}].gateway_patterns[{j}] 含 Rust regex 不支持的 backreference"
+        sp = r.get("shim_patterns", [])
+        if not isinstance(sp, list):
+            return f"rules[{i}].shim_patterns 必须是数组"
+        for j, p in enumerate(sp):
+            err = _check_pattern(p, f"rules[{i}].shim_patterns[{j}]")
+            if err:
+                return err
+    return None
+
+
+def _format_rules_put(handler, _me):
+    """PUT 整体替换 format-rules（issue #33）：校验 → 写 JSON → 渲染 splice 进 config.yaml。
+    config 渲染/写失败时 JSON 从 .bak 回滚，两侧不留半更新。"""
+    payload = _read_body(handler)
+    if payload is None:
+        return
+    err = _validate_format_rules(payload)
+    if err:
+        _respond(handler, 400, {"error": err})
+        return
+    try:
+        write_json_atomic(FORMAT_RULES_PATH, payload)
+    except OSError as e:
+        # JSON 写失败（review #2）：与 YAML 写失败对称 500；此处 config.yaml 尚未触碰
+        _respond(handler, 500, {"error": f"format-rules 写入失败: {e}"})
+        return
+    rerr = _render_to_config(payload["rules"])
+    if rerr:
+        _rollback_format_rules_json()
+        _respond(handler, 500, {"error": f"{rerr}（JSON 已回滚）"})
+        return
+    _respond(handler, 200, payload)
+
+
+def _yaml_single_quote(s: str) -> str:
+    """YAML 单引号标量（内嵌单引号翻倍）。"""
+    return "'" + s.replace("'", "''") + "'"
+
+
+def render_gateway_block(rules: list) -> str:
+    """渲染 promptGuard request 段的 - regex 条目文本（issue #33）。
+    缩进对齐现网（条目 12 空格级，模板化确定性构造兜底 stdlib 无 YAML 解析器）；
+    enabled=false 或 gateway_patterns 为空（shim-only）的规则不渲染进网关。"""
+    lines = []
+    for r in rules:
+        patterns = r.get("gateway_patterns") or []
+        if not r.get("enabled") or not patterns:
+            continue
+        lines.append("            - regex:")
+        lines.append(f"                action: {r['action']}")
+        lines.append("                rules:")
+        for p in patterns:
+            lines.append(f"                  - pattern: {_yaml_single_quote(p)}")
+        if r["action"] == "reject":
+            body = json.dumps(
+                {"error": {"message": f"Blocked by ai4s DLP: {r['message']}",
+                           "type": "content_policy_violation", "code": r["code"]}},
+                ensure_ascii=False, separators=(",", ":"))
+            lines.append("              rejection:")
+            lines.append("                status: 451")
+            lines.append("                headers:")
+            lines.append("                  set:")
+            lines.append('                    content-type: "application/json"')
+            lines.append("                body: |")
+            lines.append(f"                  {body}")
+    return "\n".join(lines) + "\n"
+
+
+# config.yaml 一次性标记区块（issue #33）：渲染内容替换 BEGIN/END 之间，区块外手改不动
+_BEGIN_MARK = "# >>> DLP-FORMAT-RULES BEGIN"
+_END_MARK = "# <<< DLP-FORMAT-RULES END"
+
+
+def splice_rendered(config_text: str, block: str) -> str:
+    """用渲染文本替换 BEGIN/END 标记行之间的内容（标记行保留）。标记缺失/顺序错 → ValueError。"""
+    lines = config_text.splitlines(keepends=True)
+    marks = [i for i, l in enumerate(lines)
+             if l.strip().startswith(_BEGIN_MARK) or l.strip().startswith(_END_MARK)]
+    if len(marks) != 2 or not lines[marks[0]].strip().startswith(_BEGIN_MARK):
+        raise ValueError("config.yaml 缺少 DLP-FORMAT-RULES BEGIN/END 标记（或顺序错误）")
+    b, e = marks
+    return "".join(lines[:b + 1]) + block + "".join(lines[e:])
+
+
+def _verify_spliced(text: str, rules: list) -> None:
+    """渲染后校验（issue #33）：标记完整 + 每条启用规则的 gateway_patterns 与 reject code 均在文本中。"""
+    if _BEGIN_MARK not in text or _END_MARK not in text:
+        raise ValueError("渲染后校验失败: 标记缺失")
+    for r in rules:
+        if not r.get("enabled"):
+            continue
+        for p in r.get("gateway_patterns") or []:
+            # pattern 原文含 ' 时渲染进 YAML 单引号标量会翻倍（review #3）：比对转义后形态，否则恒假误 500
+            if p.replace("'", "''") not in text:
+                raise ValueError(f"渲染后校验失败: pattern 未落文本 ({r.get('code')})")
+        if r.get("action") == "reject" and f'"code":"{r["code"]}"' not in text:
+            raise ValueError(f"渲染后校验失败: rejection code 未落文本 ({r.get('code')})")
+
+
+def _render_to_config(rules) -> str | None:
+    """读 config.yaml → 渲染 splice 标记区块 → 渲染后校验 → 原子写盘（PUT/render 共用，review #6）。
+    成功返回 None；渲染/校验失败或写盘失败返回错误消息（渲染失败时未落盘）。"""
+    try:
+        with open(AGENTGW_CONFIG_PATH, encoding="utf-8") as f:
+            config_text = f.read()
+        new_config = splice_rendered(config_text, render_gateway_block(rules))
+        _verify_spliced(new_config, rules)
+    except (OSError, ValueError) as e:
+        return f"渲染失败: {e}"
+    try:
+        write_text_atomic(AGENTGW_CONFIG_PATH, new_config)
+    except OSError as e:
+        return f"config.yaml 写入失败: {e}"
+    return None
+
+
+def _rollback_format_rules_json() -> None:
+    """JSON 已写但 config 渲染/写盘失败时回滚：.bak 恢复（无 .bak 说明此前无文件，直接删除），两侧不留半更新。"""
+    if os.path.exists(FORMAT_RULES_PATH + ".bak"):
+        shutil.copyfile(FORMAT_RULES_PATH + ".bak", FORMAT_RULES_PATH)
+    elif os.path.exists(FORMAT_RULES_PATH):
+        os.unlink(FORMAT_RULES_PATH)
+
+
+def _format_rules_render_post(handler, _me):
+    """POST 幂等重渲染（issue #33）：按 JSON 当前内容重渲染 config.yaml 标记区块。
+    用于区块被手改漂移后的修复；JSON 损坏/缺标记拒绝渲染，不落盘。"""
+    data = _load_json_file(FORMAT_RULES_PATH)
+    if not isinstance(data, dict) or not isinstance(data.get("rules"), list):
+        _respond(handler, 500, {"error": "format-rules unreadable，拒绝渲染"})
+        return
+    rules = data["rules"]
+    rerr = _render_to_config(rules)
+    if rerr:
+        _respond(handler, 500, {"error": rerr})
+        return
+    rendered = sum(1 for r in rules if r.get("enabled") and r.get("gateway_patterns"))
+    _respond(handler, 200, {"rendered": rendered})
+
+
 def _validate_recognizer_fields(rec) -> str | None:
     """recognizer 字段校验（issue #32，POST/PUT 共用）：合法返回 None，非法返回具体原因。
     regex 必须过 re.compile（错误带 re 原因）；score 0~1 数值；entity/replacement 非空。"""
@@ -293,6 +500,9 @@ _ROUTES = {
     ("PUT", "/dlp-admin/wordlist"): ("write", _wordlist_put),
     ("GET", "/dlp-admin/recognizers"): ("read", _recognizers_get),
     ("POST", "/dlp-admin/recognizers"): ("write", _recognizers_post),
+    ("GET", "/dlp-admin/format-rules"): ("read", _format_rules_get),
+    ("PUT", "/dlp-admin/format-rules"): ("write", _format_rules_put),
+    ("POST", "/dlp-admin/format-rules/render"): ("write", _format_rules_render_post),
 }
 
 
@@ -343,19 +553,31 @@ def handle(handler, method: str) -> bool:
     return True
 
 
-def write_json_atomic(path: str, obj) -> None:
-    """原子写 JSON 配置（沿用 issue #29 EDM 纪律）：同目录唯一 tmp + os.replace。
+def _write_atomic(path: str, write_fn) -> None:
+    """原子写核心（issue #33 从 write_json_atomic 重构）：同目录唯一 tmp + os.replace。
     写前自动备份（issue #31 spec）：现有旧文件复制为 <path>.bak（单层滚动；目标不存在时跳过）。
-    读者（shim 每请求重读热更新）只见完整旧版或完整新版；失败时清理 tmp，旧文件不受损。
-    风格对齐词表文件：ensure_ascii=False、indent=2、尾部换行。"""
+    读者（shim 每请求重读热更新）只见完整旧版或完整新版；失败时清理 tmp，旧文件不受损。"""
     tmp = f"{path}.{os.getpid()}.{threading.get_ident()}.tmp"
     try:
         with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(obj, f, ensure_ascii=False, indent=2)
-            f.write("\n")
+            write_fn(f)
         if os.path.exists(path):
             shutil.copyfile(path, path + ".bak")  # 写前备份：replace 失败时 .bak 与旧文件同值
         os.replace(tmp, path)
     finally:
         if os.path.exists(tmp):
             os.unlink(tmp)
+
+
+def write_json_atomic(path: str, obj) -> None:
+    """原子写 JSON 配置（沿用 issue #29 EDM 纪律）。
+    风格对齐词表文件：ensure_ascii=False、indent=2、尾部换行。"""
+    def _dump(f):
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    _write_atomic(path, _dump)
+
+
+def write_text_atomic(path: str, text: str) -> None:
+    """原子写文本配置（issue #33：config.yaml 渲染落盘），与 write_json_atomic 共用 .bak 纪律。"""
+    _write_atomic(path, lambda f: f.write(text))
