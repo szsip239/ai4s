@@ -1,8 +1,8 @@
 /**
- * 开关与阈值面板（issue #36）：GET/PUT /dlp-admin/settings（judge/edm/pg 开关阈值 + judge prompt）。
+ * 开关与阈值整体面板（issue #36；issue #38 起为三段整体视图，judge/PG 单项维护走各自独立面板）。
+ * GET/PUT /dlp-admin/settings（judge/edm/pg 开关阈值 + judge prompt）。
  * PUT 整体替换（服务端校验三段必填且字段齐全）；本地草稿 edited===null 即无改动（dirty 供离开提示）。
- * 404（settings.json 缺失=env 兜底态）按 DlpApiError.status 判定（review #3，不耦合文案）；
- * 非 404 故障仅报错，不追加兜底指引。judge 区常驻警示：真实员工流量启用前必须换内网模型。
+ * 404/故障展示与 judge/PG 面板同款（Ai4sSettingsQueryState）。judge 区常驻警示：真实员工流量启用前必须换内网模型。
  */
 import { useEffect, useState } from 'react';
 import { IconAlertTriangle, IconLoader2 } from '@tabler/icons-react';
@@ -13,18 +13,11 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
-import { DlpApiError, usePutSettings, useSettings, type DlpSettings } from '../api';
-import { Ai4sQueryState } from './QueryState';
+import { usePutSettings, useSettings, type DlpSettings } from '../api';
+import { Ai4sSettingsQueryState } from './QueryState';
+import { validateJudge, validatePg } from './settingsValidation';
 
-export type Ai4sSettingsFocus = 'judge' | 'edm' | 'pg' | null;
-
-export function Ai4sSettingsPanel({
-  focus = null,
-  onDirtyChange,
-}: {
-  focus?: Ai4sSettingsFocus;
-  onDirtyChange?: (dirty: boolean) => void;
-}) {
+export function Ai4sSettingsPanel({ onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void }) {
   const { data, isLoading, error } = useSettings();
   const putSettings = usePutSettings();
   const [edited, setEdited] = useState<DlpSettings | null>(null);
@@ -36,12 +29,6 @@ export function Ai4sSettingsPanel({
     return () => onDirtyChange?.(false);
   }, [dirty, onDirtyChange]);
 
-  // 管线 judge/pg 节点点入时滚动定位到对应区段
-  useEffect(() => {
-    if (!focus || !data) return;
-    document.getElementById(`settings-section-${focus}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }, [focus, data]);
-
   const settingsDoc = edited ?? data ?? null;
 
   const mutate = (next: DlpSettings) => {
@@ -51,16 +38,13 @@ export function Ai4sSettingsPanel({
 
   const save = () => {
     if (!settingsDoc) return;
-    // 客户端预检（服务端权威校验同款，省一次往返）
-    if (!settingsDoc.judge.model.trim() || !settingsDoc.judge.base_url.trim())
-      return setFormError('judge model/base_url 不能为空');
-    if (!(settingsDoc.judge.timeout > 0)) return setFormError('judge timeout 须 > 0');
-    if (!settingsDoc.judge.prompt_system.trim() || !settingsDoc.judge.prompt_fewshot.trim())
-      return setFormError('judge prompt_system/prompt_fewshot 不能为空');
+    // 共享预检（settingsValidation，judge→edm→pg 顺序同原逐字面板的报错优先级；服务端权威校验为准）
+    const invalidJudge = validateJudge(settingsDoc.judge);
+    if (invalidJudge) return setFormError(invalidJudge);
     if (!Number.isInteger(settingsDoc.edm.min_hits) || settingsDoc.edm.min_hits < 1)
       return setFormError('edm min_hits 须为 ≥1 整数');
-    if (!(settingsDoc.pg.threshold >= 0 && settingsDoc.pg.threshold <= 1))
-      return setFormError('pg threshold 须在 0~1');
+    const invalidPg = validatePg(settingsDoc.pg);
+    if (invalidPg) return setFormError(invalidPg);
     putSettings.mutate(settingsDoc, { onSuccess: () => setEdited(null) });
   };
 
@@ -68,36 +52,17 @@ export function Ai4sSettingsPanel({
     <Card>
       <CardHeader>
         <CardTitle>开关与阈值</CardTitle>
-        <CardDescription>judge / EDM / PG 总开关与判定参数（settings.json）；保存即热生效，无需重启</CardDescription>
+        <CardDescription>
+          judge / EDM / PG 三段开关与阈值的整体视图，与左侧「语义 judge」「注入 PG」面板读写同一份
+          settings.json。单项维护走对应面板，这里适合整体核对；保存即热生效
+        </CardDescription>
       </CardHeader>
       <CardContent>
-        <Ai4sQueryState
-          isLoading={isLoading}
-          error={error}
-          errorTitle='settings 加载失败'
-          rows={4}
-          renderError={(err) =>
-            err instanceof DlpApiError && err.status === 404 ? (
-              // settings.json 缺失（env 兜底态，合法）：给恢复指引；非 404 故障走缺省错误样式、不加指引
-              <Alert>
-                <IconAlertTriangle className='size-4' />
-                <AlertTitle>settings.json 不存在（env 兜底态）</AlertTitle>
-                <AlertDescription>
-                  当前 shim 以 env/内置默认运行；请在部署侧恢复 deploy/dlp/settings.json 后再于本页维护。
-                </AlertDescription>
-              </Alert>
-            ) : (
-              <Alert variant='destructive'>
-                <AlertTitle>settings 加载失败</AlertTitle>
-                <AlertDescription>{err instanceof Error ? err.message : String(err)}</AlertDescription>
-              </Alert>
-            )
-          }
-        >
+        <Ai4sSettingsQueryState isLoading={isLoading} error={error}>
           {settingsDoc && (
             <div className='space-y-8'>
               {/* ---- 语义 judge ---- */}
-              <section id='settings-section-judge' className='space-y-4 scroll-mt-4'>
+              <section className='space-y-4'>
                 <div className='flex items-center justify-between gap-4'>
                   <div>
                     <div className='font-medium'>语义 judge（LLM 判定商密语义指代）</div>
@@ -170,7 +135,7 @@ export function Ai4sSettingsPanel({
               </section>
 
               {/* ---- EDM ---- */}
-              <section id='settings-section-edm' className='space-y-4 scroll-mt-4'>
+              <section className='space-y-4'>
                 <div className='flex items-center justify-between gap-4'>
                   <div>
                     <div className='font-medium'>L3 EDM 文档指纹</div>
@@ -197,7 +162,7 @@ export function Ai4sSettingsPanel({
               </section>
 
               {/* ---- 注入 PG ---- */}
-              <section id='settings-section-pg' className='space-y-4 scroll-mt-4'>
+              <section className='space-y-4'>
                 <div className='flex items-center justify-between gap-4'>
                   <div>
                     <div className='font-medium'>注入 PG（PromptGuard 2）</div>
@@ -234,7 +199,7 @@ export function Ai4sSettingsPanel({
               </div>
             </div>
           )}
-        </Ai4sQueryState>
+        </Ai4sSettingsQueryState>
       </CardContent>
     </Card>
   );

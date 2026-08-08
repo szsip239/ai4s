@@ -1,5 +1,6 @@
 /**
  * 纵深层只读规则表（issue #36）：现有 Ai4sRulesPage 的 Alert+Card+Table 段原样搬入（axonhub 纵深层，只读）。
+ * issue #38 起为导航普通选中项：选中才渲染，不再常驻页底。
  * 类型与优先级为展示层派生（上游模型无此字段），与主层评估顺序一致维护。
  */
 import { useMemo } from 'react';

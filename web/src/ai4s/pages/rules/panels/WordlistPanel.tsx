@@ -56,7 +56,10 @@ export function Ai4sWordlistPanel({ onDirtyChange }: { onDirtyChange?: (dirty: b
         <div className='flex items-center justify-between gap-4'>
           <div>
             <CardTitle>商密词表</CardTitle>
-            <CardDescription>L2 webhook 词表：命中即 reject（归一化预检同查）；保存即热生效，无需重启</CardDescription>
+            <CardDescription>
+              公司代号、内部域名、未发布产品名的精确词清单，命中即拒绝发送；新词立项、产品改名、误报下词时在这里维护，保存即热生效。改坏可从同目录
+              .bak 备份或 git 回滚
+            </CardDescription>
           </div>
           <Badge variant='secondary'>{terms.length} 词</Badge>
         </div>

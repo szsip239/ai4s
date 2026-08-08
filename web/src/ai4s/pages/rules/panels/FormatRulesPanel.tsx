@@ -218,7 +218,8 @@ export function Ai4sFormatRulesPanel({ onDirtyChange }: { onDirtyChange?: (dirty
           <div>
             <CardTitle>格式规则 L1·L1.5</CardTitle>
             <CardDescription>
-              Secrets reject 拦截 + PII 格式 mask 脱敏；<span className='font-medium text-foreground'>保存即渲染网关配置并热重载</span>
+              API 密钥、私钥等格式特征规则，直接在网关拦截（永远生效）；<span className='font-medium text-foreground'>保存会重写网关配置并热重载</span>。改坏可用
+              render 端点重渲染或 .bak 回滚
             </CardDescription>
           </div>
           <Button variant='outline' onClick={() => setDialogOpen('new')}>

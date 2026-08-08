@@ -115,7 +115,7 @@ export function Ai4sEdmCorpusPanel({ onDirtyChange }: { onDirtyChange?: (dirty: 
           <div>
             <CardTitle>EDM 语料</CardTitle>
             <CardDescription>
-              L3 精确数据匹配：整段粘贴商密文档命中阈值即 451；语料原文即商密文档，上传即指纹化
+              整份商密文档的指纹库，防整段粘贴外发（命中阈值即 451）；新商密文档纳入管理时上传（上传即指纹化），文档作废时删除。语料不入库，误删只能重新上传原文
             </CardDescription>
           </div>
           <Button variant='outline' onClick={() => setUploadOpen(true)}>

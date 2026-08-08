@@ -1,9 +1,10 @@
 /**
- * ai4s 脱敏规则页 = DLP 统一配置中心（issue #36 正式替换）。
- * 布局：顶部检测管线条（节点状态=真实 settings）→ master-detail（左层导航 + 右配置面板）→ 底部纵深层只读表。
+ * ai4s 脱敏规则页 = DLP 统一配置中心（issue #36 正式替换；#38 UX 修正）。
+ * 布局：顶部检测管线条（节点状态=真实 settings）→ master-detail（左层导航 + 右配置面板），无常驻区块。
  * 五个可配面板对接 shim /dlp-admin/*（React Query，写后 invalidate）：
- *   商密词表 / PII 规则 / 格式规则 L1·L1.5 / EDM 语料 / 开关与阈值（含 judge prompt）。
- * 管线点击与左导航选中联动同一 state；离开有未保存修改的面板时 confirm 提示（dirty 标记由面板上报）。
+ *   商密词表 / PII 规则 / 格式规则 L1·L1.5 / EDM 语料 / 开关与阈值（judge、PG 为独立面板，另含整体视图）。
+ * 纵深层规则（只读）为普通导航选中项（#38：不再常驻页底）；管线点击与左导航选中联动同一 state；
+ * 离开有未保存修改的面板时 confirm 提示（dirty 标记由面板上报）。
  */
 import { useCallback, useMemo, useRef, useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -22,6 +23,8 @@ import { Ai4sNodeBadges, Ai4sPipelineBar, type Ai4sPipelineNodeView } from './Pi
 import { Ai4sDeepLayerRules } from './panels/DeepLayerRules';
 import { Ai4sEdmCorpusPanel } from './panels/EdmCorpusPanel';
 import { Ai4sFormatRulesPanel } from './panels/FormatRulesPanel';
+import { Ai4sJudgePanel } from './panels/JudgePanel';
+import { Ai4sPgPanel } from './panels/PgPanel';
 import { Ai4sRecognizersPanel } from './panels/RecognizersPanel';
 import { Ai4sSettingsPanel } from './panels/SettingsPanel';
 import { Ai4sWordlistPanel } from './panels/WordlistPanel';
@@ -50,7 +53,6 @@ function Ai4sResponseSideCard() {
 
 export default function Ai4sRulesPage() {
   const [selected, setSelected] = useState<PanelKey>('l2');
-  const deepRef = useRef<HTMLDivElement>(null);
   // 当前面板的 dirty 标记（一次只渲染一个面板，面板经 onDirtyChange 上报；卸载时自动复位）
   const dirtyRef = useRef(false);
   const setDirty = useCallback((d: boolean) => {
@@ -126,11 +128,6 @@ export default function Ai4sRulesPage() {
 
   /** 切换选中层（管线点击与左导航联动同一 state）；有未保存修改先 confirm */
   const handleSelect = (key: PanelKey) => {
-    if (key === 'deep') {
-      // 纵深层无面板：锚点滚动到底部只读表，不改选中态
-      deepRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-      return;
-    }
     if (key !== selected && dirtyRef.current) {
       if (!window.confirm('当前面板有未保存的修改，离开将丢弃。确定离开？')) return;
     }
@@ -156,6 +153,7 @@ export default function Ai4sRulesPage() {
         <div className='mb-6'>
           <h2 className='text-xl font-semibold tracking-tight'>脱敏规则 · DLP 统一配置中心</h2>
           <p className='text-sm text-muted-foreground'>请求链各层的词表、规则、语料与开关在此集中维护，保存即热生效</p>
+          <p className='mt-1 text-xs text-muted-foreground'>维护方法见 docs/guides/dlp-config-guide.md</p>
         </div>
 
         <Ai4sPipelineBar
@@ -193,16 +191,12 @@ export default function Ai4sRulesPage() {
               </div>
             )}
             {selected === 'l3' && <Ai4sEdmCorpusPanel onDirtyChange={setDirty} />}
-            {selected === 'judge' && <Ai4sSettingsPanel focus='judge' onDirtyChange={setDirty} />}
-            {selected === 'pg' && <Ai4sSettingsPanel focus='pg' onDirtyChange={setDirty} />}
+            {selected === 'judge' && <Ai4sJudgePanel onDirtyChange={setDirty} />}
+            {selected === 'pg' && <Ai4sPgPanel onDirtyChange={setDirty} />}
             {selected === 'toggles' && <Ai4sSettingsPanel onDirtyChange={setDirty} />}
             {selected === 'response' && <Ai4sResponseSideCard />}
+            {selected === 'deep' && <Ai4sDeepLayerRules />}
           </div>
-        </div>
-
-        {/* 底部：纵深层只读规则表（原 Ai4sRulesPage Alert+Card+Table 段，原样保留） */}
-        <div ref={deepRef} className='scroll-mt-4'>
-          <Ai4sDeepLayerRules />
         </div>
       </Main>
     </>

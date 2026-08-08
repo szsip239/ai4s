@@ -213,7 +213,10 @@ export function Ai4sRecognizersPanel({ onDirtyChange }: { onDirtyChange?: (dirty
         <div className='flex items-center justify-between gap-4'>
           <div>
             <CardTitle>PII 规则</CardTitle>
-            <CardDescription>L2 Presidio ad-hoc recognizer（结构同 recognizers/pii-zh.json），保存即热更新</CardDescription>
+            <CardDescription>
+              身份证、手机号这类有固定格式的个人信息识别规则，命中即打码后放行；出现误报或新型号码段时调整，保存即热生效。改坏可从同目录
+              .bak 备份或 git 回滚
+            </CardDescription>
           </div>
           <Button variant='outline' onClick={() => setDialogOpen('new')}>
             <IconPlus />

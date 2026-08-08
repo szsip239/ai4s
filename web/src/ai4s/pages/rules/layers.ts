@@ -21,7 +21,7 @@ export const PIPELINE_LAYERS: LayerDef[] = [
   { key: 'response', label: '响应侧' },
 ];
 
-/** 导航附加项：开关与阈值（judge/edm/pg 总配置面板）、纵深层（只读，锚点滚动到底部） */
+/** 导航附加项：开关与阈值（judge/edm/pg 整体视图）、纵深层（只读；issue #38 起为普通选中项，右侧渲染不再常驻） */
 export const EXTRA_NAV: LayerDef[] = [
   { key: 'toggles', label: '开关与阈值' },
   { key: 'deep', label: '纵深层规则' },
