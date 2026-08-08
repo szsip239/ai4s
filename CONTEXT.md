@@ -21,6 +21,20 @@ _Avoid_: 用户规则、user scope 规则
 请求打码时留映射、响应还原为原文，员工看到完整内容而上游只见掩码。当前全部为**不可逆**固定替换词；可逆评估挂账待 #23。
 _Avoid_: 脱敏还原、映射恢复
 
+### 统一配置
+
+**统一配置中心（Unified Config Center）**:
+DLP 全部配置面（词表/识别器/格式规则/EDM 语料/开关阈值）的单一维护入口：shim admin API `/dlp-admin/*` 为权威写入口，web「脱敏规则」页是其前端。
+_Avoid_: 配置文件直改、env 调参
+
+**admin 平面（Admin Plane）**:
+shim 内与检测路径完全隔离的 `/dlp-admin/*` 管理面：Bearer token 经 axonhub me 内省鉴权（读 read_channels / 写 write_channels scope），fail-closed（内省不可达 503），不适用检测链 fail-open 分级。
+_Avoid_: 管理接口、后台 API
+
+**单一源（Single Source of Truth）**:
+每类配置只有一个权威存储（词表/规则/settings JSON、EDM 指纹库），渲染产物（agentgateway config.yaml 标记区块）由它派生；EDM 入库与检测同一算法（`shim/edm_lib.py`）亦属此纪律。
+_Avoid_: 双写、多处维护
+
 ### 额度与计价
 
 **credit（点）**:

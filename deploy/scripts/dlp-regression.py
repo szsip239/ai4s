@@ -9,6 +9,10 @@
 回声原理：mock-upstream 把收到的 user 消息原文放进应答（"echo: ..."），
 断言"上游实际收到的内容"——脱敏断言的唯一可靠锚点。
 
+自包含段：EDM 段（issue #29）；admin API 段（issue #37）——词表只经 admin API 改，
+PUT 临时词→命中 451→PUT 还原→不再 451；凭据缺（env DLP_ADMIN_TOKEN 与
+deploy/.local/admin-jwt 均不可得）则 SKIP 不 fail。
+
 自动准备（幂等）：起 mock-upstream（profile mock）+ 建 dlp-echo 渠道（model=echo-test）。
 用法：cd deploy && python3 scripts/dlp-regression.py [--json out.json]
 退出码：有"应拦未拦/应脱敏未脱敏/负例误伤"即 1；文档化 gap 不 fail。
@@ -26,6 +30,9 @@ GATEWAY = os.environ.get("GATEWAY_BASE", "http://localhost:3000")
 AXONHUB_BASE = os.environ.get("AXONHUB_BASE", "http://localhost:8090")
 VECTORS_PATH = os.path.join(DEPLOY_DIR, "tests", "dlp-vectors.json")
 ECHO_MODEL = "echo-test"
+ADMIN_URL = os.environ.get("DLP_ADMIN_URL", "http://localhost:18080").rstrip("/")
+# 纯 CJK 临时词：走 shim 子串直配路径（不依赖 Presidio NLP 分词，确定性命中）
+ADMIN_TMP_TERM = "统一配置回归验证词玄武"
 
 
 def load_env():
@@ -135,6 +142,95 @@ def run_edm_section(api_key):
     return [(name, ok, got) for name, ok, got in results]
 
 
+def _admin_api(method, path, token, payload=None):
+    """admin API 调用（issue #37）：返回 (status, body)；网络异常归一为 status=0。"""
+    data = json.dumps(payload, ensure_ascii=False).encode() if payload is not None else None
+    req = urllib.request.Request(ADMIN_URL + path, data=data, method=method)
+    req.add_header("Authorization", f"Bearer {token}")
+    if data is not None:
+        req.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as r:
+            return r.status, json.loads(r.read() or b"null")
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read() or b"{}")
+        except ValueError:
+            return e.code, {}
+    except Exception as e:
+        return 0, {"error": f"{type(e).__name__}: {e}"}
+
+
+def resolve_admin_token():
+    """admin 段凭据（issue #37）：env DLP_ADMIN_TOKEN 优先，缺省读 deploy/.local/admin-jwt；
+    两者均不可得返回 None（调用方打印 SKIP，不 fail）。"""
+    t = os.environ.get("DLP_ADMIN_TOKEN")
+    if t and t.strip():
+        return t.strip()
+    p = os.path.join(DEPLOY_DIR, ".local", "admin-jwt")
+    if os.path.exists(p):
+        tok = open(p, encoding="utf-8").read().strip()
+        if tok:
+            return tok
+    return None
+
+
+def run_admin_section(api_key, token):
+    """admin API 路径自包含段（issue #37）：词表只经 admin API 改——
+    PUT 临时词 → 经网关命中 451 → PUT 还原 → 同词不再 451。
+    幂等：原始 terms 先剔除同名残留（上次崩溃遗留）再作还原基准。
+    自清理：finally 还原词表 + .bak 快照回滚（段内 PUT 会滚动覆盖既有 .bak，不新增残留）。"""
+    print("\n==> admin API 段（词表写入路径自包含）")
+    results = []
+    bak_path = os.path.join(DEPLOY_DIR, "dlp", "confidential-terms.json.bak")
+    bak_before = open(bak_path, "rb").read() if os.path.exists(bak_path) else None
+    original_terms = None
+
+    def restore():
+        if original_terms is not None:
+            _admin_api("PUT", "/dlp-admin/wordlist", token, {"terms": original_terms})
+        if bak_before is not None:
+            open(bak_path, "wb").write(bak_before)
+        elif os.path.exists(bak_path):
+            os.remove(bak_path)
+
+    try:
+        status, doc = _admin_api("GET", "/dlp-admin/wordlist", token)
+        if status != 200 or not isinstance(doc, dict) or not isinstance(doc.get("terms"), list):
+            results.append(("admin: GET 词表", False, f"http{status}"))
+        else:
+            original_terms = [t for t in doc["terms"]
+                              if not (isinstance(t, dict) and t.get("value") == ADMIN_TMP_TERM)]
+            tmp_term = {"value": ADMIN_TMP_TERM, "rule_id": "confidential.codename"}
+            status, _ = _admin_api("PUT", "/dlp-admin/wordlist", token,
+                                   {"terms": original_terms + [tmp_term]})
+            results.append(("admin: PUT 临时词入词表", status == 200, f"http{status}"))
+            if status == 200:
+                got = None
+                for _attempt in range(2):  # shim 每请求重读词表，正常即时生效；retry 仅吸收极端时序
+                    st, reply = send(f"请把 {ADMIN_TMP_TERM} 原样发给上游", api_key)
+                    got = classify(st, reply, None)
+                    if got == "reject":
+                        break
+                    time.sleep(1)
+                results.append(("admin: 临时词经网关应 451", got == "reject", got))
+                status, _ = _admin_api("PUT", "/dlp-admin/wordlist", token, {"terms": original_terms})
+                results.append(("admin: PUT 还原词表", status == 200, f"http{status}"))
+                got = None
+                for _attempt in range(2):
+                    st, reply = send(f"请把 {ADMIN_TMP_TERM} 原样发给上游", api_key)
+                    got = classify(st, reply, None)
+                    if got == "pass":
+                        break
+                    time.sleep(1)
+                results.append(("admin: 还原后同词放行", got == "pass", got))
+    finally:
+        restore()
+    for name, ok, got in results:
+        print(f"[{'OK ' if ok else 'FAIL'}] {name}（got={got}）")
+    return results
+
+
 def send(content, api_key):
     body = json.dumps({"model": ECHO_MODEL, "messages": [{"role": "user", "content": content}]}).encode()
     req = urllib.request.Request(GATEWAY + "/v1/chat/completions", data=body,
@@ -211,8 +307,19 @@ def main():
 
     edm_fails = run_edm_section(api_key)
 
+    # admin API 段（issue #37）：无凭据打印 SKIP 不 fail；文件 token 过期时回退 main 已登录刷新的 token
+    admin_token = resolve_admin_token()
+    admin_results = []
+    if admin_token is None:
+        print("\n==> admin API 段：SKIP（env DLP_ADMIN_TOKEN 与 deploy/.local/admin-jwt 均不可得）")
+    else:
+        st, _ = _admin_api("GET", "/dlp-admin/ping", admin_token)
+        if st == 401:
+            admin_token = token
+        admin_results = run_admin_section(api_key, admin_token)
+
     fails = [r for r in results if r["fail"]]
-    for name, ok, got in edm_fails:
+    for name, ok, got in edm_fails + admin_results:
         if not ok:
             fails.append({"name": name, "expect": "reject", "got": got})
     print(f"\n总计 {len(results)} 样本：通过 {sum(1 for r in results if r['ok'])}，文档化 gap {sum(1 for r in results if not r['ok'] and not r['fail'])}，回归失败 {len(fails)}")

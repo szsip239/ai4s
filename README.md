@@ -23,6 +23,8 @@
 
 `deploy/` 已入库 compose 编排与配置：`docker compose up -d` 一条命令拉起 agentgateway + axonhub（均 pin 定版本）+ PostgreSQL，`deploy/scripts/` 含初始化/冒烟/PG 日备脚本。详见 [`deploy/README.md`](deploy/README.md)。
 
+DLP 统一配置（issue #31–#36）：全部配置面（词表/识别器/格式规则/EDM 语料/开关阈值）的唯一写入口 = shim admin API `/dlp-admin/*`（本机 `http://localhost:18080`，Bearer 经 axonhub 内省鉴权）；`web/`「脱敏规则」页是其配置中心前端。契约与配置面清单见 [`docs/contracts/dlp-webhook-shim.md`](docs/contracts/dlp-webhook-shim.md)。
+
 ## 需求清单（v1）
 
 1. 上游聚合：多个 LLM 供应商/中转站 → 统一 OpenAI 兼容入口

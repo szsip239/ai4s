@@ -10,4 +10,4 @@ echo "==> 拉取 $MODEL（首次约 1GB）"
 docker exec ai4s-ollama ollama pull "$MODEL"
 echo "==> 已就位："
 docker exec ai4s-ollama ollama list | grep -i "${MODEL%%:*}" || true
-echo "切换 judge：.env 设 JUDGE_BASE_URL=http://ollama:11434/v1 JUDGE_API_KEY=ollama JUDGE_MODEL=$MODEL，docker compose up -d --force-recreate shim"
+echo "切换 judge：配置中心「开关与阈值」页（或 PUT /dlp-admin/settings）设 judge.model=$MODEL judge.base_url=http://ollama:11434/v1 —— issue #35 起生效值以 settings.json 为准，env JUDGE_MODEL/JUDGE_BASE_URL 仅回退层；JUDGE_API_KEY=ollama 仍只走 .env"

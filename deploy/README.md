@@ -10,7 +10,7 @@
 | axonhub | `looplj/axonhub:v1.0.0-beta6`（digest `sha256:d41f3ca1…`） | pin 定 beta，不跟 latest/unstable |
 | PostgreSQL | `postgres:16-alpine`（digest `sha256:57c72fd2…`，实为 16.14） | axonhub 官方 compose 同款主版本 |
 | casdoor | `casbin/casdoor:3.133.0` | SSO 枢纽（issue #14）：飞书 OAuth → 标准 OIDC |
-| shim | 本地构建 `../shim`（python:3.12-alpine） | DLP 词表/PII 适配 + 飞书告警适配 `/feishu-alert`（issue #17） |
+| shim | 本地构建 `../shim`（python:3.12-alpine） | DLP 词表/PII 适配 + 飞书告警适配 `/feishu-alert`（issue #17）+ 统一配置 admin 平面 `/dlp-admin/*`（issue #31–#36） |
 | alert-poller | 本地构建 `../alert-poller`（python:3.12-alpine） | 告警巡检（issue #17）：DLP fail-open 探活 + 上游/员工额度轮询，30s 间隔 |
 | mock-upstream（可选） | `python:3.12-alpine` | 仅无 OAuth 凭据时验证链路用 |
 
@@ -23,9 +23,15 @@ docker compose up -d
 ./scripts/smoke-test.sh    # curl 经 agentgateway 完成一次 chat completion
 python3 scripts/apply-pricing.py  # credit 价格表落库（pricing.json：官方原价×渠道倍率，issue #18）
 ./scripts/assign-default-project.sh  # JIT 新员工补进 Default 项目（幂等，可加 cron）
-python3 scripts/dlp-regression.py    # DLP 对抗回归（issue #20）：改词表/规则后必跑
-python3 scripts/edm-add.py <文件>    # EDM 商密文档指纹入库（issue #29，指纹库 gitignored）
+python3 scripts/dlp-regression.py    # DLP 对抗回归（issue #20）：改词表/规则后必跑（含 EDM 段与 admin API 段）
+python3 scripts/edm-add.py <文件>    # EDM 商密文档指纹入库（issue #34 起为 admin API 薄壳，凭据见下）
 ```
+
+## DLP 统一配置（issue #31–#36）
+
+- **唯一写入口 = admin API**：`/dlp-admin/*`（本机 `http://localhost:18080`，仅绑 127.0.0.1），Bearer 鉴权——token 透传 axonhub 内省，读需 `read_channels`、写需 `write_channels`（isOwner 直通）。凭据取 env `DLP_ADMIN_TOKEN`，缺省读 `deploy/.local/admin-jwt`（bootstrap 产物）。`web/`「脱敏规则」配置中心页是其前端；不直改 `dlp/`、`recognizers/`、`edm/` 下的配置文件（会绕过校验/原子写/渲染联动）。
+- **edm-add.py 流程变更（issue #34）**：原直写指纹库逻辑已收编进 shim admin 平面，脚本只剩 CLI 薄壳（用法不变）：`POST /dlp-admin/edm/corpus` 入库、`DELETE /dlp-admin/edm/corpus/<name>` 移除（`--remove`）；同名重复入库 400，更新文档须先 `--remove` 再重新入库。
+- **settings.json 优先于 env（issue #35）**：judge/edm/pg 开关与阈值三级取值 `deploy/dlp/settings.json` > env > 内置默认，shim 每请求重读热生效；维护走 `GET/PUT /dlp-admin/settings` 或配置中心页，`.env` 的 `JUDGE_*`/`EDM_*`/`PG_*` 仅作文件缺失时的回退层。凭据（`JUDGE_API_KEY`/`FEISHU_*`）永远只走 env，禁止写入 settings.json。
 
 - 管理面：http://localhost:8090 ，用 `.env` 中的 `AXONHUB_ADMIN_EMAIL` / `AXONHUB_ADMIN_PASSWORD` 登录（本地账号；阶段 1 切 飞书 OAuth→Casdoor→OIDC）。
 - 员工入口：`http://localhost:3000/v1`（OpenAI 兼容），唯一对员工的端口。

@@ -2,6 +2,8 @@
 # issue #6 验证脚本（测试即票据）：商密词表 v1（agentgateway webhook → shim → Presidio）
 # seam：agentgateway /v1 调用面 + shim/Presidio 容器状态 + 请求记录观测
 # 用法：./scripts/verify-issue-6.sh   —— 全绿退出码 0
+# sliceB（词表热更新）走 admin API（issue #37）：token 取 env DLP_ADMIN_TOKEN，缺省读 .local/admin-jwt；
+#   地址取 env DLP_ADMIN_URL（默认 http://localhost:18080）；无凭据或 ping 预检 401 → 该段 SKIP 不 fail
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -20,6 +22,23 @@ raw=sys.stdin.read()
 code=raw.rstrip().rsplit("\n",1)[-1]
 body=raw.rstrip().rsplit("\n",1)[0][:160].replace("\n"," ")
 print(f"{code}|{body}")'
+}
+
+wl_api() { # $1 = add|restore：经 admin API 改词表（sliceB 用；地址/凭据读 env DLP_ADMIN_URL/DLP_ADMIN_TOKEN）
+python3 - "$1" <<'EOF'
+import json, os, sys, urllib.request
+API=os.environ["DLP_ADMIN_URL"]
+tok=os.environ["DLP_ADMIN_TOKEN"].strip()
+def call(m,p,d=None):
+    data=json.dumps(d,ensure_ascii=False).encode() if d is not None else None
+    r=urllib.request.Request(API+p,data=data,method=m,headers={"Authorization":"Bearer "+tok,"Content-Type":"application/json"})
+    with urllib.request.urlopen(r,timeout=10) as resp: return json.loads(resp.read() or b"null")
+doc=call("GET","/dlp-admin/wordlist")
+terms=[t for t in doc["terms"] if t["value"]!="热更新验证词-玄武"]
+if sys.argv[1]=="add":
+    terms=terms+[{"value":"热更新验证词-玄武","rule_id":"confidential.codename"}]
+call("PUT","/dlp-admin/wordlist",{"terms":terms})
+EOF
 }
 
 echo "==> [sliceA] 词表命中 reject（经 shim → Presidio）"
@@ -50,29 +69,48 @@ echo "    [负样例] HTTP ${CODE}"
 [ "$CODE" = "200" ]
 check "负样例（含「凤凰」非词表词）→ 200 放行" $?
 
-echo "==> [sliceB] 词表热更新（改文件即生效，不重启 shim）"
+echo "==> [sliceB] 词表热更新（admin API 写入即生效，不重启 shim）"
 
-# 追加新词后立刻验证命中；结束后移除该词还原
-python3 - <<'EOF'
-import json
-p="dlp/confidential-terms.json"
-d=json.load(open(p))
-d["terms"].append({"value":"热更新验证词-玄武","rule_id":"confidential.codename"})
-json.dump(d,open(p,"w"),ensure_ascii=False,indent=2)
+# issue #37 起词表唯一写入路径 = admin API（不再直改文件，契约"统一配置"节）；
+# 追加新词后立刻验证命中，结束后经 API 剔除该词还原（幂等：先滤同名残留再追加）。
+# 凭据/地址纪律同 dlp-regression.py：无凭据或 ping 预检非 200（token 过期 401/不可达）→ SKIP 不 fail。
+export DLP_ADMIN_URL="${DLP_ADMIN_URL:-http://localhost:18080}"
+DLP_ADMIN_TOKEN="${DLP_ADMIN_TOKEN:-}"
+[ -z "$DLP_ADMIN_TOKEN" ] && [ -f .local/admin-jwt ] && DLP_ADMIN_TOKEN=$(cat .local/admin-jwt)
+export DLP_ADMIN_TOKEN
+
+PING=$(python3 - <<'EOF'
+import os, urllib.error, urllib.request
+tok=os.environ.get("DLP_ADMIN_TOKEN","").strip()
+if not tok:
+    print("NO_TOKEN"); raise SystemExit
+req=urllib.request.Request(os.environ["DLP_ADMIN_URL"]+"/dlp-admin/ping",
+    headers={"Authorization":"Bearer "+tok})
+try:
+    with urllib.request.urlopen(req,timeout=10) as r: print(r.status)
+except urllib.error.HTTPError as e: print(e.code)
+except Exception: print("UNREACHABLE")
 EOF
-sleep 1
-R=$(probe "热更新验证词-玄武 这个词现在应该被拦截")
-CODE=${R%%|*}
-echo "    [热更新] HTTP ${CODE}"
-[ "$CODE" = "451" ]
-check "新词「热更新验证词-玄武」免重启生效 → 451" $?
-python3 - <<'EOF'
-import json
-p="dlp/confidential-terms.json"
-d=json.load(open(p))
-d["terms"]=[t for t in d["terms"] if t["value"]!="热更新验证词-玄武"]
-json.dump(d,open(p,"w"),ensure_ascii=False,indent=2)
-EOF
+)
+
+if [ "$PING" != "200" ]; then
+  case "$PING" in
+    NO_TOKEN) reason="无凭据" ;;
+    401) reason="token 无效或过期（ping 401）" ;;
+    UNREACHABLE) reason="admin API 不可达" ;;
+    *) reason="ping HTTP $PING" ;;
+  esac
+  echo "    [SKIP] sliceB 跳过：${reason}。提供凭据后重跑：env DLP_ADMIN_TOKEN 或 .local/admin-jwt（地址 env DLP_ADMIN_URL，默认 http://localhost:18080）"
+else
+  wl_api add
+  sleep 1
+  R=$(probe "热更新验证词-玄武 这个词现在应该被拦截")
+  CODE=${R%%|*}
+  echo "    [热更新] HTTP ${CODE}"
+  [ "$CODE" = "451" ]
+  check "新词「热更新验证词-玄武」免重启生效 → 451" $?
+  wl_api restore
+fi
 
 echo "==> [sliceC] fail-open 分级（shim 故障放行 + L1 不受影响）"
 
