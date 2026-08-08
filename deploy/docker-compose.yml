@@ -134,20 +134,21 @@ services:
       FEISHU_ALERT_WEBHOOK: ${FEISHU_ALERT_WEBHOOK:-}
       FEISHU_ALERT_SECRET: ${FEISHU_ALERT_SECRET:-}
       # issue #21 语义层 shadow：judge 经 axonhub 直连调 deepseek-flash（测试期，合成样本）；
-      # 真实流量启用前必须换内网模型。JUDGE_ENABLED=0 即关闭
+      # 真实流量启用前必须换内网模型。issue #35 起开关/模型/超时/prompt 生效值以
+      # /dlp/settings.json 为准（GET/PUT /dlp-admin/settings 维护，热生效），env 仅作回退层
       JUDGE_ENABLED: ${JUDGE_ENABLED:-0}
       JUDGE_BASE_URL: ${JUDGE_BASE_URL:-http://axonhub:8090/v1}
-      JUDGE_API_KEY: ${JUDGE_API_KEY:-}
+      JUDGE_API_KEY: ${JUDGE_API_KEY:-} # 凭据永远只走 env，禁止写入 settings.json
       JUDGE_MODEL: ${JUDGE_MODEL:-deepseek-v4-flash}
-      # issue #29 EDM 文档指纹（PoC）
+      # issue #29 EDM 文档指纹（PoC）；issue #35 起开关/阈值以 /dlp/settings.json 为准，env 回退
       EDM_ENABLED: ${EDM_ENABLED:-0}
       EDM_MIN_HITS: ${EDM_MIN_HITS:-2}
-      # issue #30 PromptGuard 2 注入检测 shadow（检出记日志不阻断）
+      # issue #30 PromptGuard 2 注入检测 shadow（检出记日志不阻断）；开关/阈值同上走 settings.json
       PG_ENABLED: ${PG_ENABLED:-0}
       PG_URL: http://promptguard:8092/guard
       PG_THRESHOLD: ${PG_THRESHOLD:-0.7}
     volumes:
-      - ./dlp:/dlp:rw # 词表挂载（issue #31 起 rw：admin API 写回）；shim 每请求重读热更新
+      - ./dlp:/dlp:rw # 词表/format-rules/settings.json 挂载（issue #31 起 rw：admin API 写回）；shim 每请求重读热更新
       - ../recognizers:/recognizers:rw # PII recognizer 定义（issue #15），issue #31 起 rw
       - ./edm:/edm:rw # EDM 指纹库（issue #29），issue #31 起 rw
       - ./agentgateway:/agentgateway:rw # L1 规则渲染写回（issue #33 用，#31 预挂）

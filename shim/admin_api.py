@@ -31,6 +31,7 @@ FORMAT_RULES_PATH = os.environ.get("FORMAT_RULES_PATH", "/dlp/format-rules.json"
 AGENTGW_CONFIG_PATH = os.environ.get("AGENTGW_CONFIG_PATH", "/agentgateway/config.yaml")
 EDM_FP_PATH = os.environ.get("EDM_FP_PATH", "/edm/fingerprints.json")  # 与 app.py 同 env/默认
 EDM_CORPUS_DIR = os.environ.get("EDM_CORPUS_DIR", "/edm/corpus")
+SETTINGS_PATH = os.environ.get("SETTINGS_PATH", "/dlp/settings.json")  # 与 app.py 同 env/默认（issue #35）
 _MAX_ADMIN_BODY = 1024 * 1024  # admin 请求体上限（配置文本足够）
 _MAX_EDM_BODY = 16 * 1024 * 1024  # EDM corpus POST 放宽（review #5：真实商密文档规模可达数 MB）
 
@@ -201,6 +202,91 @@ def _format_rules_get(handler, _me):
         _respond(handler, 500, {"error": "format-rules unreadable"})
         return
     _respond(handler, 200, data)
+
+
+def _settings_get(handler, _me):
+    """GET settings 全文（issue #35）。文件缺失 → 404（缺失是合法 env 兜底态，review #3，非故障）；
+    存在但损坏 → 500（故障态）。"""
+    if not os.path.exists(SETTINGS_PATH):
+        _respond(handler, 404, {"error": "settings.json 不存在，当前为 env 兜底态"})
+        return
+    data = _load_json_file(SETTINGS_PATH)
+    if data is None:
+        _respond(handler, 500, {"error": "settings unreadable"})
+        return
+    _respond(handler, 200, data)
+
+
+# settings schema（issue #35）：顶层/区段未知键一律拒绝（防 typo 静默漂移，同 format-rules 校验精神）
+_SETTINGS_TOP_KEYS = {"version", "_comment", "judge", "edm", "pg"}
+_SETTINGS_JUDGE_KEYS = {"enabled", "model", "base_url", "timeout", "prompt_system", "prompt_fewshot"}
+_SETTINGS_EDM_KEYS = {"enabled", "min_hits"}
+_SETTINGS_PG_KEYS = {"enabled", "threshold"}
+
+
+def _is_number(v) -> bool:
+    """JSON 数值（排除 bool——Python bool 是 int 子类）。"""
+    return isinstance(v, (int, float)) and not isinstance(v, bool)
+
+
+def _validate_settings(data) -> str | None:
+    """settings JSON 校验（issue #35）：合法返回 None，非法返回具体原因。
+    整体替换语义：judge/edm/pg 三段必填且字段齐全（部分区段更新会静默丢键，不允许）。"""
+    if not isinstance(data, dict):
+        return "settings 必须是对象"
+    for k in data:
+        if k not in _SETTINGS_TOP_KEYS:
+            return f"未知顶层键: {k}"
+    if "version" in data and (not isinstance(data["version"], int) or isinstance(data["version"], bool)):
+        return "version 必须是整数"
+    if "_comment" in data and not isinstance(data["_comment"], str):
+        return "_comment 必须是字符串"
+    allowed = {"judge": _SETTINGS_JUDGE_KEYS, "edm": _SETTINGS_EDM_KEYS, "pg": _SETTINGS_PG_KEYS}
+    for section, keys in allowed.items():
+        sec = data.get(section)
+        if not isinstance(sec, dict):
+            return f"{section} 必须是对象"
+        for k in sec:
+            if k not in keys:
+                return f"{section} 未知字段: {k}"
+        missing = keys - set(sec)
+        if missing:
+            return f"{section} 缺字段: {', '.join(sorted(missing))}"
+    judge, edm, pg = data["judge"], data["edm"], data["pg"]
+    if not isinstance(judge["enabled"], bool):
+        return "judge.enabled 必须是布尔值"
+    for k in ("model", "base_url", "prompt_system", "prompt_fewshot"):
+        if not isinstance(judge[k], str) or not judge[k]:
+            return f"judge.{k} 必须是非空字符串"
+    if not _is_number(judge["timeout"]) or judge["timeout"] <= 0:
+        return "judge.timeout 必须是 >0 数值"
+    if not isinstance(edm["enabled"], bool):
+        return "edm.enabled 必须是布尔值"
+    if not isinstance(edm["min_hits"], int) or isinstance(edm["min_hits"], bool) or edm["min_hits"] < 1:
+        return "edm.min_hits 必须是 ≥1 整数"
+    if not isinstance(pg["enabled"], bool):
+        return "pg.enabled 必须是布尔值"
+    if not _is_number(pg["threshold"]) or not 0 <= pg["threshold"] <= 1:
+        return "pg.threshold 必须是 0~1 数值"
+    return None
+
+
+def _settings_put(handler, _me):
+    """PUT 整体替换 settings（issue #35）：校验 → write_json_atomic。
+    shim 检测路径每请求重读 settings.json，写入即热生效，无需重启。"""
+    payload = _read_body(handler)
+    if payload is None:
+        return
+    err = _validate_settings(payload)
+    if err:
+        _respond(handler, 400, {"error": err})
+        return
+    try:
+        write_json_atomic(SETTINGS_PATH, payload)
+    except OSError as e:
+        _respond(handler, 500, {"error": f"settings 写入失败: {e}"})
+        return
+    _respond(handler, 200, payload)
 
 
 # gateway_patterns 禁用的 Rust regex 不支持构造（lookaround；backreference 另行 \1~\9 扫描）
@@ -638,6 +724,8 @@ _ROUTES = {
     ("POST", "/dlp-admin/format-rules/render"): ("write", _format_rules_render_post),
     ("GET", "/dlp-admin/edm/corpus"): ("read", _edm_corpus_get),
     ("POST", "/dlp-admin/edm/corpus"): ("write", _edm_corpus_post),
+    ("GET", "/dlp-admin/settings"): ("read", _settings_get),
+    ("PUT", "/dlp-admin/settings"): ("write", _settings_put),
 }
 
 

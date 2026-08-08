@@ -28,7 +28,76 @@ import edm_lib    # EDM 指纹算法共享库（issue #34）：入库/检测同�
 PRESIDIO_URL = os.environ.get("PRESIDIO_URL", "http://presidio:3000")
 WORDLIST_PATH = os.environ.get("WORDLIST_PATH", "/dlp/confidential-terms.json")
 PII_RECOGNIZERS_PATH = os.environ.get("PII_RECOGNIZERS_PATH", "/recognizers/pii-zh.json")
+SETTINGS_PATH = os.environ.get("SETTINGS_PATH", "/dlp/settings.json")
 MAX_BODY = 256 * 1024  # 契约：请求体超限截断送检
+
+
+# ---- 统一配置（issue #35）：settings.json > env > 内置默认 ----
+# JUDGE/EDM/PG 开关阈值收敛到 settings.json（每请求重读，热生效，admin 平面 PUT /dlp-admin/settings
+# 维护）；env 层保留作覆盖/回退。judge prompt 单一源=settings.json（review #2：无 env/代码默认，
+# 缺失即 judge 降级纯词表）。凭据（JUDGE_API_KEY/FEISHU_*）永远只走 env。
+def load_settings() -> dict:
+    """每请求重读 settings.json（热更新）。缺失 → {}（可选覆盖层，合法回退态，不 warn）；
+    损坏/不可读/非对象 → warn + {}（回退 env/内置默认，fail-open 语义）。"""
+    try:
+        with open(SETTINGS_PATH, encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as e:
+        print(f"[settings] 读取失败回退 env/默认: {SETTINGS_PATH}: {type(e).__name__}", flush=True)
+        return {}
+    if not isinstance(data, dict):
+        print(f"[settings] 读取失败回退 env/默认: {SETTINGS_PATH}: 顶层非对象", flush=True)
+        return {}
+    return data
+
+
+# 逐键类型护栏（review #1）：手工改坏 JSON 单个值类型时，坏键回退 env/默认 + warn，好键仍生效——
+# 否则检测路径在响应已发后抛 TypeError（如 score >= "0.7"）。与 admin 写侧 _validate_settings 同款映射。
+_SETTINGS_SCHEMA = {
+    "judge": {"enabled": "bool", "model": "str", "base_url": "str", "timeout": "number",
+              "prompt_system": "str", "prompt_fewshot": "str"},
+    "edm": {"enabled": "bool", "min_hits": "int"},
+    "pg": {"enabled": "bool", "threshold": "number"},
+}
+
+
+def _json_type_ok(v, kind: str) -> bool:
+    """settings JSON 值类型检查（bool 先于数值排除——Python bool 是 int 子类）。"""
+    if kind == "bool":
+        return isinstance(v, bool)
+    if kind == "int":
+        return isinstance(v, int) and not isinstance(v, bool)
+    if kind == "number":
+        return isinstance(v, (int, float)) and not isinstance(v, bool)
+    if kind == "str":
+        return isinstance(v, str)
+    return True
+
+
+def setting_value(settings: dict, section: str, key: str, env_name, default):
+    """三级取值（issue #35）：settings.json[section][key] > env（非空） > 内置默认。
+    JSON 值先过 _SETTINGS_SCHEMA 类型护栏：不符 → 该键回退 env/默认 + warn（不含值本身）。
+    env 按 default 类型转换：bool 对齐 "1" 语义；int/float/str 转换失败回退默认
+    （比旧模块级 int()/float() 非法 env 启动即崩更宽容）。"""
+    sec = settings.get(section)
+    if isinstance(sec, dict) and key in sec:
+        v = sec[key]
+        kind = _SETTINGS_SCHEMA.get(section, {}).get(key)
+        if kind is None or _json_type_ok(v, kind):
+            return v
+        print(f"[settings] {section}.{key} 类型不符（期望 {kind}），回退 env/默认", flush=True)
+    if env_name:
+        v = os.environ.get(env_name, "")
+        if v != "":
+            if isinstance(default, bool):
+                return v == "1"
+            try:
+                return type(default)(v)
+            except (TypeError, ValueError):
+                return default
+    return default
 
 # 飞书告警适配（issue #17）：axonhub webhook → 群机器人（签名校验 + 有限重试，补 axonhub fire-and-forget 无重试）
 FEISHU_WEBHOOK = os.environ.get("FEISHU_ALERT_WEBHOOK", "")
@@ -38,18 +107,14 @@ ALERT_RETRIES = 2
 # 商密语义层 shadow（issue #21）：LLM judge 只记录不阻断。
 # 测试期 judge 经 axonhub:8090 直连（绕过 agentgateway DLP 防递归）调 deepseek-flash，样本全为合成占位词；
 # 真实流量启用前必须换内网模型（Ollama/vLLM）——judge 会扩大暴露面，生产不可外发。
-JUDGE_ENABLED = os.environ.get("JUDGE_ENABLED", "") == "1"
-JUDGE_BASE_URL = os.environ.get("JUDGE_BASE_URL", "http://axonhub:8090/v1")
+# 开关/模型/超时/prompt 走统一 settings（issue #35）；凭据永远只走 env。
 JUDGE_API_KEY = os.environ.get("JUDGE_API_KEY", "")
-JUDGE_MODEL = os.environ.get("JUDGE_MODEL", "deepseek-v4-flash")
-JUDGE_TIMEOUT = int(os.environ.get("JUDGE_TIMEOUT", "8"))
 
 # EDM 文档指纹（issue #29，L3 层 PoC）：归一化 shingle + SHA-256，命中≥阈值即 451。
 # 语料/指纹库 gitignored；指纹是单向哈希，不存原文。
 # 算法收编 shim/edm_lib.py（issue #34）：归一化/窗口/行级阈值与入库侧同法。
-EDM_ENABLED = os.environ.get("EDM_ENABLED", "") == "1"
+# 开关/命中阈值走统一 settings（issue #35）；指纹库路径仍走 env。
 EDM_FP_PATH = os.environ.get("EDM_FP_PATH", "/edm/fingerprints.json")
-EDM_MIN_HITS = int(os.environ.get("EDM_MIN_HITS", "2"))
 
 
 def load_edm_fps():
@@ -82,40 +147,51 @@ def edm_hit_count(text: str, fps) -> int:
         hits = max(hits, len(edm_lib.line_hashes(text) & line_fps))
     return hits
 
-JUDGE_SYSTEM = """你是企业数据防泄漏（DLP）语义判定器。判定用户文本是否在语义上涉及公司商密：内部项目代号、未发布产品名、内部系统/域名。注意识别谐音、拼音、拆字、繁体、暗示性描述等变形指代。普通业务话术、与词表无关的同名事物（如旅游景点）不算涉密。
-已知商密词表（精确词由规则层拦截，你负责变形与语义指代）：{terms}
-只输出 JSON：{{"confidential": true|false, "entities": ["类型"], "confidence": 0.0~1.0}}"""
-
-# few-shot 示例（issue #24：1.5b 小模型零样本判别力不足，few-shot 补救实测）
-JUDGE_FEWSHOT = """示例：
-文本："凤皇计划的排期发我" → {{"confidential": true, "entities": ["项目代号"], "confidence": 0.9}}（谐音变形指代代号）
-文本："周末去凤凰古城玩，求攻略" → {{"confidential": false, "entities": [], "confidence": 0.95}}（旅游景点，非公司项目）
-文本："蓝色大鱼那套系统什么时候上" → {{"confidential": true, "entities": ["内部系统"], "confidence": 0.85}}（描述性指代）
-文本："蓝鲸是地球上最大的动物" → {{"confidential": false, "entities": [], "confidence": 0.95}}（动物科普）
-文本："帮我写本周工作总结" → {{"confidential": false, "entities": [], "confidence": 1.0}}（普通业务）"""
+# judge prompt 单一源 = settings.json（issue #35 review #2，AC：代码内不留默认 prompt）——
+# JSON 缺失或 prompt 键缺失/类型不符时 judge 不可用，judge_text 返回 None 降级纯词表（既有 fail-open）。
+# 现网生效 prompt 见 deploy/dlp/settings.json；{{ }}/{terms} 为 .format 转义/占位，改 prompt 时须保留。
 
 
 def judge_text(text: str):
-    """语义涉密判定。返回 {"confidential": bool, "entities": [...], "confidence": float}；异常/未启用返回 None（fail-open）。"""
-    if not (JUDGE_ENABLED and JUDGE_API_KEY) or not text:
+    """语义涉密判定。返回 {"confidential": bool, "entities": [...], "confidence": float}；异常/未启用返回 None（fail-open）。
+    开关/模型/地址/超时三级取值（issue #35）：settings.json judge.* > env > 内置默认；
+    prompt 只认 settings.json（无 env/代码默认）；凭据 JUDGE_API_KEY 永远只走 env。"""
+    if not text:
+        return None
+    s = load_settings()
+    enabled = setting_value(s, "judge", "enabled", "JUDGE_ENABLED", False)
+    if not (enabled and JUDGE_API_KEY):
+        return None
+    model = setting_value(s, "judge", "model", "JUDGE_MODEL", "deepseek-v4-flash")
+    base_url = setting_value(s, "judge", "base_url", "JUDGE_BASE_URL", "http://axonhub:8090/v1")
+    timeout = setting_value(s, "judge", "timeout", "JUDGE_TIMEOUT", 8)
+    prompt_system = setting_value(s, "judge", "prompt_system", None, None)
+    prompt_fewshot = setting_value(s, "judge", "prompt_fewshot", None, None)
+    if not prompt_system or not prompt_fewshot:
+        # prompt 无源（settings.json 缺失/键缺失/类型不符）→ judge 不可用，降级纯词表（fail-open 语义沿用契约分级）
+        print("[settings] judge prompt 缺失（settings.json judge.prompt_system/prompt_fewshot），judge 降级纯词表", flush=True)
         return None
     terms = "、".join(t["value"] for t in load_terms())
+    try:
+        system_content = prompt_system.format(terms=terms)
+    except Exception:
+        return None  # settings 里 prompt 占位损坏 → fail-open（与 judge 其余异常同语义）
     body = json.dumps({
-        "model": JUDGE_MODEL,
+        "model": model,
         "messages": [
-            {"role": "system", "content": JUDGE_SYSTEM.format(terms=terms)},
-            {"role": "user", "content": JUDGE_FEWSHOT},
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": prompt_fewshot},
             {"role": "user", "content": text[:4000]},
         ],
         "max_tokens": 300,
         "temperature": 0,
     }).encode()
     req = urllib.request.Request(
-        JUDGE_BASE_URL + "/chat/completions", data=body,
+        base_url + "/chat/completions", data=body,
         headers={"Content-Type": "application/json", "Authorization": f"Bearer {JUDGE_API_KEY}"},
     )
     try:
-        with urllib.request.urlopen(req, timeout=JUDGE_TIMEOUT) as r:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
             d = json.load(r)
         content = (d["choices"][0]["message"].get("content") or "").strip()
         content = content.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
@@ -242,14 +318,15 @@ def is_simple_token(s: str) -> bool:
 
 
 # PromptGuard 2 注入检测 shadow（issue #30）：检出记日志不阻断，fail-open。
-PG_ENABLED = os.environ.get("PG_ENABLED", "") == "1"
+# 开关/阈值走统一 settings（issue #35）；服务地址仍走 env。
 PG_URL = os.environ.get("PG_URL", "http://promptguard:8092/guard")
-PG_THRESHOLD = float(os.environ.get("PG_THRESHOLD", "0.7"))
 
 
 def pg_guard(text: str):
-    """PromptGuard 2 MALICIOUS 概率；异常返回 None（fail-open）。"""
-    if not PG_ENABLED or not text:
+    """PromptGuard 2 MALICIOUS 概率；异常/未启用返回 None（fail-open）。"""
+    if not text:
+        return None
+    if not setting_value(load_settings(), "pg", "enabled", "PG_ENABLED", False):
         return None
     body = json.dumps({"text": text[:4000]}).encode()
     req = urllib.request.Request(PG_URL, data=body, headers={"Content-Type": "application/json"})
@@ -597,11 +674,15 @@ class Handler(BaseHTTPRequestHandler):
             messages = (payload.get("body") or {}).get("messages") or []
             text = extract_text(messages)
             terms = load_terms()
+            # 统一配置（issue #35）：settings.json > env > 内置默认，每请求重读热生效；本段一次读多键用
+            settings = load_settings()
             # 归一化预检（issue #22）：全角/繁简/分隔归一后查 secrets + 词表
             norm, _ = normalize_hard(text)
             pre_rules = norm_secret_hits(norm) + [t["rule_id"] for t in norm_term_hits(norm.lower(), terms)] if text else []
             # EDM 文档指纹（issue #29，L3）：整段粘贴商密文档 → 命中阈值即拦
-            if EDM_ENABLED and not pre_rules and edm_hit_count(text, load_edm_fps()) >= EDM_MIN_HITS:
+            edm_enabled = setting_value(settings, "edm", "enabled", "EDM_ENABLED", False)
+            edm_min_hits = setting_value(settings, "edm", "min_hits", "EDM_MIN_HITS", 2)
+            if edm_enabled and not pre_rules and edm_hit_count(text, load_edm_fps()) >= edm_min_hits:
                 pre_rules = ["edm.doc_match"]
             hits = [] if pre_rules else (analyze(text, terms) if text else [])
         except Exception as e:
@@ -654,14 +735,15 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._json(200, {"action": {"reason": "pass"}})
         # 语义层 shadow（issue #21）：响应已定后发 judge，只记录 verdict（不含原文），不影响本请求
-        if JUDGE_ENABLED:
+        if setting_value(settings, "judge", "enabled", "JUDGE_ENABLED", False):
             v = judge_text(text)
             if v is not None:
                 print(f"[semantic.shadow] confidential={v['confidential']} entities={','.join(v['entities']) or '-'} confidence={v['confidence']:.2f}", flush=True)
         # 注入检测 shadow（issue #30）：PromptGuard 2 评分 ≥阈值记日志，不阻断
         score = pg_guard(text)
-        if score is not None and score >= PG_THRESHOLD:
-            print(f"[injection.shadow] malicious={score:.3f} >= {PG_THRESHOLD}", flush=True)
+        pg_threshold = setting_value(settings, "pg", "threshold", "PG_THRESHOLD", 0.7)
+        if score is not None and score >= pg_threshold:
+            print(f"[injection.shadow] malicious={score:.3f} >= {pg_threshold}", flush=True)
 
     def do_PUT(self):
         # 非 admin 路径回 404 而非 BaseHTTPRequestHandler 默认 501：有意语义——
@@ -678,4 +760,7 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    # 启动即打一行生效来源（issue #35）：settings.json 可读 → 配置来自 JSON 覆盖层；否则全量 env/内置默认
+    _s = load_settings()
+    print(f"[settings] 配置来源: {'settings.json' if _s else 'env/内置默认（settings.json 缺失/损坏）'} path={SETTINGS_PATH}", flush=True)
     ThreadingHTTPServer(("0.0.0.0", 8080), Handler).serve_forever()

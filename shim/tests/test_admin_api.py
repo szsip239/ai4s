@@ -6,11 +6,14 @@ seam 纪律：
   axonhub 内省只在线路边界用本地假 HTTP 服务顶替，不 mock shim 内部函数。
 - 原子写：直接测 admin_api.write_json_atomic。
 """
+import contextlib
+import io
 import json
 import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -1113,6 +1116,395 @@ class EdmLibParityTest(unittest.TestCase):
                          max(len(shingle_fps), len(line_fps)))
         self.assertEqual(shim_app.edm_hit_count(text, (set(), set())), 0)
         self.assertEqual(shim_app.edm_hit_count("无关文本", (shingle_fps, line_fps)), 0)
+
+
+# 合法 settings fixture（issue #35）：结构对齐 deploy/dlp/settings.json 首版
+_SETTINGS_FIXTURE = {
+    "version": 1,
+    "_comment": "测试 fixture",
+    "judge": {
+        "enabled": True,
+        "model": "deepseek-v4-flash",
+        "base_url": "http://axonhub:8090/v1",
+        "timeout": 8,
+        "prompt_system": "系统提示 {terms} {{json}}",
+        "prompt_fewshot": "示例",
+    },
+    "edm": {"enabled": True, "min_hits": 2},
+    "pg": {"enabled": True, "threshold": 0.7},
+}
+
+
+class AdminSettingsTest(unittest.TestCase):
+    """统一 settings（issue #35）：GET 读级整返 / PUT 写级校验+原子写。
+    fixture：每用例临时 settings.json，覆写 admin_api.SETTINGS_PATH。"""
+
+    def setUp(self):
+        _FAKE_STATE["mode"] = "ok"
+        _FAKE_STATE["tokens"] = {
+            "reader-token": {"id": "42", "isOwner": False, "scopes": ["read_channels"]},
+            "writer-token": {"id": "7", "isOwner": False, "scopes": ["read_channels", "write_channels"]},
+        }
+        self._tmp = tempfile.TemporaryDirectory()
+        self.settings_path = os.path.join(self._tmp.name, "settings.json")
+        with open(self.settings_path, "w", encoding="utf-8") as f:
+            json.dump(_SETTINGS_FIXTURE, f, ensure_ascii=False)
+        self._saved = admin_api.SETTINGS_PATH
+        admin_api.SETTINGS_PATH = self.settings_path
+
+    def tearDown(self):
+        admin_api.SETTINGS_PATH = self._saved
+        self._tmp.cleanup()
+
+    def _put(self, payload, token="writer-token"):
+        return _request("PUT", "/dlp-admin/settings", token=token, payload=payload)
+
+    def test_get_settings(self):
+        """GET /dlp-admin/settings（读级）→ 200 返回 JSON 全文。"""
+        status, body = _get("/dlp-admin/settings", token="reader-token")
+        self.assertEqual(status, 200)
+        self.assertEqual(body, _SETTINGS_FIXTURE)
+
+    def test_get_settings_missing_404(self):
+        """文件不存在 → 404 env 兜底态（#35 review #3：缺失是合法回退态，非 500 故障）。"""
+        os.unlink(self.settings_path)
+        status, body = _get("/dlp-admin/settings", token="reader-token")
+        self.assertEqual(status, 404)
+        self.assertEqual(body, {"error": "settings.json 不存在，当前为 env 兜底态"})
+
+    def test_get_settings_corrupt_500(self):
+        """文件存在但损坏 → 500（故障态，与缺失区分开）。"""
+        with open(self.settings_path, "w") as f:
+            f.write("{not json")
+        status, body = _get("/dlp-admin/settings", token="reader-token")
+        self.assertEqual(status, 500)
+        self.assertIn("error", body)
+
+    def test_put_settings_valid_200(self):
+        """PUT 合法整体替换（写级）→ 200，响应与落盘均为新内容（整体替换语义）。"""
+        new = json.loads(json.dumps(_SETTINGS_FIXTURE))
+        new["pg"]["threshold"] = 0.9
+        new["judge"]["enabled"] = False
+        status, body = self._put(new)
+        self.assertEqual(status, 200)
+        self.assertEqual(body, new)
+        with open(self.settings_path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f), new)
+
+    def test_put_settings_write_scope_required(self):
+        """PUT 仅读级 token → 403（写端点门槛）。"""
+        status, _ = self._put(_SETTINGS_FIXTURE, token="reader-token")
+        self.assertEqual(status, 403)
+
+    def test_put_settings_validation_400(self):
+        """PUT 校验（issue #35）：逐条非法变体 → 400 带原因，且落盘文件不被污染。"""
+        def mutated(fn):
+            d = json.loads(json.dumps(_SETTINGS_FIXTURE))
+            fn(d)
+            return d
+        cases = [
+            ("非对象", ["not", "a", "dict"]),
+            ("顶层未知键", mutated(lambda d: d.update({"unknown": 1}))),
+            ("version 非整数", mutated(lambda d: d.update({"version": "1"}))),
+            ("_comment 非字符串", mutated(lambda d: d.update({"_comment": 1}))),
+            ("judge 非对象", mutated(lambda d: d.update({"judge": 1}))),
+            ("judge 缺字段", mutated(lambda d: d["judge"].pop("model"))),
+            ("judge 未知字段", mutated(lambda d: d["judge"].update({"typo": 1}))),
+            ("judge.enabled 非布尔", mutated(lambda d: d["judge"].update({"enabled": 1}))),
+            ("judge.timeout 为零", mutated(lambda d: d["judge"].update({"timeout": 0}))),
+            ("judge.timeout 为布尔", mutated(lambda d: d["judge"].update({"timeout": True}))),
+            ("judge.model 空串", mutated(lambda d: d["judge"].update({"model": ""}))),
+            ("judge.prompt_system 非字符串", mutated(lambda d: d["judge"].update({"prompt_system": 1}))),
+            ("judge.prompt_fewshot 空串", mutated(lambda d: d["judge"].update({"prompt_fewshot": ""}))),
+            ("edm 缺 enabled", mutated(lambda d: d["edm"].pop("enabled"))),
+            ("edm.min_hits 小于 1", mutated(lambda d: d["edm"].update({"min_hits": 0}))),
+            ("edm.min_hits 为布尔", mutated(lambda d: d["edm"].update({"min_hits": True}))),
+            ("edm.min_hits 为浮点", mutated(lambda d: d["edm"].update({"min_hits": 2.5}))),
+            ("pg 缺 threshold", mutated(lambda d: d["pg"].pop("threshold"))),
+            ("pg.threshold 超界", mutated(lambda d: d["pg"].update({"threshold": 2}))),
+            ("pg.threshold 为布尔", mutated(lambda d: d["pg"].update({"threshold": False}))),
+        ]
+        for label, payload in cases:
+            with self.subTest(case=label):
+                status, body = self._put(payload)
+                self.assertEqual(status, 400, f"{label}: 期望 400，实际 {status} {body}")
+                self.assertIn("error", body)
+        # 全部 400：落盘文件保持 fixture 原样（未被任何非法写污染）
+        with open(self.settings_path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f), _SETTINGS_FIXTURE)
+
+
+class AppSettingsTest(unittest.TestCase):
+    """app 侧统一 settings（issue #35）：load_settings 每请求重读 + setting_value 三级取值。
+    fixture：覆写 shim_app.SETTINGS_PATH 指向临时文件。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.settings_path = os.path.join(self._tmp.name, "settings.json")
+        self._saved = shim_app.SETTINGS_PATH
+        shim_app.SETTINGS_PATH = self.settings_path
+
+    def tearDown(self):
+        shim_app.SETTINGS_PATH = self._saved
+        self._tmp.cleanup()
+
+    def test_load_settings_missing_returns_empty(self):
+        """文件缺失 → {}（settings.json 是可选覆盖层，缺失即全量回退 env/默认）。"""
+        self.assertEqual(shim_app.load_settings(), {})
+
+    def test_load_settings_corrupt_or_non_dict_returns_empty(self):
+        """损坏 JSON / 合法 JSON 但非对象 → {}（回退 env/默认）。"""
+        with open(self.settings_path, "w") as f:
+            f.write("{not json")
+        self.assertEqual(shim_app.load_settings(), {})
+        with open(self.settings_path, "w") as f:
+            json.dump(["not", "a", "dict"], f)
+        self.assertEqual(shim_app.load_settings(), {})
+
+    def test_load_settings_reads_file(self):
+        """正常文件 → 原样返回 dict。"""
+        with open(self.settings_path, "w", encoding="utf-8") as f:
+            json.dump(_SETTINGS_FIXTURE, f)
+        self.assertEqual(shim_app.load_settings(), _SETTINGS_FIXTURE)
+
+    def test_setting_value_three_level_priority(self):
+        """三级取值（issue #35）：settings.json > env > 内置默认。"""
+        # JSON 命中 → 直接用（即使 env 也设了别的值）
+        with mock.patch.dict(os.environ, {"PG_THRESHOLD": "0.55"}):
+            self.assertEqual(
+                shim_app.setting_value({"pg": {"threshold": 0.9}}, "pg", "threshold", "PG_THRESHOLD", 0.7), 0.9)
+        # JSON 缺区段/缺键 → env（按 default 类型转换）
+        env_cases = [
+            ("judge", "enabled", "JUDGE_ENABLED", False, "1", True),
+            ("judge", "enabled", "JUDGE_ENABLED", True, "0", False),
+            ("judge", "timeout", "JUDGE_TIMEOUT", 8, "12", 12),
+            ("edm", "min_hits", "EDM_MIN_HITS", 2, "3", 3),
+            ("pg", "threshold", "PG_THRESHOLD", 0.7, "0.55", 0.55),
+            ("judge", "model", "JUDGE_MODEL", "m0", "m1", "m1"),
+            # 非法 env 回退默认（比旧模块级 int()/float() 启动即崩更宽容）
+            ("judge", "timeout", "JUDGE_TIMEOUT", 8, "garbage", 8),
+            ("pg", "threshold", "PG_THRESHOLD", 0.7, "garbage", 0.7),
+        ]
+        for section, key, env_name, default, env_val, expected in env_cases:
+            with self.subTest(key=key, env_val=env_val):
+                with mock.patch.dict(os.environ, {env_name: env_val}):
+                    self.assertEqual(
+                        shim_app.setting_value({}, section, key, env_name, default), expected)
+                    # 区段存在但键缺失同样落 env 级
+                    self.assertEqual(
+                        shim_app.setting_value({section: {}}, section, key, env_name, default), expected)
+        # env 也缺 → 内置默认
+        os.environ.pop("JUDGE_TIMEOUT", None)
+        self.assertEqual(shim_app.setting_value({}, "judge", "timeout", "JUDGE_TIMEOUT", 8), 8)
+        # env_name=None（judge prompt 无 env 级，原为代码常量）→ 直接默认
+        self.assertEqual(shim_app.setting_value({}, "judge", "prompt_system", None, "D"), "D")
+
+    def test_setting_value_type_guardrail(self):
+        """读取路径逐键类型护栏（#35 review #1）：手工把 JSON 值改错类型 → 该键回退 env/默认 + warn
+        （不含值本身），同文件其余可用键仍生效。schema 与 admin 写侧同款：
+        enabled→bool、threshold/timeout→数值、min_hits→int、字符串字段→str。"""
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            # 数值字段拒绝 str / bool
+            self.assertEqual(
+                shim_app.setting_value({"pg": {"threshold": "0.7"}}, "pg", "threshold", "PG_THRESHOLD", 0.7), 0.7)
+            self.assertEqual(
+                shim_app.setting_value({"judge": {"timeout": True}}, "judge", "timeout", "JUDGE_TIMEOUT", 8), 8)
+            # bool 字段拒绝 int 1（Python bool 是 int 子类，须显式排）
+            self.assertEqual(
+                shim_app.setting_value({"judge": {"enabled": 1}}, "judge", "enabled", "JUDGE_ENABLED", False), False)
+            # int 字段拒绝 float
+            self.assertEqual(
+                shim_app.setting_value({"edm": {"min_hits": 2.5}}, "edm", "min_hits", "EDM_MIN_HITS", 2), 2)
+            # 字符串字段拒绝非 str
+            self.assertEqual(
+                shim_app.setting_value({"judge": {"model": 123}}, "judge", "model", "JUDGE_MODEL", "m0"), "m0")
+        out = buf.getvalue()
+        self.assertEqual(out.count("类型不符"), 5)
+        self.assertIn("pg.threshold", out)
+        self.assertNotIn('"0.7"', out)  # warn 不带回显值本身
+        # 合法类型原样通过（number 兼收 int/float；bool/str/int 各归各型）
+        self.assertEqual(shim_app.setting_value({"pg": {"threshold": 1}}, "pg", "threshold", "PG_THRESHOLD", 0.7), 1)
+        self.assertEqual(shim_app.setting_value({"judge": {"timeout": 2.5}}, "judge", "timeout", "JUDGE_TIMEOUT", 8), 2.5)
+        self.assertEqual(shim_app.setting_value({"edm": {"min_hits": 3}}, "edm", "min_hits", "EDM_MIN_HITS", 2), 3)
+        self.assertEqual(shim_app.setting_value({"judge": {"enabled": True}}, "judge", "enabled", "JUDGE_ENABLED", False), True)
+        # 坏键不牵连同文件好键
+        s = {"pg": {"threshold": "bad", "enabled": True}}
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(shim_app.setting_value(s, "pg", "enabled", "PG_ENABLED", False), True)
+            self.assertEqual(shim_app.setting_value(s, "pg", "threshold", "PG_THRESHOLD", 0.7), 0.7)
+
+
+class _FakeJudge(BaseHTTPRequestHandler):
+    """假 judge（OpenAI 兼容 /chat/completions）：记录请求体，回固定 confidential verdict。"""
+
+    captured = {}
+
+    def log_message(self, *args):  # 静默
+        pass
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        _FakeJudge.captured = json.loads(self.rfile.read(length) or b"{}")
+        body = json.dumps({"choices": [{"message": {"content":
+            '{"confidential": true, "entities": ["项目代号"], "confidence": 0.9}'}}]}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class JudgeSettingsTest(unittest.TestCase):
+    """judge 走统一 settings（issue #35 核心行为）：prompt/model/base_url 从 JSON 生效；env 层兜底。
+    fixture：临时 settings.json（指向假 judge）+ 词表；覆写 shim_app 模块级路径与 JUDGE_API_KEY。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._judge_srv = _start_server(_FakeJudge)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._judge_srv.shutdown()
+
+    def setUp(self):
+        _FakeJudge.captured = {}
+        self._tmp = tempfile.TemporaryDirectory()
+        d = self._tmp.name
+        self.settings_path = os.path.join(d, "settings.json")
+        self.wordlist_path = os.path.join(d, "wordlist.json")
+        with open(self.wordlist_path, "w", encoding="utf-8") as f:
+            json.dump({"version": 1,
+                       "terms": [{"value": "凤皇计划", "rule_id": "confidential.fenghuang"}]},
+                      f, ensure_ascii=False)
+        self._fixture = json.loads(json.dumps(_SETTINGS_FIXTURE))
+        j = self._fixture["judge"]
+        j["enabled"] = True
+        j["base_url"] = f"http://127.0.0.1:{self._judge_srv.server_address[1]}"
+        j["model"] = "json-model"
+        j["prompt_system"] = "自定义系统提示：{terms}"
+        j["prompt_fewshot"] = "自定义示例"
+        with open(self.settings_path, "w", encoding="utf-8") as f:
+            json.dump(self._fixture, f, ensure_ascii=False)
+        self._saved = (shim_app.SETTINGS_PATH, shim_app.WORDLIST_PATH, shim_app.JUDGE_API_KEY)
+        shim_app.SETTINGS_PATH = self.settings_path
+        shim_app.WORDLIST_PATH = self.wordlist_path
+        shim_app.JUDGE_API_KEY = "test-key"
+
+    def tearDown(self):
+        shim_app.SETTINGS_PATH, shim_app.WORDLIST_PATH, shim_app.JUDGE_API_KEY = self._saved
+        self._tmp.cleanup()
+
+    def test_judge_uses_settings_values(self):
+        """prompt/model/base_url 来自 settings.json；{terms} 被词表替换；verdict 正常解析。"""
+        v = shim_app.judge_text("凤皇计划的排期发我")
+        self.assertEqual(v, {"confidential": True, "entities": ["项目代号"], "confidence": 0.9})
+        req = _FakeJudge.captured
+        self.assertEqual(req["model"], "json-model")
+        msgs = req["messages"]
+        self.assertEqual(msgs[0], {"role": "system", "content": "自定义系统提示：凤皇计划"})
+        self.assertEqual(msgs[1], {"role": "user", "content": "自定义示例"})
+        self.assertEqual(msgs[2], {"role": "user", "content": "凤皇计划的排期发我"})
+
+    def test_judge_disabled_in_settings_wins_over_env(self):
+        """JSON enabled=false 优先于 env JUDGE_ENABLED=1（三级取值 JSON 级最高）：不发请求，返回 None。"""
+        self._fixture["judge"]["enabled"] = False
+        with open(self.settings_path, "w", encoding="utf-8") as f:
+            json.dump(self._fixture, f)
+        with mock.patch.dict(os.environ, {"JUDGE_ENABLED": "1"}):
+            self.assertIsNone(shim_app.judge_text("任意文本"))
+        self.assertEqual(_FakeJudge.captured, {})
+
+    def test_judge_unavailable_when_settings_missing(self):
+        """settings.json 缺失 → prompt 无源（#35 review #2：prompt 单一源=JSON，删代码内默认）→
+        judge 不可用返回 None + warn，即使 env 把开关/地址/模型配齐也不发请求。"""
+        os.unlink(self.settings_path)
+        env = {"JUDGE_ENABLED": "1", "JUDGE_MODEL": "env-model",
+               "JUDGE_BASE_URL": f"http://127.0.0.1:{self._judge_srv.server_address[1]}"}
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, env), contextlib.redirect_stdout(buf):
+            self.assertIsNone(shim_app.judge_text("帮我写本周工作总结"))
+        self.assertEqual(_FakeJudge.captured, {})
+        self.assertIn("judge prompt", buf.getvalue())
+
+    def test_judge_prompt_key_missing_fails_open(self):
+        """JSON 缺 prompt_fewshot 键 → judge 不可用返回 None + warn（其余配置齐全也不发请求）。"""
+        del self._fixture["judge"]["prompt_fewshot"]
+        with open(self.settings_path, "w", encoding="utf-8") as f:
+            json.dump(self._fixture, f, ensure_ascii=False)
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertIsNone(shim_app.judge_text("任意文本"))
+        self.assertEqual(_FakeJudge.captured, {})
+        self.assertIn("judge prompt", buf.getvalue())
+
+    def test_judge_broken_prompt_placeholder_fails_open(self):
+        """settings 里 prompt 含非法单花括号占位 → .format 失败 → None（fail-open，不炸请求链）。"""
+        self._fixture["judge"]["prompt_system"] = "坏 {oops"
+        with open(self.settings_path, "w", encoding="utf-8") as f:
+            json.dump(self._fixture, f)
+        self.assertIsNone(shim_app.judge_text("任意文本"))
+
+
+class _FakePG(BaseHTTPRequestHandler):
+    """假 PromptGuard（POST /guard）：固定 malicious=0.785（对齐现网角色劫持样本实测分）。"""
+
+    def log_message(self, *args):  # 静默
+        pass
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        self.rfile.read(length)
+        body = b'{"malicious": 0.785}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class InjectionShadowSettingsTest(unittest.TestCase):
+    """注入 shadow 读取路径类型护栏（#35 review #1 集成）：threshold 被手改成字符串时，
+    /request 检测链不炸（旧版在响应已发后 score>=str 抛 TypeError）、该键回退默认 0.7 + warn，
+    同文件其余键（pg.enabled）仍从 JSON 生效。
+    fixture：临时 settings.json + 假 PG；覆写 shim_app.SETTINGS_PATH/PG_URL。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._pg_srv = _start_server(_FakePG)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._pg_srv.shutdown()
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.settings_path = os.path.join(self._tmp.name, "settings.json")
+        fixture = json.loads(json.dumps(_SETTINGS_FIXTURE))
+        fixture["judge"]["enabled"] = False  # 隔离 judge 路径，只验注入 shadow
+        fixture["pg"]["threshold"] = "0.7"   # review 场景：手改成字符串
+        with open(self.settings_path, "w", encoding="utf-8") as f:
+            json.dump(fixture, f, ensure_ascii=False)
+        self._saved = (shim_app.SETTINGS_PATH, shim_app.PG_URL)
+        shim_app.SETTINGS_PATH = self.settings_path
+        shim_app.PG_URL = f"http://127.0.0.1:{self._pg_srv.server_address[1]}/guard"
+
+    def tearDown(self):
+        shim_app.SETTINGS_PATH, shim_app.PG_URL = self._saved
+        self._tmp.cleanup()
+
+    def test_string_threshold_falls_back_no_crash(self):
+        """threshold="0.7"（字符串）→ 回退默认 0.7 不抛异常 + warn；0.785≥0.7 shadow 仍记录。"""
+        with mock.patch("builtins.print") as m:
+            status, body = _request(
+                "POST", "/request",
+                payload={"body": {"messages": [{"role": "user", "content": "普通业务咨询，请帮我写周报"}]}})
+            time.sleep(0.5)  # shadow 段在响应后异步执行，等其落完
+        self.assertEqual(status, 200)
+        self.assertEqual(body["action"].get("reason"), "pass")
+        printed = "\n".join(str(c.args[0]) for c in m.call_args_list if c.args)
+        self.assertIn("[settings] pg.threshold 类型不符", printed)
+        self.assertIn("[injection.shadow] malicious=0.785 >= 0.7", printed)
 
 
 if __name__ == "__main__":
