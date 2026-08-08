@@ -31,7 +31,7 @@ export function Ai4sLayerSwitch({
   };
   return (
     <div className='flex items-center gap-3'>
-      <span className='text-sm text-muted-foreground'>{label}</span>
+      <span className='text-sm whitespace-nowrap text-muted-foreground'>{label}</span>
       <Switch
         checked={data[section]?.enabled ?? true}
         disabled={putSettings.isPending}

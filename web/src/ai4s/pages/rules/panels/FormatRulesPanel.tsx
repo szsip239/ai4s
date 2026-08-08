@@ -1,8 +1,10 @@
 /**
- * 格式规则 L1/L1.5 面板（issue #36）：GET/PUT /dlp-admin/format-rules。
+ * 格式规则面板（issue #36）：GET/PUT /dlp-admin/format-rules。
  * 增/删/改均走整体 PUT，保存即渲染 agentgateway 配置并热重载（服务端渲染失败自动回滚 JSON，错误原因 toast）。
  * 表格 + 编辑/新增对话框（patterns 逐行）+ 行内删除（AlertDialog 二次确认）+ 行内 enabled 即改即存；
  * 对话框 dirty（表单已改未保存）经 onDirtyChange 上报（review #2，离开提示同款）。
+ * issue #41：UI 不暴露层概念（表格无层列、表单无层选择）；后端契约 layer 字段不变——
+ * 提交时按 action 隐式映射（reject→L1、mask→L1.5），任何一次对话框保存都会按 action 重写 layer。
  */
 import { useEffect, useState } from 'react';
 import { IconLoader2, IconPencil, IconPlus, IconTrash } from '@tabler/icons-react';
@@ -57,7 +59,6 @@ function Ai4sFormatRuleDialog({
   // 一次性初始快照：dirty = 当前表单与快照有差异（改回初值自动复位 clean）
   const [initial] = useState(() => ({
     code: rule?.code ?? '',
-    layer: rule?.layer ?? ('L1' as FormatRule['layer']),
     action: rule?.action ?? ('reject' as FormatRule['action']),
     enabled: rule?.enabled ?? true,
     message: rule?.message ?? '',
@@ -65,7 +66,6 @@ function Ai4sFormatRuleDialog({
     shimText: patternsToLines(rule?.shim_patterns ?? []),
   }));
   const [code, setCode] = useState(initial.code);
-  const [layer, setLayer] = useState(initial.layer);
   const [action, setAction] = useState(initial.action);
   const [enabled, setEnabled] = useState(initial.enabled);
   const [message, setMessage] = useState(initial.message);
@@ -75,7 +75,6 @@ function Ai4sFormatRuleDialog({
 
   const dirty =
     code !== initial.code ||
-    layer !== initial.layer ||
     action !== initial.action ||
     enabled !== initial.enabled ||
     message !== initial.message ||
@@ -95,7 +94,9 @@ function Ai4sFormatRuleDialog({
     if (!data) return;
     const next: FormatRule = {
       code: code.trim(),
-      layer,
+      // layer 由 action 隐式映射（issue #41，后端契约字段）：reject→L1、mask→L1.5；
+      // 编辑既有规则改动作即随之重映射，表单不再暴露层选择
+      layer: action === 'reject' ? 'L1' : 'L1.5',
       action,
       enabled,
       gateway_patterns: linesToPatterns(gwText),
@@ -135,31 +136,17 @@ function Ai4sFormatRuleDialog({
               </div>
             </div>
           </div>
-          <div className='grid grid-cols-2 gap-4'>
-            <div className='space-y-1.5'>
-              <Label>层</Label>
-              <Select value={layer} onValueChange={(v) => setLayer(v as FormatRule['layer'])}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value='L1'>L1（Secrets）</SelectItem>
-                  <SelectItem value='L1.5'>L1.5（PII 格式）</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-            <div className='space-y-1.5'>
-              <Label>动作</Label>
-              <Select value={action} onValueChange={(v) => setAction(v as FormatRule['action'])}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value='reject'>reject（451 拦截）</SelectItem>
-                  <SelectItem value='mask'>mask（脱敏放行）</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
+          <div className='space-y-1.5'>
+            <Label>动作</Label>
+            <Select value={action} onValueChange={(v) => setAction(v as FormatRule['action'])}>
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value='reject'>reject（451 拦截）</SelectItem>
+                <SelectItem value='mask'>mask（脱敏放行）</SelectItem>
+              </SelectContent>
+            </Select>
           </div>
           {action === 'reject' && (
             <div className='space-y-1.5'>
@@ -217,9 +204,9 @@ export function Ai4sFormatRulesPanel({ onDirtyChange }: { onDirtyChange?: (dirty
       <CardHeader>
         <div className='flex items-center justify-between gap-4'>
           <div>
-            <CardTitle>格式规则 L1·L1.5</CardTitle>
+            <CardTitle>格式规则</CardTitle>
             <CardDescription>
-              API 密钥、私钥等格式特征规则，直接在网关拦截；头部为本层总开关（关闭则整层撤防，密钥拦截全敞口，网关规则同步撤下）；<span className='font-medium text-foreground'>保存会重写网关配置并热重载</span>。改坏可用
+              API 密钥、私钥等格式特征规则命中即在网关拦截（reject），手机号、身份证等 PII 格式规则命中即打码放行（mask）；头部为本层总开关（关闭则整层撤防，密钥拦截全敞口，网关规则同步撤下）；<span className='font-medium text-foreground'>保存会重写网关配置并热重载</span>。改坏可用
               render 端点重渲染或 .bak 回滚
             </CardDescription>
           </div>
@@ -239,7 +226,6 @@ export function Ai4sFormatRulesPanel({ onDirtyChange }: { onDirtyChange?: (dirty
               <TableRow>
                 <TableHead>code</TableHead>
                 <TableHead>patterns</TableHead>
-                <TableHead className='w-16'>层</TableHead>
                 <TableHead className='w-24'>动作</TableHead>
                 <TableHead className='w-16'>启用</TableHead>
                 <TableHead className='w-24'>操作</TableHead>
@@ -260,9 +246,6 @@ export function Ai4sFormatRulesPanel({ onDirtyChange }: { onDirtyChange?: (dirty
                     {r.shim_patterns.length > 0 && (
                       <div className='text-xs text-muted-foreground'>shim-only +{r.shim_patterns.length} 条</div>
                     )}
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant='outline'>{r.layer}</Badge>
                   </TableCell>
                   <TableCell>
                     <Badge variant={r.action === 'reject' ? 'destructive' : 'secondary'}>{r.action}</Badge>
@@ -288,7 +271,7 @@ export function Ai4sFormatRulesPanel({ onDirtyChange }: { onDirtyChange?: (dirty
               ))}
               {rules.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={6} className='text-center text-muted-foreground'>
+                  <TableCell colSpan={5} className='text-center text-muted-foreground'>
                     暂无规则
                   </TableCell>
                 </TableRow>
@@ -313,7 +296,7 @@ export function Ai4sFormatRulesPanel({ onDirtyChange }: { onDirtyChange?: (dirty
           <AlertDialogHeader>
             <AlertDialogTitle>删除格式规则「{deleting?.code}」？</AlertDialogTitle>
             <AlertDialogDescription>
-              删除后该规则（{deleting?.layer} · {deleting?.action}）从 shim 与网关配置同步移除并热重载，对应内容不再被
+              删除后该规则（{deleting?.action}）从 shim 与网关配置同步移除并热重载，对应内容不再被
               {deleting?.action === 'reject' ? '拦截' : '脱敏'}。此操作不可撤销。
             </AlertDialogDescription>
           </AlertDialogHeader>
