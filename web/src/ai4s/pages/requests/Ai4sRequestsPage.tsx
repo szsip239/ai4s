@@ -15,7 +15,7 @@ import { Ai4sRequestMetaDrawer } from './Ai4sRequestMetaDrawer';
  * 顶栏 warn 提示条为审计原则的显式呈现。
  */
 export default function Ai4sRequestsPage() {
-  const { pageSize, setCursors, setPageSize, resetCursor, paginationArgs, cursorHistory } = usePaginationSearch({
+  const { pageSize, setCursors, setPageSize, resetCursor, paginationArgs } = usePaginationSearch({
     defaultPageSize: 20,
     pageSizeStorageKey: 'requests-table-page-size',
   });

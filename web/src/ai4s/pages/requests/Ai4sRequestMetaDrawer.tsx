@@ -1,4 +1,3 @@
-import { useTranslation } from 'react-i18next';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
@@ -15,7 +14,6 @@ interface Props {
 }
 
 export function Ai4sRequestMetaDrawer({ requestId, onClose }: Props) {
-  const { t } = useTranslation();
   const { data: r, isLoading } = useRequest(requestId ?? '', { enabled: !!requestId });
 
   const rows: [string, React.ReactNode][] = r
