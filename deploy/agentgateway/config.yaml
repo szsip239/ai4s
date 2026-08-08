@@ -135,7 +135,7 @@ routes:
       - host: web-static:80
 
   - gateways: [default, mtls]
-  - matches:
+    matches:
       - path:
           pathPrefix: /oauth
     backends:
@@ -143,7 +143,7 @@ routes:
 
   # catch-all：前端静态（web/dist，nginx SPA fallback）
   - gateways: [default, mtls]
-  - backends:
+    backends:
       - host: web-static:80
 
 gateways:
@@ -159,4 +159,5 @@ gateways:
       cert: /etc/agentgateway/mtls/server.crt
       key: /etc/agentgateway/mtls/server.key
       root: /etc/agentgateway/mtls/ca.crt
+
 
