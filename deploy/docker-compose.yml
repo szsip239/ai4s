@@ -179,36 +179,6 @@ services:
       - shim
     restart: unless-stopped
 
-  # GLiNER 商密 NER 实测（issue #26）：profile=gliner，不进默认栈（评估完决定去留）
-  gliner:
-    build: ../gliner
-    profiles: ["gliner"]
-    container_name: ai4s-gliner
-    environment:
-      HF_HUB_OFFLINE: "1"
-    ports:
-      - "127.0.0.1:18090:8090" # 仅本地：评估脚本直测
-    volumes:
-      - ./.local/gliner-onnx:/models/gliner-onnx:ro # 宿主机预下载的 ONNX 模型（issue #26）
-    networks:
-      - ai4s
-    restart: unless-stopped
-
-  # zero-shot 主题分类实测（issue #27）：profile=zeroshot，不进默认栈
-  zeroshot:
-    build: ../zeroshot
-    profiles: ["zeroshot"]
-    container_name: ai4s-zeroshot
-    environment:
-      HF_HUB_OFFLINE: "1"
-    ports:
-      - "127.0.0.1:18091:8091" # 仅本地：评估脚本直测
-    volumes:
-      - ./.local/zeroshot-model:/models/zeroshot:ro
-    networks:
-      - ai4s
-    restart: unless-stopped
-
   # PromptGuard 2 注入检测实测（issue #30）：profile=promptguard，不进默认栈
   promptguard:
     build: ../promptguard
