@@ -11,6 +11,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Input } from '@/components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { usePutWordlist, useWordlist, type WordlistTerm } from '../api';
+import { Ai4sLayerSwitch } from './LayerSwitch';
 import { Ai4sQueryState } from './QueryState';
 
 export function Ai4sWordlistPanel({ onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void }) {
@@ -57,11 +58,15 @@ export function Ai4sWordlistPanel({ onDirtyChange }: { onDirtyChange?: (dirty: b
           <div>
             <CardTitle>商密词表</CardTitle>
             <CardDescription>
-              公司代号、内部域名、未发布产品名的精确词清单，命中即拒绝发送；新词立项、产品改名、误报下词时在这里维护，保存即热生效。改坏可从同目录
+              公司代号、内部域名、未发布产品名的精确词清单，命中即拒绝发送；新词立项、产品改名、误报下词时在这里维护，保存即热生效。头部为
+              L2 层总开关（管辖本词表与下方 PII 规则两卡，关闭则词表命中与 PII 脱敏整体跳过）。改坏可从同目录
               .bak 备份或 git 回滚
             </CardDescription>
           </div>
-          <Badge variant='secondary'>{terms.length} 词</Badge>
+          <div className='flex items-center gap-3'>
+            <Ai4sLayerSwitch section='l2' label='L2 总开关' />
+            <Badge variant='secondary'>{terms.length} 词</Badge>
+          </div>
         </div>
       </CardHeader>
       <CardContent className='space-y-4'>

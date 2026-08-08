@@ -3,7 +3,8 @@
 #
 # ai4s 阶段 0：透传 + Secrets reject（issue #5）。
 # 分层职责（契约 docs/contracts/dlp-webhook-shim.md）：
-#   L1/L1.5 本地 regex——规则源 deploy/dlp/format-rules.json（issue #33，经 admin API 渲染进下方标记区块，勿手改）；永远生效，无外部依赖
+#   L1/L1.5 本地 regex——规则源 deploy/dlp/format-rules.json（issue #33，经 admin API 渲染进下方标记区块，勿手改）；
+#   默认常开、无外部依赖；l1.enabled=false（issue #40 总开关）整层撤防——密钥拦截全敞口，下方标记区块联动渲染为空
 #   L2 shim → Presidio（PII/商密，fail-open）——后续票据接入
 config:
   # readiness 探针服务，健康判定：GET /healthz/ready

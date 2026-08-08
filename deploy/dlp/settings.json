@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "_comment": "JUDGE/EDM/PG 开关阈值与 judge prompt 统一配置（issue #35）。取值优先级：本文件 > env > 内置默认。凭据类敏感值永远只走 env，禁止写入本文件（本文件入库）。每请求热生效（shim 每请求重读）。",
+  "_comment": "JUDGE/EDM/PG 开关阈值、judge prompt（issue #35）与 L1/L2/响应侧分层总开关（issue #40，默认 true 保现网行为；l1 关掉后密钥拦截全敞口，翻转会联动重渲染网关规则）统一配置。取值优先级：本文件 > env > 内置默认。凭据类敏感值永远只走 env，禁止写入本文件（本文件入库）。每请求热生效（shim 每请求重读）。",
   "judge": {
     "enabled": true,
     "model": "deepseek-v4-flash",
@@ -16,5 +16,14 @@
   "pg": {
     "enabled": true,
     "threshold": 0.7
+  },
+  "l1": {
+    "enabled": true
+  },
+  "l2": {
+    "enabled": true
+  },
+  "response": {
+    "enabled": true
   }
 }

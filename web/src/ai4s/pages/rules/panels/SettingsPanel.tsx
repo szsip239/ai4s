@@ -1,7 +1,7 @@
 /**
- * 开关与阈值整体面板（issue #36；issue #38 起为三段整体视图，judge/PG 单项维护走各自独立面板）。
- * GET/PUT /dlp-admin/settings（judge/edm/pg 开关阈值 + judge prompt）。
- * PUT 整体替换（服务端校验三段必填且字段齐全）；本地草稿 edited===null 即无改动（dirty 供离开提示）。
+ * 开关与阈值整体面板（issue #36；issue #38 起为整体视图，judge/PG 单项维护走各自独立面板；issue #40 扩六段）。
+ * GET/PUT /dlp-admin/settings（L1/L2/响应侧分层总开关 + judge/edm/pg 开关阈值 + judge prompt）。
+ * PUT 整体替换（服务端校验六段必填且字段齐全）；本地草稿 edited===null 即无改动（dirty 供离开提示）。
  * 404/故障展示与 judge/PG 面板同款（Ai4sSettingsQueryState）。judge 区常驻警示：真实员工流量启用前必须换内网模型。
  */
 import { useEffect, useState } from 'react';
@@ -29,7 +29,18 @@ export function Ai4sSettingsPanel({ onDirtyChange }: { onDirtyChange?: (dirty: b
     return () => onDirtyChange?.(false);
   }, [dirty, onDirtyChange]);
 
-  const settingsDoc = edited ?? data ?? null;
+  // 旧 settings.json 可能缺 l1/l2/response 段（shim 侧缺段默认 true）：草稿基线按缺省 true 补齐三段，
+  // 保证 PUT 整体替换始终六段齐全（否则只改其他段保存也会被服务端 400）
+  const settingsDoc =
+    edited ??
+    (data
+      ? {
+          ...data,
+          l1: data.l1 ?? { enabled: true },
+          l2: data.l2 ?? { enabled: true },
+          response: data.response ?? { enabled: true },
+        }
+      : null);
 
   const mutate = (next: DlpSettings) => {
     setFormError(null);
@@ -53,7 +64,7 @@ export function Ai4sSettingsPanel({ onDirtyChange }: { onDirtyChange?: (dirty: b
       <CardHeader>
         <CardTitle>开关与阈值</CardTitle>
         <CardDescription>
-          judge / EDM / PG 三段开关与阈值的整体视图，与左侧「语义 judge」「注入 PG」面板读写同一份
+          L1/L2/响应侧分层总开关与 judge / EDM / PG 开关阈值的整体视图，与左侧各层面板读写同一份
           settings.json。单项维护走对应面板，这里适合整体核对；保存即热生效
         </CardDescription>
       </CardHeader>
@@ -61,6 +72,36 @@ export function Ai4sSettingsPanel({ onDirtyChange }: { onDirtyChange?: (dirty: b
         <Ai4sSettingsQueryState isLoading={isLoading} error={error}>
           {settingsDoc && (
             <div className='space-y-8'>
+              {/* ---- L1 格式规则总开关（issue #40） ---- */}
+              <section className='space-y-4'>
+                <div className='flex items-center justify-between gap-4'>
+                  <div>
+                    <div className='font-medium'>L1 格式规则（密钥/私钥/PII 格式）</div>
+                    <div className='text-sm text-muted-foreground'>
+                      关闭后整层撤防（密钥拦截全敞口）；翻转会联动重渲染网关规则，网关侧同步撤下/恢复
+                    </div>
+                  </div>
+                  <Switch
+                    checked={settingsDoc.l1?.enabled ?? true}
+                    onCheckedChange={(c) => mutate({ ...settingsDoc, l1: { enabled: c } })}
+                  />
+                </div>
+              </section>
+
+              {/* ---- L2 词表/PII 总开关（issue #40） ---- */}
+              <section className='space-y-4'>
+                <div className='flex items-center justify-between gap-4'>
+                  <div>
+                    <div className='font-medium'>L2 词表/PII（商密词表 + PII 识别）</div>
+                    <div className='text-sm text-muted-foreground'>关闭后词表命中拦截与 PII 脱敏整体跳过</div>
+                  </div>
+                  <Switch
+                    checked={settingsDoc.l2?.enabled ?? true}
+                    onCheckedChange={(c) => mutate({ ...settingsDoc, l2: { enabled: c } })}
+                  />
+                </div>
+              </section>
+
               {/* ---- 语义 judge ---- */}
               <section className='space-y-4'>
                 <div className='flex items-center justify-between gap-4'>
@@ -186,6 +227,23 @@ export function Ai4sSettingsPanel({ onDirtyChange }: { onDirtyChange?: (dirty: b
                       onCheckedChange={(c) => mutate({ ...settingsDoc, pg: { ...settingsDoc.pg, enabled: c } })}
                     />
                   </div>
+                </div>
+              </section>
+
+              {/* ---- 响应侧输出检查总开关（issue #40） ---- */}
+              <section className='space-y-4'>
+                <div className='flex items-center justify-between gap-4'>
+                  <div>
+                    <div className='font-medium'>响应侧输出检查</div>
+                    <div className='text-sm text-muted-foreground'>
+                      模型应答命中 secrets/词表/PII 即 451 拒绝；关闭后响应侧整段放行不检测
+                      （l1/l2 总开关关闭时对应检测族在响应侧同样跳过）
+                    </div>
+                  </div>
+                  <Switch
+                    checked={settingsDoc.response?.enabled ?? true}
+                    onCheckedChange={(c) => mutate({ ...settingsDoc, response: { enabled: c } })}
+                  />
                 </div>
               </section>
 

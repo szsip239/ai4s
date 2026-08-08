@@ -60,6 +60,11 @@ _SETTINGS_SCHEMA = {
               "prompt_system": "str", "prompt_fewshot": "str"},
     "edm": {"enabled": "bool", "min_hits": "int"},
     "pg": {"enabled": "bool", "threshold": "number"},
+    # 分层总开关（issue #40）：默认 True 保现网行为；关掉即整层跳过（l1=格式规则全族，
+    # l2=词表/Presidio PII，response=响应侧整分支）
+    "l1": {"enabled": "bool"},
+    "l2": {"enabled": "bool"},
+    "response": {"enabled": "bool"},
 }
 
 
@@ -98,6 +103,31 @@ def setting_value(settings: dict, section: str, key: str, env_name, default):
             except (TypeError, ValueError):
                 return default
     return default
+
+
+# 分层总开关可观测（issue #40 review）：l1/l2/response 开关状态变化时打一行 [settings] warn——
+# 模块级记忆上次状态，不每请求刷日志；启动后首次观测到关闭也打（启动即关不留盲区）。
+_LAYER_SWITCH_STATE = {}
+_LAYER_SWITCH_TEXT = {
+    "l1": ("格式规则层已撤防（密钥拦截敞口）", "格式规则层恢复生效"),
+    "l2": ("词表/PII 检测层已跳过", "词表/PII 检测层恢复生效"),
+    "response": ("响应侧输出检查已关闭", "响应侧输出检查恢复生效"),
+}
+
+
+def _layer_switch_observe(settings: dict) -> None:
+    """每请求调用（基于已加载的 settings，成本可忽略）；并发下重复打一行可接受，不加锁（KISS）。"""
+    for section, env_name in (("l1", "L1_ENABLED"), ("l2", "L2_ENABLED"), ("response", "RESPONSE_ENABLED")):
+        cur = setting_value(settings, section, "enabled", env_name, True)
+        prev = _LAYER_SWITCH_STATE.get(section)
+        if prev == cur:
+            continue
+        _LAYER_SWITCH_STATE[section] = cur
+        off_text, on_text = _LAYER_SWITCH_TEXT[section]
+        if not cur:
+            print(f"[settings] {section}.enabled=false，{off_text}", flush=True)
+        elif prev is not None:  # 首次观测到开启是正常启动态，不打
+            print(f"[settings] {section}.enabled=true，{on_text}", flush=True)
 
 # 飞书告警适配（issue #17）：axonhub webhook → 群机器人（签名校验 + 有限重试，补 axonhub fire-and-forget 无重试）
 FEISHU_WEBHOOK = os.environ.get("FEISHU_ALERT_WEBHOOK", "")
@@ -479,10 +509,12 @@ def norm_mask_messages(messages, rules: list = None):
     return out, any_masked, sorted(all_entities)
 
 
-def mask_response_body(body):
+def mask_response_body(body, l1_enabled: bool = True, l2_enabled: bool = True):
     """响应侧 mask（issue #23）：对 completion JSON 的 choices[].message.content/reasoning_content
     做归一化 secrets/词表/PII 检测，命中字段整体替换为掩码。返回 (新body, 命中实体/规则列表)。
-    响应侧不 reject（员工看到莫名错误比截断更糟）；命中只记规则，不落原文。"""
+    响应侧不 reject（员工看到莫名错误比截断更糟）；命中只记规则，不落原文。
+    分层总开关（issue #40）：模块关=处处关——l1_enabled=False 跳过 secrets/格式 PII 检测，
+    l2_enabled=False 跳过词表检测（缺省 True 保旧调用方行为）。"""
     if not isinstance(body, dict):
         return body, []
     choices = body.get("choices")
@@ -497,10 +529,12 @@ def mask_response_body(body):
         if not isinstance(text, str) or not text:
             return found
         norm, _ = normalize_hard(text)
-        found += norm_secret_hits(norm, rules)
-        found += [t["rule_id"] for t in norm_term_hits(norm.lower(), terms)]
-        _, _, ents = norm_mask_messages([{"role": "assistant", "content": text}], rules)
-        found += ents
+        if l1_enabled:
+            found += norm_secret_hits(norm, rules)
+            _, _, ents = norm_mask_messages([{"role": "assistant", "content": text}], rules)
+            found += ents
+        if l2_enabled:
+            found += [t["rule_id"] for t in norm_term_hits(norm.lower(), terms)]
         return found
 
     out = json.loads(json.dumps(body))  # 深拷贝
@@ -646,11 +680,22 @@ class Handler(BaseHTTPRequestHandler):
             # 响应侧 DLP（issue #23）：模型应答 secrets/词表/PII 命中 → 451 拒绝。
             # 语义说明：流式（SSE）下 agentgateway 会缓冲整流后评估，mask 改写对流式无效（实测），
             # 故响应侧命中统一拒绝——应答含敏感内容本身就是异常信号，阻断比部分遮盖更正确。
+            # 总开关（issue #40）：response.enabled=false → 整个分支直接放行不检测；
+            # l1/l2 总开关在响应侧同样生效（模块关=处处关）。
             try:
                 length = min(int(self.headers.get("Content-Length") or 0), MAX_BODY)
                 payload = json.loads(self.rfile.read(length) or b"{}")
                 resp_body = payload.get("body")
-                _, entities = mask_response_body(resp_body)
+                settings = load_settings()
+                _layer_switch_observe(settings)  # 开关状态变化 warn（issue #40 review）
+                if not setting_value(settings, "response", "enabled", "RESPONSE_ENABLED", True):
+                    self._json(200, {"action": {"reason": "pass"}})
+                    return
+                _, entities = mask_response_body(
+                    resp_body,
+                    setting_value(settings, "l1", "enabled", "L1_ENABLED", True),
+                    setting_value(settings, "l2", "enabled", "L2_ENABLED", True),
+                )
                 if entities:
                     err = json.dumps(
                         {"error": {"message": "Blocked by ai4s DLP: response contained sensitive content",
@@ -676,15 +721,25 @@ class Handler(BaseHTTPRequestHandler):
             terms = load_terms()
             # 统一配置（issue #35）：settings.json > env > 内置默认，每请求重读热生效；本段一次读多键用
             settings = load_settings()
+            _layer_switch_observe(settings)  # 开关状态变化 warn（issue #40 review）
+            # 分层总开关（issue #40，默认 True 保现网行为）：l1 关 → 格式规则全族（secrets reject +
+            # 归一化 PII mask）整层跳过；l2 关 → 词表/Presidio PII 阶段整体跳过
+            l1_on = setting_value(settings, "l1", "enabled", "L1_ENABLED", True)
+            l2_on = setting_value(settings, "l2", "enabled", "L2_ENABLED", True)
             # 归一化预检（issue #22）：全角/繁简/分隔归一后查 secrets + 词表
             norm, _ = normalize_hard(text)
-            pre_rules = norm_secret_hits(norm) + [t["rule_id"] for t in norm_term_hits(norm.lower(), terms)] if text else []
+            pre_rules = []
+            if text:
+                if l1_on:
+                    pre_rules += norm_secret_hits(norm)
+                if l2_on:
+                    pre_rules += [t["rule_id"] for t in norm_term_hits(norm.lower(), terms)]
             # EDM 文档指纹（issue #29，L3）：整段粘贴商密文档 → 命中阈值即拦
             edm_enabled = setting_value(settings, "edm", "enabled", "EDM_ENABLED", False)
             edm_min_hits = setting_value(settings, "edm", "min_hits", "EDM_MIN_HITS", 2)
             if edm_enabled and not pre_rules and edm_hit_count(text, load_edm_fps()) >= edm_min_hits:
                 pre_rules = ["edm.doc_match"]
-            hits = [] if pre_rules else (analyze(text, terms) if text else [])
+            hits = [] if (pre_rules or not l2_on) else (analyze(text, terms) if text else [])
         except Exception as e:
             # shim 自身异常 → 500，由 agentgateway failureMode=failOpen 放行（契约分级）
             self._json(500, {"error": str(e)[:200]})
@@ -714,9 +769,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         # PII 脱敏（issue #15）：命中不阻断，返回改写后的消息体（MaskAction）
         # issue #22：先走归一化 mask（分隔/全角变形）；无命中再走 Presidio context 流程
+        # issue #40：归一化 mask 属 l1（格式规则全族），Presidio PII 属 l2，各自随总开关跳过
         try:
-            masked_msgs, any_masked, entities = norm_mask_messages(messages)
-            if not any_masked:
+            masked_msgs, any_masked, entities = messages, False, []
+            if l1_on:
+                masked_msgs, any_masked, entities = norm_mask_messages(messages)
+            if not any_masked and l2_on:
                 recs = load_pii_recognizers()
                 masked_msgs, any_masked, entities = mask_message_contents(messages, recs)
         except Exception as e:

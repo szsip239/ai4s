@@ -93,7 +93,7 @@ export interface EdmDocSummary {
   added_at: string | null;
 }
 
-/** 统一 settings（issue #35）：PUT 整体替换（三段必填且字段齐全） */
+/** 统一 settings（issue #35）：PUT 整体替换（六段必填且字段齐全） */
 export interface JudgeSettings {
   enabled: boolean;
   model: string;
@@ -110,12 +110,20 @@ export interface PgSettings {
   enabled: boolean;
   threshold: number;
 }
+/** 分层总开关（issue #40）：单键段；旧 settings.json 可能缺段（shim 侧缺段默认 true），
+ * 故读侧按可选处理、展示缺省回退 true 与服务端语义对齐 */
+export interface LayerSwitchSettings {
+  enabled: boolean;
+}
 export interface DlpSettings {
   version: number;
   _comment?: string;
   judge: JudgeSettings;
   edm: EdmSettings;
   pg: PgSettings;
+  l1?: LayerSwitchSettings;
+  l2?: LayerSwitchSettings;
+  response?: LayerSwitchSettings;
 }
 
 // ---- query keys ----

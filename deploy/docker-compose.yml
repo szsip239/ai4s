@@ -147,6 +147,11 @@ services:
       PG_ENABLED: ${PG_ENABLED:-0}
       PG_URL: http://promptguard:8092/guard
       PG_THRESHOLD: ${PG_THRESHOLD:-0.7}
+      # issue #40 分层总开关（L1 格式规则/L2 词表+PII/响应侧）；生效值以 /dlp/settings.json 为准，
+      # env 仅作回退层——默认 1（开）保现网行为，与 JUDGE 等默认 0 的 shadow 层语义相反
+      L1_ENABLED: ${L1_ENABLED:-1}
+      L2_ENABLED: ${L2_ENABLED:-1}
+      RESPONSE_ENABLED: ${RESPONSE_ENABLED:-1}
     volumes:
       - ./dlp:/dlp:rw # 词表/format-rules/settings.json 挂载（issue #31 起 rw：admin API 写回）；shim 每请求重读热更新
       - ../recognizers:/recognizers:rw # PII recognizer 定义（issue #15），issue #31 起 rw

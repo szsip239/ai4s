@@ -518,9 +518,16 @@ class AdminFormatRulesTest(unittest.TestCase):
         self._saved_paths = (admin_api.FORMAT_RULES_PATH, admin_api.AGENTGW_CONFIG_PATH)
         admin_api.FORMAT_RULES_PATH = self.rules_path
         admin_api.AGENTGW_CONFIG_PATH = self.config_path
+        # env 隔离（对齐 AppSettingsTest 纪律）：开发机/CI 导出分层总开关 env 会改变渲染行为
+        # （本类 SETTINGS_PATH 未覆写，_layer_enabled 落不到文件时读 env），pop 防误失败
+        self._saved_env = {k: os.environ.pop(k, None)
+                           for k in ("L1_ENABLED", "L2_ENABLED", "RESPONSE_ENABLED")}
 
     def tearDown(self):
         admin_api.FORMAT_RULES_PATH, admin_api.AGENTGW_CONFIG_PATH = self._saved_paths
+        for k, v in self._saved_env.items():
+            if v is not None:
+                os.environ[k] = v
         self._tmp.cleanup()
 
     def _read_json(self, path):
@@ -1132,6 +1139,9 @@ _SETTINGS_FIXTURE = {
     },
     "edm": {"enabled": True, "min_hits": 2},
     "pg": {"enabled": True, "threshold": 0.7},
+    "l1": {"enabled": True},
+    "l2": {"enabled": True},
+    "response": {"enabled": True},
 }
 
 
@@ -1223,6 +1233,12 @@ class AdminSettingsTest(unittest.TestCase):
             ("pg 缺 threshold", mutated(lambda d: d["pg"].pop("threshold"))),
             ("pg.threshold 超界", mutated(lambda d: d["pg"].update({"threshold": 2}))),
             ("pg.threshold 为布尔", mutated(lambda d: d["pg"].update({"threshold": False}))),
+            # 分层总开关三段（issue #40）：必填、仅 enabled 单键、必须布尔
+            ("l1 缺 enabled", mutated(lambda d: d["l1"].pop("enabled"))),
+            ("l1.enabled 非布尔", mutated(lambda d: d["l1"].update({"enabled": 1}))),
+            ("l2 未知字段", mutated(lambda d: d["l2"].update({"typo": 1}))),
+            ("response 非对象", mutated(lambda d: d.update({"response": 1}))),
+            ("response 整段缺失", mutated(lambda d: d.pop("response"))),
         ]
         for label, payload in cases:
             with self.subTest(case=label):
@@ -1284,6 +1300,10 @@ class AppSettingsTest(unittest.TestCase):
             # 非法 env 回退默认（比旧模块级 int()/float() 启动即崩更宽容）
             ("judge", "timeout", "JUDGE_TIMEOUT", 8, "garbage", 8),
             ("pg", "threshold", "PG_THRESHOLD", 0.7, "garbage", 0.7),
+            # 分层总开关（issue #40）：内置默认 True（保现网行为），env "0" 才关
+            ("l1", "enabled", "L1_ENABLED", True, "0", False),
+            ("l2", "enabled", "L2_ENABLED", True, "0", False),
+            ("response", "enabled", "RESPONSE_ENABLED", True, "0", False),
         ]
         for section, key, env_name, default, env_val, expected in env_cases:
             with self.subTest(key=key, env_val=env_val):
@@ -1296,6 +1316,11 @@ class AppSettingsTest(unittest.TestCase):
         # env 也缺 → 内置默认
         os.environ.pop("JUDGE_TIMEOUT", None)
         self.assertEqual(shim_app.setting_value({}, "judge", "timeout", "JUDGE_TIMEOUT", 8), 8)
+        # 分层总开关（issue #40）：settings 缺段 + env 缺 → 内置默认 True（缺失键回归：旧 settings.json 不降级）
+        for section, env_name in (("l1", "L1_ENABLED"), ("l2", "L2_ENABLED"), ("response", "RESPONSE_ENABLED")):
+            os.environ.pop(env_name, None)
+            with self.subTest(section=section):
+                self.assertIs(shim_app.setting_value({}, section, "enabled", env_name, True), True)
         # env_name=None（judge prompt 无 env 级，原为代码常量）→ 直接默认
         self.assertEqual(shim_app.setting_value({}, "judge", "prompt_system", None, "D"), "D")
 
@@ -1505,6 +1530,207 @@ class InjectionShadowSettingsTest(unittest.TestCase):
         printed = "\n".join(str(c.args[0]) for c in m.call_args_list if c.args)
         self.assertIn("[settings] pg.threshold 类型不符", printed)
         self.assertIn("[injection.shadow] malicious=0.785 >= 0.7", printed)
+
+
+class LayerSwitchTest(unittest.TestCase):
+    """分层总开关（issue #40）：l1/l2/response.enabled=false 的三条关闭路径 + l1 渲染联动。
+    fixture：临时 settings/wordlist/format-rules/config.yaml；judge/pg/edm 关掉隔离。
+    检测路径覆写 shim_app.*，admin 写路径覆写 admin_api.*（两个模块各自持有路径属性）。"""
+
+    def setUp(self):
+        _FAKE_STATE["mode"] = "ok"
+        _FAKE_STATE["tokens"] = {
+            "writer-token": {"id": "7", "isOwner": False, "scopes": ["read_channels", "write_channels"]},
+        }
+        self._tmp = tempfile.TemporaryDirectory()
+        d = self._tmp.name
+        self.settings_path = os.path.join(d, "settings.json")
+        self.wordlist_path = os.path.join(d, "wordlist.json")
+        self.rules_path = os.path.join(d, "format-rules.json")
+        self.config_path = os.path.join(d, "config.yaml")
+        self._fixture = json.loads(json.dumps(_SETTINGS_FIXTURE))
+        # 隔离其余层：只验 l1/l2/response 开关语义
+        self._fixture["judge"]["enabled"] = False
+        self._fixture["pg"]["enabled"] = False
+        self._fixture["edm"]["enabled"] = False
+        self._write_settings()
+        with open(self.wordlist_path, "w", encoding="utf-8") as f:
+            json.dump({"version": 1,
+                       "terms": [{"value": "凤凰计划", "rule_id": "confidential.fenghuang"}]},
+                      f, ensure_ascii=False)
+        with open(self.rules_path, "w", encoding="utf-8") as f:
+            json.dump(_FR_FIXTURE, f, ensure_ascii=False)
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            f.write(_CONFIG_FIXTURE)
+        self._saved_app = (shim_app.SETTINGS_PATH, shim_app.WORDLIST_PATH,
+                           shim_app.FORMAT_RULES_PATH, shim_app.PII_RECOGNIZERS_PATH)
+        shim_app.SETTINGS_PATH = self.settings_path
+        shim_app.WORDLIST_PATH = self.wordlist_path
+        shim_app.FORMAT_RULES_PATH = self.rules_path
+        # 指向不存在文件 → load_pii_recognizers 空（隔离 Presidio 路径，不依赖本机文件）
+        shim_app.PII_RECOGNIZERS_PATH = os.path.join(d, "pii-zh.json")
+        self._saved_admin = (admin_api.SETTINGS_PATH, admin_api.FORMAT_RULES_PATH,
+                             admin_api.AGENTGW_CONFIG_PATH)
+        admin_api.SETTINGS_PATH = self.settings_path
+        admin_api.FORMAT_RULES_PATH = self.rules_path
+        admin_api.AGENTGW_CONFIG_PATH = self.config_path
+        # env 隔离（对齐 AppSettingsTest 纪律）：开发机/CI 导出分层总开关 env 会在缺段用例中
+        # 顶替内置默认（setting_value 缺段落 env 级），pop 防误失败
+        self._saved_env = {k: os.environ.pop(k, None)
+                           for k in ("L1_ENABLED", "L2_ENABLED", "RESPONSE_ENABLED")}
+        # 开关可观测状态记忆复位（issue #40 review）：跨用例不带上次状态
+        shim_app._LAYER_SWITCH_STATE.clear()
+
+    def tearDown(self):
+        (shim_app.SETTINGS_PATH, shim_app.WORDLIST_PATH,
+         shim_app.FORMAT_RULES_PATH, shim_app.PII_RECOGNIZERS_PATH) = self._saved_app
+        (admin_api.SETTINGS_PATH, admin_api.FORMAT_RULES_PATH,
+         admin_api.AGENTGW_CONFIG_PATH) = self._saved_admin
+        for k, v in self._saved_env.items():
+            if v is not None:
+                os.environ[k] = v
+        self._tmp.cleanup()
+
+    def _write_settings(self):
+        with open(self.settings_path, "w", encoding="utf-8") as f:
+            json.dump(self._fixture, f, ensure_ascii=False)
+
+    def _post_request(self, content):
+        return _request("POST", "/request",
+                        payload={"body": {"messages": [{"role": "user", "content": content}]}})
+
+    def _post_response(self, content):
+        return _request("POST", "/response",
+                        payload={"body": {"choices": [
+                            {"message": {"role": "assistant", "content": content}}]}})
+
+    def _read_config(self):
+        with open(self.config_path, encoding="utf-8") as f:
+            return f.read()
+
+    def test_l2_off_wordlist_term_passes(self):
+        """l2.enabled=false → 词表词放行（先验基线 451，关后 200 pass）。"""
+        status, body = self._post_request("凤凰计划的排期发我")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["action"].get("status_code"), 451)  # 基线：l2 开 → 拦截
+        self._fixture["l2"]["enabled"] = False
+        self._write_settings()
+        status, body = self._post_request("凤凰计划的排期发我")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["action"].get("reason"), "pass")
+
+    def test_response_off_hit_passes(self):
+        """response.enabled=false → 响应侧命中也 pass（先验基线 451）。"""
+        _, body = self._post_response("好的，凤凰计划的排期如下")
+        self.assertEqual(body["action"].get("status_code"), 451)  # 基线：命中词表
+        self._fixture["response"]["enabled"] = False
+        self._write_settings()
+        status, body = self._post_response("好的，凤凰计划的排期如下")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["action"].get("reason"), "pass")
+
+    def test_l1_off_secret_passes_and_render_empty(self):
+        """l1.enabled=false → shim 侧 L1 secrets 跳过（先验基线 451）；
+        渲染层 include_l1=False → 格式规则全族不渲染（空串，不含任何 pattern）。"""
+        _, body = self._post_request("我的 key 是 TESTA1234 请收好")
+        self.assertEqual(body["action"].get("status_code"), 451)  # 基线：secrets.test_a
+        self._fixture["l1"]["enabled"] = False
+        self._write_settings()
+        status, body = self._post_request("我的 key 是 TESTA1234 请收好")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["action"].get("reason"), "pass")
+        block = admin_api.render_gateway_block(_FR_FIXTURE["rules"], include_l1=False)
+        self.assertEqual(block, "")
+        self.assertNotIn("TESTA", block)
+        self.assertNotIn("TESTB", block)
+
+    def test_missing_sections_default_on(self):
+        """settings.json 缺 l1/l2/response 段（旧文件）→ 内置默认 True，三条路径行为不变。"""
+        for section in ("l1", "l2", "response"):
+            self._fixture.pop(section)
+        self._write_settings()
+        _, body = self._post_request("凤凰计划的排期发我")
+        self.assertEqual(body["action"].get("status_code"), 451)   # l2 默认开
+        _, body = self._post_request("我的 key 是 TESTA1234 请收好")
+        self.assertEqual(body["action"].get("status_code"), 451)   # l1 默认开
+        _, body = self._post_response("好的，凤凰计划的排期如下")
+        self.assertEqual(body["action"].get("status_code"), 451)   # response 默认开
+
+    def test_mask_response_body_layer_flags(self):
+        """mask_response_body 分层参数（issue #40）：l1 关跳过 secrets/格式 PII；l2 关跳过词表。"""
+        payload = {"choices": [{"message": {"role": "assistant",
+                                            "content": "TESTA1234 与 凤凰计划"}}]}
+        _, hits = shim_app.mask_response_body(payload)
+        self.assertIn("secrets.test_a", hits)
+        self.assertIn("confidential.fenghuang", hits)
+        _, hits = shim_app.mask_response_body(payload, l1_enabled=False)
+        self.assertNotIn("secrets.test_a", hits)
+        self.assertIn("confidential.fenghuang", hits)
+        _, hits = shim_app.mask_response_body(payload, l2_enabled=False)
+        self.assertIn("secrets.test_a", hits)
+        self.assertNotIn("confidential.fenghuang", hits)
+
+    def test_layer_switch_warn_on_state_change(self):
+        """开关可观测（review）：状态变化打一行 [settings] warn，稳态请求不重复刷。"""
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self._post_request("帮我写周报")                     # 首次观测：全开 → 不打
+            self._fixture["l1"]["enabled"] = False
+            self._write_settings()
+            self._post_request("帮我写周报")                     # true→false：打一行撤防 warn
+            self._post_request("帮我写周报")                     # 稳态：不再重复打
+            self._fixture["l1"]["enabled"] = True
+            self._write_settings()
+            self._post_request("帮我写周报")                     # false→true：打一行恢复
+        out = buf.getvalue()
+        self.assertEqual(out.count("[settings] l1.enabled=false，格式规则层已撤防（密钥拦截敞口）"), 1)
+        self.assertEqual(out.count("[settings] l1.enabled=true，格式规则层恢复生效"), 1)
+
+    def test_settings_put_l1_flip_triggers_render(self):
+        """l1 翻转联动渲染（issue #40）：PUT settings 关 l1 → config.yaml 标记区块渲染为空；
+        再开 → 区块恢复渲染；settings 落盘值随之翻转。"""
+        doc = json.loads(json.dumps(self._fixture))
+        doc["l1"]["enabled"] = False
+        status, body = _request("PUT", "/dlp-admin/settings", token="writer-token", payload=doc)
+        self.assertEqual(status, 200, body)
+        cfg = self._read_config()
+        self.assertIn("DLP-FORMAT-RULES BEGIN", cfg)
+        self.assertIn("DLP-FORMAT-RULES END", cfg)
+        self.assertNotIn("TESTA", cfg)              # 标记区块渲染为空
+        self.assertIn("host: shim:8080", cfg)       # 区块外不动
+        with open(self.settings_path, encoding="utf-8") as f:
+            self.assertFalse(json.load(f)["l1"]["enabled"])
+        # 再开 → 恢复渲染
+        doc["l1"]["enabled"] = True
+        status, body = _request("PUT", "/dlp-admin/settings", token="writer-token", payload=doc)
+        self.assertEqual(status, 200, body)
+        self.assertIn("- pattern: 'TESTA[0-9]{4}'", self._read_config())
+
+    def test_settings_put_l1_flip_render_failure_rollback(self):
+        """l1 翻转但 config.yaml 缺标记 → 500 且 settings 回滚（两侧不留半更新）。"""
+        with open(self.config_path, "w", encoding="utf-8") as f:
+            f.write("routes: []\n")
+        doc = json.loads(json.dumps(self._fixture))
+        doc["l1"]["enabled"] = False
+        status, body = _request("PUT", "/dlp-admin/settings", token="writer-token", payload=doc)
+        self.assertEqual(status, 500)
+        self.assertIn("已回滚", body.get("error", ""))
+        with open(self.settings_path, encoding="utf-8") as f:
+            self.assertTrue(json.load(f)["l1"]["enabled"])  # 回滚为写前 true
+
+    def test_render_endpoints_respect_l1_off(self):
+        """render 端点 + 格式规则保存路径（issue #40 AC）：l1 关时两者渲染均排除整族规则。"""
+        self._fixture["l1"]["enabled"] = False
+        self._write_settings()
+        status, body = _request("POST", "/dlp-admin/format-rules/render", token="writer-token")
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body.get("rendered"), 0)
+        self.assertNotIn("TESTA", self._read_config())
+        # 格式规则保存路径（PUT format-rules）同样排除
+        status, body = _request("PUT", "/dlp-admin/format-rules",
+                                token="writer-token", payload=_FR_FIXTURE)
+        self.assertEqual(status, 200, body)
+        self.assertNotIn("TESTA", self._read_config())
 
 
 if __name__ == "__main__":

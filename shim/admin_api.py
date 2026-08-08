@@ -218,10 +218,14 @@ def _settings_get(handler, _me):
 
 
 # settings schema（issue #35）：顶层/区段未知键一律拒绝（防 typo 静默漂移，同 format-rules 校验精神）
-_SETTINGS_TOP_KEYS = {"version", "_comment", "judge", "edm", "pg"}
+_SETTINGS_TOP_KEYS = {"version", "_comment", "judge", "edm", "pg", "l1", "l2", "response"}
 _SETTINGS_JUDGE_KEYS = {"enabled", "model", "base_url", "timeout", "prompt_system", "prompt_fewshot"}
 _SETTINGS_EDM_KEYS = {"enabled", "min_hits"}
 _SETTINGS_PG_KEYS = {"enabled", "threshold"}
+# 分层总开关（issue #40）：单键段
+_SETTINGS_L1_KEYS = {"enabled"}
+_SETTINGS_L2_KEYS = {"enabled"}
+_SETTINGS_RESPONSE_KEYS = {"enabled"}
 
 
 def _is_number(v) -> bool:
@@ -241,7 +245,8 @@ def _validate_settings(data) -> str | None:
         return "version 必须是整数"
     if "_comment" in data and not isinstance(data["_comment"], str):
         return "_comment 必须是字符串"
-    allowed = {"judge": _SETTINGS_JUDGE_KEYS, "edm": _SETTINGS_EDM_KEYS, "pg": _SETTINGS_PG_KEYS}
+    allowed = {"judge": _SETTINGS_JUDGE_KEYS, "edm": _SETTINGS_EDM_KEYS, "pg": _SETTINGS_PG_KEYS,
+               "l1": _SETTINGS_L1_KEYS, "l2": _SETTINGS_L2_KEYS, "response": _SETTINGS_RESPONSE_KEYS}
     for section, keys in allowed.items():
         sec = data.get(section)
         if not isinstance(sec, dict):
@@ -268,12 +273,38 @@ def _validate_settings(data) -> str | None:
         return "pg.enabled 必须是布尔值"
     if not _is_number(pg["threshold"]) or not 0 <= pg["threshold"] <= 1:
         return "pg.threshold 必须是 0~1 数值"
+    for section in ("l1", "l2", "response"):  # 分层总开关（issue #40）：仅 enabled 单键
+        if not isinstance(data[section]["enabled"], bool):
+            return f"{section}.enabled 必须是布尔值"
     return None
+
+
+# 分层总开关 env 名（issue #40，与 app.py setting_value 调用点一致）
+_LAYER_ENV = {"l1": "L1_ENABLED", "l2": "L2_ENABLED", "response": "RESPONSE_ENABLED"}
+
+
+def _layer_enabled(section: str) -> bool:
+    """分层总开关读取（issue #40）：settings.json[section].enabled > env > 默认 True。
+    与 app.py setting_value 同三级语义（admin_api 自包含不 import app，按 bool 单键简化实现）；
+    文件缺失/损坏/键类型不符 → env/默认 True（保现网行为方向，admin 平面读配置用）。"""
+    data = _load_json_file(SETTINGS_PATH)
+    if isinstance(data, dict):
+        sec = data.get(section)
+        if isinstance(sec, dict) and isinstance(sec.get("enabled"), bool):
+            return sec["enabled"]
+    v = os.environ.get(_LAYER_ENV[section], "")
+    if v != "":
+        return v == "1"
+    return True
 
 
 def _settings_put(handler, _me):
     """PUT 整体替换 settings（issue #35）：校验 → write_json_atomic。
-    shim 检测路径每请求重读 settings.json，写入即热生效，无需重启。"""
+    shim 检测路径每请求重读 settings.json，写入即热生效，无需重启。
+    l1 总开关联动（issue #40）：l1.enabled 翻转时按新状态重渲染 config.yaml 标记区块
+    （关=区块渲染为空，网关层同步撤掉格式规则）；渲染失败从 .bak 回滚 settings 并 500，
+    两侧不留半更新（对称 format-rules PUT 纪律）。手改 settings.json 不触发联动，
+    漂移时用 POST /dlp-admin/format-rules/render 兜底修复。"""
     payload = _read_body(handler)
     if payload is None:
         return
@@ -281,12 +312,33 @@ def _settings_put(handler, _me):
     if err:
         _respond(handler, 400, {"error": err})
         return
+    old_l1 = _layer_enabled("l1")  # 写前读旧状态（文件缺失/env 兜底均按默认 True 语义）
     try:
         write_json_atomic(SETTINGS_PATH, payload)
     except OSError as e:
         _respond(handler, 500, {"error": f"settings 写入失败: {e}"})
         return
+    new_l1 = _layer_enabled("l1")  # 写后读新状态：文件级优先于 env，PUT 整体替换后必读到 payload 新值
+    if old_l1 != new_l1:
+        data = _load_json_file(FORMAT_RULES_PATH)
+        if not isinstance(data, dict) or not isinstance(data.get("rules"), list):
+            _rollback_settings_json()
+            _respond(handler, 500, {"error": "format-rules unreadable，无法联动渲染（settings 已回滚）"})
+            return
+        rerr = _render_to_config(data["rules"], include_l1=new_l1)
+        if rerr:
+            _rollback_settings_json()
+            _respond(handler, 500, {"error": f"{rerr}（settings 已回滚）"})
+            return
     _respond(handler, 200, payload)
+
+
+def _rollback_settings_json() -> None:
+    """settings 已写但 l1 联动渲染失败时回滚：.bak 恢复（无 .bak 说明此前无文件，直接删除），两侧不留半更新。"""
+    if os.path.exists(SETTINGS_PATH + ".bak"):
+        shutil.copyfile(SETTINGS_PATH + ".bak", SETTINGS_PATH)
+    elif os.path.exists(SETTINGS_PATH):
+        os.unlink(SETTINGS_PATH)
 
 
 # gateway_patterns 禁用的 Rust regex 不支持构造（lookaround；backreference 另行 \1~\9 扫描）
@@ -371,7 +423,7 @@ def _format_rules_put(handler, _me):
         # JSON 写失败（review #2）：与 YAML 写失败对称 500；此处 config.yaml 尚未触碰
         _respond(handler, 500, {"error": f"format-rules 写入失败: {e}"})
         return
-    rerr = _render_to_config(payload["rules"])
+    rerr = _render_to_config(payload["rules"], include_l1=_layer_enabled("l1"))
     if rerr:
         _rollback_format_rules_json()
         _respond(handler, 500, {"error": f"{rerr}（JSON 已回滚）"})
@@ -384,14 +436,16 @@ def _yaml_single_quote(s: str) -> str:
     return "'" + s.replace("'", "''") + "'"
 
 
-def render_gateway_block(rules: list) -> str:
+def render_gateway_block(rules: list, include_l1: bool = True) -> str:
     """渲染 promptGuard request 段的 - regex 条目文本（issue #33）。
     缩进对齐现网（条目 12 空格级，模板化确定性构造兜底 stdlib 无 YAML 解析器）；
-    enabled=false 或 gateway_patterns 为空（shim-only）的规则不渲染进网关。"""
+    enabled=false 或 gateway_patterns 为空（shim-only）的规则不渲染进网关。
+    l1 总开关（issue #40）：include_l1=False 时格式规则全族不渲染（返回空串，标记区块渲染为空，
+    网关层同步撤防——l1 管辖 format-rules.json 全族，含 L1 reject 与 L1.5 格式 mask）。"""
     lines = []
     for r in rules:
         patterns = r.get("gateway_patterns") or []
-        if not r.get("enabled") or not patterns:
+        if not include_l1 or not r.get("enabled") or not patterns:
             continue
         lines.append("            - regex:")
         lines.append(f"                action: {r['action']}")
@@ -410,7 +464,7 @@ def render_gateway_block(rules: list) -> str:
             lines.append('                    content-type: "application/json"')
             lines.append("                body: |")
             lines.append(f"                  {body}")
-    return "\n".join(lines) + "\n"
+    return ("\n".join(lines) + "\n") if lines else ""
 
 
 # config.yaml 一次性标记区块（issue #33）：渲染内容替换 BEGIN/END 之间，区块外手改不动
@@ -429,10 +483,14 @@ def splice_rendered(config_text: str, block: str) -> str:
     return "".join(lines[:b + 1]) + block + "".join(lines[e:])
 
 
-def _verify_spliced(text: str, rules: list) -> None:
-    """渲染后校验（issue #33）：标记完整 + 每条启用规则的 gateway_patterns 与 reject code 均在文本中。"""
+def _verify_spliced(text: str, rules: list, include_l1: bool = True) -> None:
+    """渲染后校验（issue #33）：标记完整 + 每条启用规则的 gateway_patterns 与 reject code 均在文本中。
+    l1 总开关（issue #40）：include_l1=False 时整族规则被排除在渲染外，逐规则校验同步跳过
+    （否则恒 500）；标记完整性校验仍保留。"""
     if _BEGIN_MARK not in text or _END_MARK not in text:
         raise ValueError("渲染后校验失败: 标记缺失")
+    if not include_l1:
+        return
     for r in rules:
         if not r.get("enabled"):
             continue
@@ -444,14 +502,15 @@ def _verify_spliced(text: str, rules: list) -> None:
             raise ValueError(f"渲染后校验失败: rejection code 未落文本 ({r.get('code')})")
 
 
-def _render_to_config(rules) -> str | None:
+def _render_to_config(rules, include_l1: bool = True) -> str | None:
     """读 config.yaml → 渲染 splice 标记区块 → 渲染后校验 → 原子写盘（PUT/render 共用，review #6）。
-    成功返回 None；渲染/校验失败或写盘失败返回错误消息（渲染失败时未落盘）。"""
+    成功返回 None；渲染/校验失败或写盘失败返回错误消息（渲染失败时未落盘）。
+    include_l1 透传 l1 总开关（issue #40）：False 时标记区块渲染为空。"""
     try:
         with open(AGENTGW_CONFIG_PATH, encoding="utf-8") as f:
             config_text = f.read()
-        new_config = splice_rendered(config_text, render_gateway_block(rules))
-        _verify_spliced(new_config, rules)
+        new_config = splice_rendered(config_text, render_gateway_block(rules, include_l1))
+        _verify_spliced(new_config, rules, include_l1)
     except (OSError, ValueError) as e:
         return f"渲染失败: {e}"
     try:
@@ -471,17 +530,20 @@ def _rollback_format_rules_json() -> None:
 
 def _format_rules_render_post(handler, _me):
     """POST 幂等重渲染（issue #33）：按 JSON 当前内容重渲染 config.yaml 标记区块。
-    用于区块被手改漂移后的修复；JSON 损坏/缺标记拒绝渲染，不落盘。"""
+    用于区块被手改漂移后的修复；JSON 损坏/缺标记拒绝渲染，不落盘。
+    l1 总开关（issue #40）：l1.enabled=false 时标记区块渲染为空（rendered=0），
+    也是手改 settings.json 后同步网关层的兜底入口。"""
     data = _load_json_file(FORMAT_RULES_PATH)
     if not isinstance(data, dict) or not isinstance(data.get("rules"), list):
         _respond(handler, 500, {"error": "format-rules unreadable，拒绝渲染"})
         return
     rules = data["rules"]
-    rerr = _render_to_config(rules)
+    include_l1 = _layer_enabled("l1")
+    rerr = _render_to_config(rules, include_l1=include_l1)
     if rerr:
         _respond(handler, 500, {"error": rerr})
         return
-    rendered = sum(1 for r in rules if r.get("enabled") and r.get("gateway_patterns"))
+    rendered = sum(1 for r in rules if include_l1 and r.get("enabled") and r.get("gateway_patterns"))
     _respond(handler, 200, {"rendered": rendered})
 
 
