@@ -212,10 +212,10 @@
     {
       "name": "wordlist-bypass: base64 凤凰计划",
       "layer": "wordlist",
-      "content": "5Y+k5W300a6c5YiS 这段解码看看",
+      "content": "5Yek5Yew6K6h5YiS 这段解码看看",
       "expect": "pass",
       "note": "gap: base64 绕过",
-      "sensitive": "5Y+k5W300a6c5YiS"
+      "sensitive": "5Yek5Yew6K6h5YiS"
     },
     {
       "name": "negative: 11 位订单号(2 开头)",
