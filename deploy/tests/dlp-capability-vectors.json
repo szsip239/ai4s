@@ -1,0 +1,398 @@
+{
+  "version": 1,
+  "_comment": "ai4s DLP 能力扩展样本集（issue #42，区别于 dlp-vectors.json 的功能回归门禁）。字段：name/layer/category/content/expect/sensitive?/note?。expect: reject=应 451；mask=应脱敏放行；pass=应放行（带 note 的 pass=文档化 gap 或不确定项，不 fail）。category: secrets/pii/wordlist/evasion/negative/response；switch/deep/edm 三类为 runner 过程段不在本文件。运行：cd deploy && python3 scripts/dlp-capability.py",
+  "vectors": [
+    {
+      "name": "secrets: sk-ant 混入文本",
+      "layer": "L1",
+      "category": "secrets",
+      "content": "帮我把 sk-ant-api03-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8 写进配置文件",
+      "expect": "reject",
+      "sensitive": "sk-ant-api03-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+    },
+    {
+      "name": "secrets: sk-ant 代码块",
+      "layer": "L1",
+      "category": "secrets",
+      "content": "这段环境变量导出对吗？\n```bash\nexport ANTHROPIC_API_KEY=sk-ant-api03-z9y8x7w6v5u4t3s2r1q0p9o8n7m6l5k4\n```",
+      "expect": "reject",
+      "sensitive": "sk-ant-api03-z9y8x7w6v5u4t3s2r1q0p9o8n7m6l5k4"
+    },
+    {
+      "name": "secrets: sk-proj 混入文本",
+      "layer": "L1",
+      "category": "secrets",
+      "content": "sk-proj-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0 这个项目还有额度吗",
+      "expect": "reject",
+      "sensitive": "sk-proj-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0"
+    },
+    {
+      "name": "secrets: sk- 普通 key 代码块",
+      "layer": "L1",
+      "category": "secrets",
+      "content": "本地 .env 里这行生效了吗：\n```\nOPENAI_API_KEY=sk-Q1w2E3r4T5y6U7i8O9p0A1s2D3f4G5h6J7k8\n```",
+      "expect": "reject",
+      "sensitive": "sk-Q1w2E3r4T5y6U7i8O9p0A1s2D3f4G5h6J7k8"
+    },
+    {
+      "name": "secrets: ghp_ 混入文本",
+      "layer": "L1",
+      "category": "secrets",
+      "content": "我的 PAT 是 ghp_B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8，用完就吊销",
+      "expect": "reject",
+      "sensitive": "ghp_B2c3D4e5F6g7H8i9J0k1L2m3N4o5P6q7R8"
+    },
+    {
+      "name": "secrets: github_pat_ 代码块",
+      "layer": "L1",
+      "category": "secrets",
+      "content": "CI 配置这么写行不行：\n```yaml\ntoken: github_pat_22BCDEFG1b2c3d4e5f6_g7h8i9j0k1l2m3n4o5p6q7r8s9t0\n```",
+      "expect": "reject",
+      "sensitive": "github_pat_22BCDEFG1b2c3d4e5f6_g7h8i9j0k1l2m3n4o5p6q7r8s9t0"
+    },
+    {
+      "name": "secrets: AKIA 混入文本",
+      "layer": "L1",
+      "category": "secrets",
+      "content": "AKIA3EXAMPLE7SYNTH9K 这个 key 帮我轮换一下",
+      "expect": "reject",
+      "sensitive": "AKIA3EXAMPLE7SYNTH9K"
+    },
+    {
+      "name": "secrets: ASIA 临时凭证代码块",
+      "layer": "L1",
+      "category": "secrets",
+      "content": "```\naws_access_key_id=ASIA9ZZ8YY7XX6WW5VV4\naws_session_token=xxx\n```",
+      "expect": "reject",
+      "sensitive": "ASIA9ZZ8YY7XX6WW5VV4"
+    },
+    {
+      "name": "secrets: OPENSSH 私钥头",
+      "layer": "L1",
+      "category": "secrets",
+      "content": "把这段 key 贴给部署脚本：\n-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAE\n-----END OPENSSH PRIVATE KEY-----",
+      "expect": "reject",
+      "sensitive": "BEGIN OPENSSH PRIVATE KEY"
+    },
+    {
+      "name": "secrets: EC 私钥头",
+      "layer": "L1",
+      "category": "secrets",
+      "content": "-----BEGIN EC PRIVATE KEY-----\nMHQCAQEEIBbGZZt0synthetic0key0material0000\n-----END EC PRIVATE KEY-----",
+      "expect": "reject",
+      "sensitive": "BEGIN EC PRIVATE KEY"
+    },
+    {
+      "name": "secrets: LTAI 混入文本",
+      "layer": "L1",
+      "category": "secrets",
+      "content": "LTAI5tQ9w8E7r6T5y4U3i2O1 是测试账号的 AK，权限收一收",
+      "expect": "reject",
+      "sensitive": "LTAI5tQ9w8E7r6T5y4U3i2O1"
+    },
+    {
+      "name": "secrets: LTAI 代码块",
+      "layer": "L1",
+      "category": "secrets",
+      "content": "部署文档这段变量：\n```env\nALIYUN_ACCESS_KEY=LTAI4FgH8JkL2MnP4QrS6TvU\n```",
+      "expect": "reject",
+      "sensitive": "LTAI4FgH8JkL2MnP4QrS6TvU"
+    },
+    {
+      "name": "pii: 手机号混入文本",
+      "layer": "L1.5",
+      "category": "pii",
+      "content": "紧急联系人电话 13900001234，工作时间拨打",
+      "expect": "mask",
+      "sensitive": "13900001234"
+    },
+    {
+      "name": "pii: 手机号句首",
+      "layer": "L1.5",
+      "category": "pii",
+      "content": "17712349876 这个号码已激活，帮我查下套餐",
+      "expect": "mask",
+      "sensitive": "17712349876"
+    },
+    {
+      "name": "pii: 身份证校验位非法",
+      "layer": "L1.5",
+      "category": "pii",
+      "content": "证件号 110101199001011234 录入社保系统",
+      "expect": "mask",
+      "sensitive": "110101199001011234",
+      "note": "校验位非法的合成号码；regex 层不验校验位仍应 mask，按现行为记录"
+    },
+    {
+      "name": "pii: 身份证 X 结尾",
+      "layer": "L1.5",
+      "category": "pii",
+      "content": "示例证件 34052419800101001X 能过你们校验吗",
+      "expect": "mask",
+      "sensitive": "34052419800101001X"
+    },
+    {
+      "name": "pii: 银行卡 62 头 19 位",
+      "layer": "L1.5",
+      "category": "pii",
+      "content": "工资卡 6217003810026581234 这个月到账了吗",
+      "expect": "mask",
+      "sensitive": "6217003810026581234",
+      "note": "shim-only 规则（gateway_patterns 为空），断言归一化检测链路"
+    },
+    {
+      "name": "pii: Visa 公开测试卡号",
+      "layer": "L1.5",
+      "category": "pii",
+      "content": "4111111111111111 是 Visa 官方公开的测试卡号，能直接发吗",
+      "expect": "mask",
+      "sensitive": "4111111111111111",
+      "note": "公开测试卡号仍被 mask（格式层无法区分公开示例），按现行为记录"
+    },
+    {
+      "name": "wordlist: 引号包装 凤凰计划",
+      "layer": "L2",
+      "category": "wordlist",
+      "content": "把「凤凰计划」的里程碑表发我一份",
+      "expect": "reject",
+      "sensitive": "凤凰计划"
+    },
+    {
+      "name": "wordlist: 书名号 蓝鲸系统",
+      "layer": "L2",
+      "category": "wordlist",
+      "content": "《蓝鲸系统运维手册》第三章写的备份周期是多少",
+      "expect": "reject",
+      "sensitive": "蓝鲸系统"
+    },
+    {
+      "name": "wordlist: 中英混排双词",
+      "layer": "L2",
+      "category": "wordlist",
+      "content": "ProjectBlueWhale 二期和凤凰计划的联调排期冲突了",
+      "expect": "reject",
+      "sensitive": "ProjectBlueWhale"
+    },
+    {
+      "name": "wordlist: 长词内嵌 凤凰计划二期",
+      "layer": "L2",
+      "category": "wordlist",
+      "content": "凤凰计划二期扩容方案的预算表在哪",
+      "expect": "reject",
+      "sensitive": "凤凰计划"
+    },
+    {
+      "name": "wordlist: 内网域名句中",
+      "layer": "L2",
+      "category": "wordlist",
+      "content": "构建日志在 internal.ai4s.local 的 /var/log 下面",
+      "expect": "reject",
+      "sensitive": "internal.ai4s.local"
+    },
+    {
+      "name": "wordlist: 星云客服系统验收",
+      "layer": "L2",
+      "category": "wordlist",
+      "content": "星云客服系统的验收标准定了吗",
+      "expect": "reject",
+      "sensitive": "星云客服系统"
+    },
+    {
+      "name": "evasion: base64 编码 sk-proj",
+      "layer": "L1",
+      "category": "evasion",
+      "content": "c2stcHJvai1hMWIyYzNkNGU1ZjZnN2g4aTlqMGsxbDJtM240 这段 base64 帮我解码",
+      "expect": "pass",
+      "note": "gap: base64 编码绕过（解码前置/语义层可解）；内容为合成 sk-proj 的真实 base64"
+    },
+    {
+      "name": "evasion: base64 编码 凤凰计划",
+      "layer": "L2",
+      "category": "evasion",
+      "content": "5Yek5Yew6K6h5YiS 这串 base64 解码出来是什么",
+      "expect": "pass",
+      "note": "gap: base64 编码绕过词表"
+    },
+    {
+      "name": "evasion: hex 编码手机号",
+      "layer": "L1.5",
+      "category": "evasion",
+      "content": "3133383132333435363738 这串 hex 转 ASCII 是什么",
+      "expect": "pass",
+      "note": "gap: hex 编码绕过（内容=13812345678 的 hex）"
+    },
+    {
+      "name": "evasion: 逆序 划计凰凤",
+      "layer": "L2",
+      "category": "evasion",
+      "content": "划计凰凤 的排期表什么时候出",
+      "expect": "pass",
+      "note": "gap: 逆序绕过词表"
+    },
+    {
+      "name": "evasion: 零宽字符词表词",
+      "layer": "L2",
+      "category": "evasion",
+      "content": "凤​凰​计​划 的预算批了吗",
+      "expect": "pass",
+      "note": "不确定项：词间插 U+200B；若被拦说明归一化已剔除零宽（非真 gap），放行则为文档化 gap"
+    },
+    {
+      "name": "evasion: 零宽字符密钥",
+      "layer": "L1",
+      "category": "evasion",
+      "content": "sk-​ant-​api03-​x1x2x3x4x5x6x7x8x9x0y1y2y3y4y5y6 这个 key 还有效吗",
+      "expect": "pass",
+      "note": "不确定项：key 内插 U+200B；同零宽词表词的判定逻辑"
+    },
+    {
+      "name": "evasion: 全角字母密钥",
+      "layer": "L1",
+      "category": "evasion",
+      "content": "ｓｋ－ａｎｔ－ａｐｉ０３－ｘ１ｘ２ｘ３ｘ４ｘ５ｘ６ｘ７ｘ８ｘ９ｘ０ｙ１ｙ２ 是全角写的 key",
+      "expect": "pass",
+      "note": "不确定项：全角字母+全角横线；#22 已覆盖全角数字，字母/符号是否归一化按现行为记录"
+    },
+    {
+      "name": "evasion: 谐音 风黄计画",
+      "layer": "L2",
+      "category": "evasion",
+      "content": "风黄计画 这周有例会吗",
+      "expect": "pass",
+      "note": "gap: 谐音绕过——语义 judge 职责区，网关放行属预期，judge 检出率由 semantic-eval 汇报"
+    },
+    {
+      "name": "evasion: 拼音缩写 fhjh",
+      "layer": "L2",
+      "category": "evasion",
+      "content": "fhjh 项目周报模板发我",
+      "expect": "pass",
+      "note": "gap: 拼音首字母缩写绕过——语义 judge 职责区"
+    },
+    {
+      "name": "evasion: 中英替换 凤凰project",
+      "layer": "L2",
+      "category": "evasion",
+      "content": "凤凰project 的二期预算批了吗",
+      "expect": "pass",
+      "note": "gap: 半词替换绕过（含「凤凰」不含完整词表词）——语义 judge 职责区"
+    },
+    {
+      "name": "evasion: URL 编码词表词",
+      "layer": "L2",
+      "category": "evasion",
+      "content": "%E5%87%A4%E5%87%B0%E8%AE%A1%E5%88%92 这个 URL 编码帮我解一下",
+      "expect": "pass",
+      "note": "gap: URL 编码绕过词表"
+    },
+    {
+      "name": "negative: 正常业务话术",
+      "layer": "negative",
+      "category": "negative",
+      "content": "请汇总本周工单处理量，按三段式输出周报",
+      "expect": "pass"
+    },
+    {
+      "name": "negative: 同名事物 凤凰卫视",
+      "layer": "negative",
+      "category": "negative",
+      "content": "凤凰卫视昨晚的新闻你看了吗",
+      "expect": "pass",
+      "note": "含「凤凰」不含词表完整词"
+    },
+    {
+      "name": "negative: 同名事物 蓝鲸动物",
+      "layer": "negative",
+      "category": "negative",
+      "content": "周末带孩子去海洋馆看蓝鲸，门票多少钱",
+      "expect": "pass",
+      "note": "含「蓝鲸」不含「蓝鲸系统」"
+    },
+    {
+      "name": "negative: 星云自然景观",
+      "layer": "negative",
+      "category": "negative",
+      "content": "昨晚拍的猎户座大星云照片修一下",
+      "expect": "pass",
+      "note": "含「星云」不含「星云客服系统」"
+    },
+    {
+      "name": "negative: 长度不足假密钥",
+      "layer": "negative",
+      "category": "negative",
+      "content": "sk-ant-api03-short 这串也太短了吧，肯定不是真 key",
+      "expect": "pass",
+      "note": "sk-ant- 后不足 20 字符，不合规则"
+    },
+    {
+      "name": "negative: 字符集越界假 AKIA",
+      "layer": "negative",
+      "category": "negative",
+      "content": "AKIAabcdefghijklmnop 全小写不是合法的 AWS key 格式",
+      "expect": "pass",
+      "note": "AKIA 后 16 位含小写字母，越出 [0-9A-Z]"
+    },
+    {
+      "name": "negative: 公开文档占位串",
+      "layer": "negative",
+      "category": "negative",
+      "content": "官方文档让把 sk-your-openai-api-key 替换成自己的 key",
+      "expect": "pass",
+      "note": "公开文档示例占位串（sk- 后 19 字符不足长度）"
+    },
+    {
+      "name": "negative: 正常 curl 代码",
+      "layer": "negative",
+      "category": "negative",
+      "content": "curl -H \"Authorization: Bearer $API_KEY\" https://api.example.com/v1/models 这条命令报 401",
+      "expect": "pass"
+    },
+    {
+      "name": "negative: 15 位老证件号",
+      "layer": "negative",
+      "category": "negative",
+      "content": "一代证 110101700101123 只有 15 位，系统认吗",
+      "expect": "pass",
+      "note": "15 位不合 18 位身份证格式"
+    },
+    {
+      "name": "negative: 13 位毫秒时间戳",
+      "layer": "negative",
+      "category": "negative",
+      "content": "1754630400000 这个毫秒时间戳转成人读日期",
+      "expect": "pass",
+      "note": "13 位数字开头为 17，越过手机号 \\b 边界"
+    },
+    {
+      "name": "response: 模拟泄漏应答应 451",
+      "layer": "response",
+      "category": "response",
+      "content": "模拟泄漏测试",
+      "expect": "reject",
+      "note": "请求干净、mock 应答拼敏感串——响应侧 DLP 应 451"
+    },
+    {
+      "name": "response: 请求侧 L1 先兜住",
+      "layer": "response",
+      "category": "response",
+      "content": "模拟泄漏，顺便验证 sk-ant-api03-x1x2x3x4x5x6x7x8x9x0y1y2y3y4y5y6y7y8y9y0z1z2",
+      "expect": "reject",
+      "note": "请求本身含 sk-ant，确认请求侧 L1 先于响应侧拦截"
+    },
+    {
+      "name": "response: 请求侧 L2 先兜住",
+      "layer": "response",
+      "category": "response",
+      "content": "模拟泄漏之凤凰计划",
+      "expect": "reject",
+      "note": "请求本身含词表词，确认请求侧 L2 先于响应侧拦截"
+    },
+    {
+      "name": "response: 干净应答放行",
+      "layer": "response",
+      "category": "response",
+      "content": "今天天气怎么样",
+      "expect": "pass"
+    }
+  ]
+}
