@@ -1138,7 +1138,7 @@ _SETTINGS_FIXTURE = {
         "prompt_fewshot": "示例",
     },
     "edm": {"enabled": True, "min_hits": 2},
-    "pg": {"enabled": True, "threshold": 0.7},
+    "pg": {"enabled": True, "threshold": 0.7, "normalize": False},
     "l1": {"enabled": True},
     "l2": {"enabled": True},
     "response": {"enabled": True},
@@ -1233,6 +1233,9 @@ class AdminSettingsTest(unittest.TestCase):
             ("pg 缺 threshold", mutated(lambda d: d["pg"].pop("threshold"))),
             ("pg.threshold 超界", mutated(lambda d: d["pg"].update({"threshold": 2}))),
             ("pg.threshold 为布尔", mutated(lambda d: d["pg"].update({"threshold": False}))),
+            # pg.normalize（issue #44）：必填布尔
+            ("pg 缺 normalize", mutated(lambda d: d["pg"].pop("normalize"))),
+            ("pg.normalize 非布尔", mutated(lambda d: d["pg"].update({"normalize": 1}))),
             # 分层总开关三段（issue #40）：必填、仅 enabled 单键、必须布尔
             ("l1 缺 enabled", mutated(lambda d: d["l1"].pop("enabled"))),
             ("l1.enabled 非布尔", mutated(lambda d: d["l1"].update({"enabled": 1}))),
@@ -1530,6 +1533,86 @@ class InjectionShadowSettingsTest(unittest.TestCase):
         printed = "\n".join(str(c.args[0]) for c in m.call_args_list if c.args)
         self.assertIn("[settings] pg.threshold 类型不符", printed)
         self.assertIn("[injection.shadow] malicious=0.785 >= 0.7", printed)
+
+
+class _FakePGCapture(BaseHTTPRequestHandler):
+    """假 PromptGuard：捕获最近一个请求体，固定回 malicious=0.123。"""
+
+    last_body = None
+
+    def log_message(self, *args):  # 静默
+        pass
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        type(self).last_body = json.loads(self.rfile.read(length) or b"{}")
+        body = b'{"malicious": 0.123}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class PgNormalizeFlagTest(unittest.TestCase):
+    """pg_guard 归一化开关透传（issue #44）：settings pg.normalize 三级取值 → /guard 请求体
+    normalize 字段；缺键/显式 false → false（现网行为），显式 true → true（只改打分输入）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._pg_srv = _start_server(_FakePGCapture)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._pg_srv.shutdown()
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.settings_path = os.path.join(self._tmp.name, "settings.json")
+        self._saved = (shim_app.SETTINGS_PATH, shim_app.PG_URL)
+        shim_app.SETTINGS_PATH = self.settings_path
+        shim_app.PG_URL = f"http://127.0.0.1:{self._pg_srv.server_address[1]}/guard"
+        # env 隔离（对齐 AppSettingsTest 纪律）：开发机/CI 导出 PG_NORMALIZE 会在缺键用例中
+        # 顶替内置默认 false（setting_value 缺键落 env 级），pop 防误失败
+        self._saved_env = {k: os.environ.pop(k, None) for k in ("PG_NORMALIZE",)}
+
+    def tearDown(self):
+        shim_app.SETTINGS_PATH, shim_app.PG_URL = self._saved
+        for k, v in self._saved_env.items():
+            if v is not None:
+                os.environ[k] = v
+        self._tmp.cleanup()
+
+    def _write_settings(self, pg_section):
+        fixture = json.loads(json.dumps(_SETTINGS_FIXTURE))
+        fixture["judge"]["enabled"] = False
+        fixture["pg"] = pg_section
+        with open(self.settings_path, "w", encoding="utf-8") as f:
+            json.dump(fixture, f, ensure_ascii=False)
+
+    def test_normalize_true_passed_through(self):
+        self._write_settings({"enabled": True, "threshold": 0.7, "normalize": True})
+        self.assertEqual(shim_app.pg_guard("任意文本"), 0.123)
+        self.assertIs(_FakePGCapture.last_body["normalize"], True)
+        self.assertEqual(_FakePGCapture.last_body["text"], "任意文本")
+
+    def test_normalize_false_explicit(self):
+        self._write_settings({"enabled": True, "threshold": 0.7, "normalize": False})
+        shim_app.pg_guard("任意文本")
+        self.assertIs(_FakePGCapture.last_body["normalize"], False)
+
+    def test_normalize_missing_key_defaults_false(self):
+        """旧 settings.json 无 normalize 键（升级前）→ 默认 false 现网行为，不降级。"""
+        self._write_settings({"enabled": True, "threshold": 0.7})
+        shim_app.pg_guard("任意文本")
+        self.assertIs(_FakePGCapture.last_body["normalize"], False)
+
+    def test_normalize_disabled_no_request(self):
+        """pg.enabled=false → 不发请求返回 None（fail-open 既有语义不受新键影响）。"""
+        _FakePGCapture.last_body = None
+        self._write_settings({"enabled": False, "threshold": 0.7, "normalize": True})
+        self.assertIsNone(shim_app.pg_guard("任意文本"))
+        self.assertIsNone(_FakePGCapture.last_body)
 
 
 class LayerSwitchTest(unittest.TestCase):

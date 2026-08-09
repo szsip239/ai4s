@@ -2,17 +2,45 @@
 """PromptGuard 2 注入/越狱检测服务（issue #30 实测）。
 
 POST /guard {"text": "..."} → {"malicious": 0.87}
+POST /guard {"text": "...", "normalize": true} → 打分前先归一化（issue #44，默认关=现网行为）
 score = MALICIOUS 概率（meta-llama/Llama-Prompt-Guard-2-86M，int8 ONNX，CPU，低内存）。
 本地目录离线加载（/models/promptguard）。
 """
+import base64
 import json
 import os
+import re
+import unicodedata
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MODEL_DIR = os.environ.get("PG_MODEL_DIR", "/models/promptguard")
 _sess = None
 _tok = None
 _mal_idx = 1
+
+# 归一化（issue #44）：零宽字符清除 + NFKC（全角→半角）+ base64 形 token 可解码为
+# 可打印文本时内联替换（append 变体被 512 token 截断稀释，实测 inline 才翻盘）。
+# 只改打分输入——本服务只见打分文本，转发原文天然不受影响。
+_ZERO_WIDTH = re.compile("[\u200b\u200c\u200d\ufeff]")  # 显式转义写法，抗格式化工具吞不可见字符
+_B64_TOKEN = re.compile(r"[A-Za-z0-9+/]{16,}={0,2}")
+
+
+def normalize_for_scoring(text: str) -> str:
+    """PG 打分前置归一化（纯函数，可单测）。
+    已知边界（打分输入级可接受，均按现行为记录不处理）：
+      - 嵌套 base64 不解（单趟解码，解码结果不再二次扫描）
+      - U+00AD SOFT HYPHEN / U+2060 WORD JOINER 等其余不可见字符不清除
+      - NFKC 兼容分解会把日文半角片假名转全角（CJK 全角标点亦转半角）"""
+    text = _ZERO_WIDTH.sub("", text)
+    text = unicodedata.normalize("NFKC", text)
+    for m in _B64_TOKEN.findall(text):
+        try:
+            s = base64.b64decode(m, validate=True).decode("utf-8")
+        except Exception:
+            continue
+        if s and sum(ch.isprintable() or ch.isspace() for ch in s) / len(s) > 0.9:
+            text = text.replace(m, s)
+    return text
 
 
 def get_model():
@@ -64,7 +92,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length = min(int(self.headers.get("Content-Length") or 0), 256 * 1024)
             payload = json.loads(self.rfile.read(length) or b"{}")
-            self._json(200, {"malicious": round(guard(payload.get("text", "")[:4000]), 4)})
+            text = payload.get("text", "")[:4000]
+            if payload.get("normalize") is True:  # issue #44：请求级开关，默认关=现网行为
+                text = normalize_for_scoring(text)
+            self._json(200, {"malicious": round(guard(text), 4)})
         except Exception as e:
             self._json(500, {"error": str(e)[:200]})
 

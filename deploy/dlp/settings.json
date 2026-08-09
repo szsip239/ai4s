@@ -15,7 +15,8 @@
   },
   "pg": {
     "enabled": true,
-    "threshold": 0.7
+    "threshold": 0.7,
+    "normalize": true
   },
   "l1": {
     "enabled": true

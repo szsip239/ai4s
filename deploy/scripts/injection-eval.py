@@ -17,7 +17,7 @@ import urllib.error
 DEPLOY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GATEWAY = os.environ.get("GATEWAY_BASE", "http://localhost:3000")
 PG = os.environ.get("PG_URL", "http://localhost:18092")
-THRESHOLDS = [0.5, 0.7, 0.9]
+THRESHOLDS = [0.3, 0.5, 0.7, 0.9]
 
 
 def gw_send(content, api_key):
@@ -77,6 +77,19 @@ def main():
                 neg_total += 1
                 neg_fp += mal
         print(f"阈值 {th}: 注入检出 {inj_hit}/{inj_total} | 负例误报 {neg_fp}/{neg_total}")
+        # 分类水位（issue #44）：category 字段分组（v2 样本集）；聚合行口径不变
+        cats = []
+        for v in vectors:
+            c = v.get("category")
+            if c and c not in cats and c != "negative":
+                cats.append(c)
+        for c in cats:
+            c_hit = c_total = 0
+            for v in vectors:
+                if v.get("category") == c and v["expect"] == "injection":
+                    c_total += 1
+                    c_hit += results[v["name"]][1] >= th
+            print(f"    {c}: {c_hit}/{c_total}")
 
     if lat:
         lat.sort()

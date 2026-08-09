@@ -221,7 +221,7 @@ def _settings_get(handler, _me):
 _SETTINGS_TOP_KEYS = {"version", "_comment", "judge", "edm", "pg", "l1", "l2", "response"}
 _SETTINGS_JUDGE_KEYS = {"enabled", "model", "base_url", "timeout", "prompt_system", "prompt_fewshot"}
 _SETTINGS_EDM_KEYS = {"enabled", "min_hits"}
-_SETTINGS_PG_KEYS = {"enabled", "threshold"}
+_SETTINGS_PG_KEYS = {"enabled", "threshold", "normalize"}  # normalize：issue #44 打分前置归一化开关
 # 分层总开关（issue #40）：单键段
 _SETTINGS_L1_KEYS = {"enabled"}
 _SETTINGS_L2_KEYS = {"enabled"}
@@ -273,6 +273,8 @@ def _validate_settings(data) -> str | None:
         return "pg.enabled 必须是布尔值"
     if not _is_number(pg["threshold"]) or not 0 <= pg["threshold"] <= 1:
         return "pg.threshold 必须是 0~1 数值"
+    if not isinstance(pg["normalize"], bool):
+        return "pg.normalize 必须是布尔值"
     for section in ("l1", "l2", "response"):  # 分层总开关（issue #40）：仅 enabled 单键
         if not isinstance(data[section]["enabled"], bool):
             return f"{section}.enabled 必须是布尔值"

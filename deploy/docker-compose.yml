@@ -147,6 +147,10 @@ services:
       PG_ENABLED: ${PG_ENABLED:-0}
       PG_URL: http://promptguard:8092/guard
       PG_THRESHOLD: ${PG_THRESHOLD:-0.7}
+      # issue #44 打分前置归一化（base64 内联解码/零宽清除/全角转半角，只改打分输入）：
+      # settings.json 现网显式 true（实测检出 9→11/27、零误报抬升），env 回退层默认 1 对齐现网；
+      # shim 代码内置默认 false 保升级安全（settings > env > 内置默认 三级取值语义不变）
+      PG_NORMALIZE: ${PG_NORMALIZE:-1}
       # issue #40 分层总开关（L1 格式规则/L2 词表+PII/响应侧）；生效值以 /dlp/settings.json 为准，
       # env 仅作回退层——默认 1（开）保现网行为，与 JUDGE 等默认 0 的 shadow 层语义相反
       L1_ENABLED: ${L1_ENABLED:-1}

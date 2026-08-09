@@ -59,7 +59,7 @@ _SETTINGS_SCHEMA = {
     "judge": {"enabled": "bool", "model": "str", "base_url": "str", "timeout": "number",
               "prompt_system": "str", "prompt_fewshot": "str"},
     "edm": {"enabled": "bool", "min_hits": "int"},
-    "pg": {"enabled": "bool", "threshold": "number"},
+    "pg": {"enabled": "bool", "threshold": "number", "normalize": "bool"},
     # 分层总开关（issue #40）：默认 True 保现网行为；关掉即整层跳过（l1=格式规则全族，
     # l2=词表/Presidio PII，response=响应侧整分支）
     "l1": {"enabled": "bool"},
@@ -353,12 +353,16 @@ PG_URL = os.environ.get("PG_URL", "http://promptguard:8092/guard")
 
 
 def pg_guard(text: str):
-    """PromptGuard 2 MALICIOUS 概率；异常/未启用返回 None（fail-open）。"""
+    """PromptGuard 2 MALICIOUS 概率；异常/未启用返回 None（fail-open）。
+    pg.normalize（issue #44）：true 时请求 PG 打分前置归一化（base64 内联解码/零宽清除/
+    全角转半角）——只改打分输入，转发原文不动；默认 false 保持现网行为。"""
     if not text:
         return None
-    if not setting_value(load_settings(), "pg", "enabled", "PG_ENABLED", False):
+    settings = load_settings()
+    if not setting_value(settings, "pg", "enabled", "PG_ENABLED", False):
         return None
-    body = json.dumps({"text": text[:4000]}).encode()
+    normalize = setting_value(settings, "pg", "normalize", "PG_NORMALIZE", False)
+    body = json.dumps({"text": text[:4000], "normalize": normalize is True}).encode()
     req = urllib.request.Request(PG_URL, data=body, headers={"Content-Type": "application/json"})
     try:
         with urllib.request.urlopen(req, timeout=3) as r:
