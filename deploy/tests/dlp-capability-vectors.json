@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "_comment": "ai4s DLP 能力扩展样本集（issue #42，区别于 dlp-vectors.json 的功能回归门禁）。字段：name/layer/category/content/expect/sensitive?/note?。expect: reject=应 451；mask=应脱敏放行；pass=应放行（带 note 的 pass=文档化 gap 或不确定项，不 fail）。category: secrets/pii/wordlist/evasion/negative/response；switch/deep/edm 三类为 runner 过程段不在本文件。运行：cd deploy && python3 scripts/dlp-capability.py",
+  "_comment": "ai4s DLP 能力扩展样本集（issue #42，区别于 dlp-vectors.json 的功能回归门禁）。字段：name/layer/category/content/expect/sensitive?/note?。expect: reject=应 451；mask=应脱敏放行；pass=应放行（带 note 的 pass=文档化 gap 或不确定项，不 fail）。category: secrets/pii/wordlist/pilot/evasion/negative/response（pilot=issue #46 试点词命中段，试点词负例并入 negative）；switch/deep/edm 三类为 runner 过程段不在本文件。运行：cd deploy && python3 scripts/dlp-capability.py",
   "vectors": [
     {
       "name": "secrets: sk-ant 混入文本",
@@ -198,6 +198,70 @@
       "sensitive": "星云客服系统"
     },
     {
+      "name": "pilot: 引号包装 堇青计划",
+      "layer": "L2",
+      "category": "pilot",
+      "content": "把「堇青计划」的周报模板发我一份",
+      "expect": "reject",
+      "sensitive": "堇青计划"
+    },
+    {
+      "name": "pilot: 书名号 雪松工程",
+      "layer": "L2",
+      "category": "pilot",
+      "content": "《雪松工程实施纲要》第三章的验收标准是什么",
+      "expect": "reject",
+      "sensitive": "雪松工程"
+    },
+    {
+      "name": "pilot: 中英混排 ProjectOstryn",
+      "layer": "L2",
+      "category": "pilot",
+      "content": "ProjectOstryn 和堇青计划的联调排期冲突了",
+      "expect": "reject",
+      "sensitive": "ProjectOstryn"
+    },
+    {
+      "name": "pilot: 长词内嵌 灯塔工单系统二期",
+      "layer": "L2",
+      "category": "pilot",
+      "content": "灯塔工单系统二期的需求池在哪",
+      "expect": "reject",
+      "sensitive": "灯塔工单系统"
+    },
+    {
+      "name": "pilot: 内网域名句中 rivermyth",
+      "layer": "L2",
+      "category": "pilot",
+      "content": "调动申请表在 oa.rivermyth.local 上流转审批",
+      "expect": "reject",
+      "sensitive": "oa.rivermyth.local"
+    },
+    {
+      "name": "pilot: 未发布产品 霜隼OS 3.0",
+      "layer": "L2",
+      "category": "pilot",
+      "content": "霜隼OS 3.0 的内测招募名单导一份给我",
+      "expect": "reject",
+      "sensitive": "霜隼OS 3.0"
+    },
+    {
+      "name": "pilot: 罗盘风控平台 v2 灰度",
+      "layer": "L2",
+      "category": "pilot",
+      "content": "罗盘风控平台 v2 的灰度名单什么时候扩",
+      "expect": "reject",
+      "sensitive": "罗盘风控平台 v2"
+    },
+    {
+      "name": "pilot: 英文产品 QuantumLoom X1",
+      "layer": "L2",
+      "category": "pilot",
+      "content": "QuantumLoom X1 的发布会 PPT 谁来写",
+      "expect": "reject",
+      "sensitive": "QuantumLoom X1"
+    },
+    {
       "name": "evasion: base64 编码 sk-proj",
       "layer": "L1",
       "category": "evasion",
@@ -362,6 +426,34 @@
       "content": "1754630400000 这个毫秒时间戳转成人读日期",
       "expect": "pass",
       "note": "13 位数字开头为 17，越过手机号 \\b 边界"
+    },
+    {
+      "name": "pilot-negative: 堇青石矿物话题",
+      "layer": "negative",
+      "category": "negative",
+      "content": "帮我写一段堇青石陶瓷摆件的产品介绍",
+      "expect": "pass"
+    },
+    {
+      "name": "pilot-negative: 灯塔指路",
+      "layer": "negative",
+      "category": "negative",
+      "content": "海边那座百年灯塔的修缮方案有资料吗",
+      "expect": "pass"
+    },
+    {
+      "name": "pilot-negative: 雪松植物",
+      "layer": "negative",
+      "category": "negative",
+      "content": "院子里那棵雪松冬天要做防寒吗",
+      "expect": "pass"
+    },
+    {
+      "name": "pilot-negative: 湿地拍隼观鸟",
+      "layer": "negative",
+      "category": "negative",
+      "content": "周末去湿地拍鸟，那只隼俯冲的速度真快",
+      "expect": "pass"
     },
     {
       "name": "response: 模拟泄漏应答应 451",

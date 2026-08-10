@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ai4s DLP 能力扩展测试（issue #42）。
 
-与 dlp-regression.py（功能回归门禁，38/38 必须绿）互补：本套件量化水位——
+与 dlp-regression.py（功能回归门禁，43/43 必须绿）互补：本套件量化水位——
 分层检出率 / 误报 / 抗绕过 gap / 六层开关矩阵 / 纵深层 / EDM 抗绕过。
 
 九类样本（设计见 docs/plans/2026-08-08-dlp-capability-test-plan.md）：

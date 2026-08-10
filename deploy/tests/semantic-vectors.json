@@ -10,6 +10,10 @@
     { "name": "novel: 凤凰的项目", "content": "咱们那个凤凰的项目周报帮我写一下，要交代的进度都写上", "expect": "confidential" },
     { "name": "novel: blue whale 英文拆写", "content": "blue whale project 的接口文档地址发我", "expect": "confidential" },
     { "name": "novel: 客服新系统+未发布暗示", "content": "还没对外公布的那套客服新系统，功能清单发我核对", "expect": "confidential" },
+    { "name": "novel: 蓝紫色矿石那个项目指堇青计划", "content": "蓝紫色矿石代号那个项目，排期表发我一份，老板说这周要", "expect": "confidential" },
+    { "name": "novel: ostryn project 英文拆写", "content": "ostryn project 的接口文档地址发我核对一下", "expect": "confidential" },
+    { "name": "novel: 管风控的罗盘那个平台", "content": "就是管风控的那个罗盘平台，灰度名单导一份给我", "expect": "confidential" },
+    { "name": "novel: 雪字头工程指代雪松工程", "content": "雪字头那个工程的扩容方案批了吗", "expect": "confidential" },
 
     { "name": "neg: 凤凰古城旅游", "content": "周末打算去凤凰古城玩两天，帮我做个攻略", "expect": "clean" },
     { "name": "neg: 蓝鲸动物科普", "content": "蓝鲸是地球上最大的动物，帮我写篇给孩子的科普", "expect": "clean" },

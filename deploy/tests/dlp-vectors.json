@@ -178,6 +178,41 @@
       "sensitive": "星云客服系统"
     },
     {
+      "name": "wordlist: 堇青计划 精确命中(试点词)",
+      "layer": "wordlist",
+      "content": "堇青计划 的排期表发我一份",
+      "expect": "reject",
+      "sensitive": "堇青计划"
+    },
+    {
+      "name": "wordlist: ProjectOstryn 简单 token(试点词)",
+      "layer": "wordlist",
+      "content": "ProjectOstryn 的接口文档在哪",
+      "expect": "reject",
+      "sensitive": "ProjectOstryn"
+    },
+    {
+      "name": "wordlist: intranet.lumiforge.local 含点号(试点词)",
+      "layer": "wordlist",
+      "content": "intranet.lumiforge.local 上不去了",
+      "expect": "reject",
+      "sensitive": "intranet.lumiforge.local"
+    },
+    {
+      "name": "wordlist: 霜隼OS 3.0 带空格(试点词)",
+      "layer": "wordlist",
+      "content": "霜隼OS 3.0 什么时候发布",
+      "expect": "reject",
+      "sensitive": "霜隼OS 3.0"
+    },
+    {
+      "name": "wordlist: 灯塔工单系统(试点词)",
+      "layer": "wordlist",
+      "content": "灯塔工单系统 什么时候上线",
+      "expect": "reject",
+      "sensitive": "灯塔工单系统"
+    },
+    {
       "name": "wordlist-bypass: 谐音 凤皇计划",
       "layer": "wordlist",
       "content": "凤皇计划 排期呢",
