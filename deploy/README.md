@@ -10,7 +10,7 @@
 | axonhub | `looplj/axonhub:v1.0.0-beta6`（digest `sha256:d41f3ca1…`） | pin 定 beta，不跟 latest/unstable |
 | PostgreSQL | `postgres:16-alpine`（digest `sha256:57c72fd2…`，实为 16.14） | axonhub 官方 compose 同款主版本 |
 | casdoor | `casbin/casdoor:3.133.0` | SSO 枢纽（issue #14）：飞书 OAuth → 标准 OIDC |
-| shim | 本地构建 `../shim`（python:3.12-slim + apt tesseract-ocr/chi-sim/eng（issue #50 OCR）；pip pin PyMuPDF/python-docx/openpyxl/python-pptx/pytesseract/Pillow） | DLP 词表/PII 适配 + 飞书告警适配 `/feishu-alert`（issue #17）+ 统一配置 admin 平面 `/dlp-admin/*`（issue #31–#36） |
+| shim | 本地构建 `../shim`（python:3.12-slim + apt tesseract-ocr/chi-sim/eng（issue #50 OCR，apt 层 +109MB、镜像总 526MB，2026-08 实测）；pip pin PyMuPDF/python-docx/openpyxl/python-pptx/pytesseract/Pillow） | DLP 词表/PII 适配 + 飞书告警适配 `/feishu-alert`（issue #17）+ 统一配置 admin 平面 `/dlp-admin/*`（issue #31–#36） |
 | alert-poller | 本地构建 `../alert-poller`（python:3.12-alpine） | 告警巡检（issue #17）：DLP fail-open 探活 + 上游/员工额度轮询，30s 间隔 |
 | mock-upstream（可选） | `python:3.12-alpine` | 仅无 OAuth 凭据时验证链路用 |
 
@@ -26,7 +26,7 @@ python3 scripts/apply-pricing.py  # credit 价格表落库（pricing.json：官�
 python3 scripts/dlp-regression.py    # DLP 对抗回归（issue #20）：改词表/规则后必跑（含 EDM 段与 admin API 段）
 python3 scripts/dlp-capability.py    # DLP 能力水位（issue #42）：词表/规则调优后与回归一起跑；gap 不 fail，负例误伤/开关矩阵失败才非零（公共部分在 dlp_testkit.py）
 python3 scripts/edm-add.py <文件>    # EDM 商密文档指纹入库（issue #34 起为 admin API 薄壳，凭据见下）
-cd ../shim && python3 -m unittest discover -s tests    # shim 单测；本机先在 shim/ 下 pip install -r requirements-dev.txt（EDM 解析库，issue #49）
+cd ../shim && python3 -m unittest discover -s tests    # shim 单测；本机先在 shim/ 下 pip install -r requirements-dev.txt（EDM 解析库，issue #49）；OCR 用例另需系统 tesseract 二进制（无则对应用例自动 skip，见 requirements-dev.txt 注释，issue #50）
 ```
 
 ## DLP 统一配置（issue #31–#36）

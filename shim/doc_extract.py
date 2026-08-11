@@ -8,6 +8,12 @@
 图片直接 `pytesseract.image_to_string(lang="chi_sim+eng")`；扫描 PDF 用 PyMuPDF 渲染页图
 （180 DPI）逐页 OCR，页数上限 MAX_OCR_PAGES。tesseract 缺失/执行失败 → OcrUnavailableError；
 OCR 全空 → EmptyDocumentError。OCR 质量边界：中文印刷体一般、手写差、表格版面丢失。
+OCR 资源护栏（issue #51 评审修复）：渲染/解码目标像素两路径共用 MAX_OCR_PIXELS 上限
+（PDF 页按 page.rect×DPI 系数渲染前拦，直传图片按 Image.open 读到的 size 解码前拦）——
+数万 pt MediaBox 的畸形 PDF 仅几 KB，三重字节/页数/字符上限都兜不住其渲染像素量，
+超限可 OOM 打挂 shim（检测链 fail-open 窗口，#49 P1-1 同类）；tesseract 单次执行带
+OCR_PAGE_TIMEOUT 超时（pytesseract timeout kwarg），超时/引擎失败 → OcrUnavailableError；
+直传图片路径 OCR 调用兜底一切内部异常转 CorruptDocumentError（不裸泄断线）。
 提取文本长度上限 MAX_EXTRACTED_CHARS（issue #49 P1-1）：zip 压缩态/流扩张可使 16MB 文件
 提出数十 MB 文本，edm_lib.shingles 全量滑窗内存随字符数线性膨胀，无上限可 OOM 打挂 shim
 （检测链 fail-open 窗口）；8M 字符 ≈ 500 页 PDF（~1.5M 字符）的 5 倍余量。
@@ -42,6 +48,13 @@ _IMAGE_MAGICS = (  # 与 IMAGE_EXTENSIONS 对应：png / jpeg / bmp / tiff(LE|BE
 # 提取文本字符数上限（issue #49 P1-1）：防 zip/流扩张提出超大文本 OOM 打挂 shim
 MAX_EXTRACTED_CHARS = 8 * 1000 * 1000
 MAX_OCR_PAGES = 50  # 扫描 PDF OCR 页数上限（issue #50）：单页 OCR 秒级，防超长扫描件拖死上传请求
+# OCR 单页/单图渲染-解码像素预算（issue #51 P1-1，两条 OCR 路径共用）：≈180DPI 的 A0 页有余量；
+# 数万 pt MediaBox 畸形 PDF（文件仅几 KB，字节/页数/字符三重上限兜不住）渲染即数百亿像素，
+# 直传超大图解码同理，超限可 OOM 打挂 shim（检测链 fail-open 窗口，#49 P1-1 同类）
+MAX_OCR_PIXELS = 40_000_000
+# tesseract 单次执行超时秒数（issue #51 P2-2，pytesseract timeout kwarg，单页/单图同值）：
+# 防引擎挂死拖住管理端会话、线程占用无界
+OCR_PAGE_TIMEOUT = 60
 _OCR_DPI = 180
 _OCR_LANG = "chi_sim+eng"
 
@@ -55,7 +68,7 @@ class UnsupportedDocumentError(DocumentExtractionError):
 
 
 class CorruptDocumentError(DocumentExtractionError):
-    """内容与扩展名不符、加密或解析失败。"""
+    """内容与扩展名不符、加密或解析失败（含图片 OCR 路径内部异常兜底，issue #51 P2-3）。"""
 
 
 class EmptyDocumentError(DocumentExtractionError):
@@ -63,7 +76,11 @@ class EmptyDocumentError(DocumentExtractionError):
 
 
 class OcrUnavailableError(DocumentExtractionError):
-    """OCR 引擎不可用（issue #50）：tesseract 二进制缺失或执行失败。"""
+    """OCR 引擎不可用（issue #50）：tesseract 二进制缺失、执行失败或超时（issue #51 P2-2）。"""
+
+
+class OcrImageTooLargeError(DocumentExtractionError):
+    """OCR 渲染/解码目标像素超过 MAX_OCR_PIXELS（issue #51 P1-1）。"""
 
 
 class ExtractedTextTooLargeError(DocumentExtractionError):
@@ -84,7 +101,7 @@ def extract_text_from_bytes(filename: str, data: bytes) -> str:
     if ext not in SUPPORTED_EXTENSIONS:
         raise UnsupportedDocumentError(
             f"不支持的文件类型 '{ext or filename}'：支持 .pdf/.docx/.xlsx/.pptx、"
-            ".txt/.md/.text/.log 与 .png/.jpg/.jpeg/.bmp/.tiff 图片（OCR）"
+            ".txt/.md/.text/.log 与 .png/.jpg/.jpeg/.bmp/.tiff/.tif 图片（OCR）"
         )
 
     if ext == ".pdf":
@@ -101,10 +118,15 @@ def extract_text_from_bytes(filename: str, data: bytes) -> str:
         text = _decode_text(data)
 
     if not text.strip():
-        raise EmptyDocumentError(
-            f"「{filename}」未提取到文本（扫描件/图片 OCR 对手写体与低清晰度识别率差，"
-            "请用更清晰版本或文字版文件）"
-        )
+        # 空结果文案分路径（issue #51 P2-4）：OCR 路径（图片/扫描 PDF）给 OCR 质量提示，
+        # 非 OCR 空文档（.docx/.txt 等）给原文案——PDF 文本层非空已在 _extract_pdf 提前返回，
+        # 走到这里的 .pdf 必是 OCR 路径
+        if ext in IMAGE_EXTENSIONS or ext == ".pdf":
+            raise EmptyDocumentError(
+                f"「{filename}」未提取到文本（扫描件/图片 OCR 对手写体与低清晰度识别率差，"
+                "请用更清晰版本或文字版文件）"
+            )
+        raise EmptyDocumentError(f"「{filename}」未提取到文本")
     if len(text) > MAX_EXTRACTED_CHARS:
         raise ExtractedTextTooLargeError(
             f"「{filename}」提取文本 {len(text)} 字符超过 {MAX_EXTRACTED_CHARS // 1000000}00 万字符上限"
@@ -132,14 +154,14 @@ def _extract_pdf(data: bytes, filename: str) -> str:
                 return text
             # 无内嵌文本层 → 扫描件 OCR（issue #50）：渲染页图逐页识别
             return _ocr_pdf_pages(doc, filename)
-    except (CorruptDocumentError, OcrUnavailableError, EmptyDocumentError):
+    except (CorruptDocumentError, OcrUnavailableError, OcrImageTooLargeError, EmptyDocumentError):
         raise
     except Exception as e:
         raise CorruptDocumentError(f"「{filename}」PDF 解析失败（{e}）") from e
 
 
 def _ocr_pdf_pages(doc, filename: str) -> str:
-    """扫描 PDF 逐页 OCR：PyMuPDF 渲染 180 DPI 页图 → Tesseract。页数超上限明确报错。"""
+    """扫描 PDF 逐页 OCR：PyMuPDF 渲染 180 DPI 页图 → Tesseract。页数/像素超上限明确报错。"""
     if doc.page_count > MAX_OCR_PAGES:
         raise EmptyDocumentError(
             f"「{filename}」无内嵌文本需 OCR，共 {doc.page_count} 页超过 {MAX_OCR_PAGES} 页上限"
@@ -150,7 +172,16 @@ def _ocr_pdf_pages(doc, filename: str) -> str:
     zoom = _OCR_DPI / 72
     import fitz  # 已在 _extract_pdf 加载；局部再引保持函数自含
     pages = []
-    for page in doc:
+    for index, page in enumerate(doc, start=1):
+        # 像素预算（issue #51 P1-1）：渲染前按 page.rect×DPI 系数算目标像素数，
+        # 超限先拦——畸形大 MediaBox 页渲染即 OOM，等 get_pixmap 抛错就晚了
+        pixels = page.rect.width * zoom * page.rect.height * zoom
+        if pixels > MAX_OCR_PIXELS:
+            raise OcrImageTooLargeError(
+                f"「{filename}」第 {index} 页版面过大：180DPI 渲染需约 {pixels / 1000000:.0f}00 万像素，"
+                f"超过 {MAX_OCR_PIXELS // 1000000}00 万像素上限（防超大版面渲染 OOM 保护），"
+                "请降低扫描分辨率或拆分文档后上传"
+            )
         pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom))
         img = Image.open(io.BytesIO(pix.tobytes("png")))
         pages.append(_run_tesseract(img, filename))
@@ -158,31 +189,50 @@ def _ocr_pdf_pages(doc, filename: str) -> str:
 
 
 def _extract_image_ocr(data: bytes, filename: str) -> str:
-    """图片 OCR（issue #50）：魔数校验 → Pillow 打开 → Tesseract chi_sim+eng。"""
+    """图片 OCR（issue #50）：魔数校验 → Pillow 打开 → Tesseract chi_sim+eng。
+    像素上限在解码前校验（Image.open 只读头即得 size，issue #51 P1-1）；
+    OCR 调用兜底一切内部异常转中文报错（issue #51 P2-3，对齐 PDF 路径「提取失败不裸泄」惯例）。"""
     if not any(data.startswith(m) for m in _IMAGE_MAGICS):
         raise CorruptDocumentError(f"「{filename}」内容不是有效图片（文件头与扩展名不符）")
     from PIL import Image  # 懒加载
 
     try:
         img = Image.open(io.BytesIO(data))
+        if img.width * img.height > MAX_OCR_PIXELS:
+            raise OcrImageTooLargeError(
+                f"「{filename}」图片尺寸 {img.width}×{img.height} 超过 "
+                f"{MAX_OCR_PIXELS // 1000000}00 万像素上限（防超大图解码 OOM 保护），请压缩后上传"
+            )
         img.load()
+    except DocumentExtractionError:
+        raise
     except Exception as e:
         raise CorruptDocumentError(f"「{filename}」图片打开失败（{e}）") from e
-    return _run_tesseract(img, filename)
+    try:
+        return _run_tesseract(img, filename)
+    except DocumentExtractionError:
+        raise
+    except Exception as e:  # pytesseract/Pillow 内部异常（OSError/MemoryError/TypeError 等）
+        raise CorruptDocumentError(f"「{filename}」图片 OCR 识别失败（{e}）") from e
 
 
 def _run_tesseract(img, filename: str) -> str:
-    """单图 Tesseract 识别；引擎缺失/执行失败 → OcrUnavailableError（明确中文报错）。"""
+    """单图 Tesseract 识别；引擎缺失/执行失败/超时 → OcrUnavailableError（明确中文报错）。"""
     import pytesseract  # 懒加载
 
     try:
-        return pytesseract.image_to_string(img, lang=_OCR_LANG)
+        return pytesseract.image_to_string(img, lang=_OCR_LANG, timeout=OCR_PAGE_TIMEOUT)
     except pytesseract.TesseractNotFoundError as e:
         raise OcrUnavailableError(
             "OCR 引擎（tesseract）不可用：容器未安装或不在 PATH，无法处理扫描件/图片"
         ) from e
     except pytesseract.TesseractError as e:
         raise OcrUnavailableError(f"「{filename}」OCR 执行失败（{e}）") from e
+    except RuntimeError as e:  # pytesseract timeout kwarg 超时即抛 RuntimeError（issue #51 P2-2）
+        raise OcrUnavailableError(
+            f"「{filename}」OCR 识别超时（单页/单图超过 {OCR_PAGE_TIMEOUT} 秒上限），"
+            "请降低图片清晰度或页面复杂度后重试"
+        ) from e
 
 
 def _extract_docx(data: bytes, filename: str) -> str:

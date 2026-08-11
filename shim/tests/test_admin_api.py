@@ -1093,8 +1093,10 @@ from test_doc_extract import (  # noqa: E402
     _chi_sim_available,
     _tesseract_available,
     make_docx_bytes,
+    make_huge_mediabox_pdf_bytes,
     make_pdf_bytes,
     make_png_bytes,
+    make_png_with_dimensions,
     make_scanned_pdf_bytes,
 )
 
@@ -1194,6 +1196,35 @@ class AdminEdmCorpusUploadTest(unittest.TestCase):
         status, body = self._upload("scanpdf", "scan.pdf", make_pdf_bytes([""]))
         self.assertEqual(status, 400, body)
         self.assertTrue("OCR" in body.get("error", "") or "未提取到文本" in body.get("error", ""))
+
+    def test_upload_image_ocr_internal_error_400(self):
+        """图片 OCR 路径 pytesseract 内部异常兜底（issue #51 P2-3）：MemoryError 等非引擎异常
+        → 400 中文报错，不裸泄致客户端断线；拒绝路径不落盘。mock 执行点，不依赖真实引擎。"""
+        from unittest import mock
+
+        with mock.patch("pytesseract.image_to_string", side_effect=MemoryError("boom")):
+            status, body = self._upload("memimg", "a.png", make_png_bytes("HELLO"))
+        self.assertEqual(status, 400, body)
+        self.assertIn("OCR", body.get("error", ""))
+        self.assertEqual(os.listdir(self.corpus_dir), [])
+        # shim 未崩：异常兜底后正常上传仍 200（mock 已退出）
+        if _tesseract_available():
+            status, body = self._upload("aftererr", "b.png", make_png_bytes("RECOVER OK 123"))
+            self.assertEqual(status, 200, body)
+
+    def test_upload_oversized_image_pixels_400(self):
+        """超大像素图片（issue #51 P1-1）：48M px（伪造 IHDR 尺寸）→ 400 像素上限文案；
+        畸形大 MediaBox 扫描 PDF → 400 同款（渲染前拦截，shim 不崩）。均无需 tesseract。"""
+        status, body = self._upload("bigimg", "big.png", make_png_with_dimensions(8000, 6000))
+        self.assertEqual(status, 400, body)
+        self.assertIn("像素", body.get("error", ""))
+        status, body = self._upload("evilpdf", "evil.pdf", make_huge_mediabox_pdf_bytes())
+        self.assertEqual(status, 400, body)
+        self.assertIn("像素", body.get("error", ""))
+        self.assertEqual(os.listdir(self.corpus_dir), [])
+        # shim 未崩：拦截后正常文档上传仍 200
+        status, body = self._upload("afterbig", "a.docx", make_docx_bytes([_UPLOAD_DOCX_PARAGRAPH]))
+        self.assertEqual(status, 200, body)
 
     def test_upload_bad_params_400(self):
         """name 非法 / 缺 filename → 400；body 空 → 400（空文件）。"""

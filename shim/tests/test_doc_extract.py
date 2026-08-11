@@ -112,6 +112,36 @@ def make_scanned_pdf_bytes(pages_text, fontname="helv") -> bytes:
     return buf.getvalue()
 
 
+def make_huge_mediabox_pdf_bytes(side_pt=20000) -> bytes:
+    """单页空白 PDF（无文本层），MediaBox 改成 side_pt 见方（issue #51 P1-1 畸形大版面样本）：
+    文件仅几百字节，180DPI 渲染却需 (side_pt×2.5)² 像素（20000pt → 25 亿 px）。"""
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page(width=612, height=792)
+    page.set_mediabox(fitz.Rect(0, 0, side_pt, side_pt))
+    buf = io.BytesIO()
+    doc.save(buf)
+    doc.close()
+    return buf.getvalue()
+
+
+def make_png_with_dimensions(width, height) -> bytes:
+    """最小 PNG：IHDR 声明 width×height，IDAT 仅 1 像素数据（不打算被解码）。
+    用于像素上限用例（issue #51 P1-1）：Pillow Image.open 只读头即得 size，
+    服务端须在 img.load() 解码前拦截，因此伪造尺寸无需真实大图。"""
+    import struct
+    import zlib
+
+    def chunk(tag, payload):
+        return (struct.pack(">I", len(payload)) + tag + payload
+                + struct.pack(">I", zlib.crc32(tag + payload)))
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)  # 8-bit RGB
+    idat = zlib.compress(b"\x00" + b"\x00\x00\x00")  # 1 scanline(filter 0) + 1 黑像素
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
+
+
 def _tesseract_available() -> bool:
     import shutil
 
@@ -298,8 +328,41 @@ class TestOcrImage(unittest.TestCase):
         from unittest import mock
 
         with mock.patch("pytesseract.image_to_string", return_value="  \n "):
-            with self.assertRaises(dx.EmptyDocumentError):
+            with self.assertRaises(dx.EmptyDocumentError) as cm:
                 dx.extract_text_from_bytes("note.png", make_png_bytes("HELLO"))
+        # OCR 路径空结果给 OCR 质量提示（issue #51 P2-4 分路径文案的 OCR 侧）
+        self.assertIn("OCR", str(cm.exception))
+
+    def test_pixel_limit_image(self):
+        """超大像素图片（issue #51 P1-1）：解码前按 Image.open 读到的 size 拦截（伪造 IHDR 尺寸，
+        IDAT 仅 1 像素——拦截发生在 img.load() 前，无需真实大图），防超大图解码 OOM。"""
+        data = make_png_with_dimensions(8000, 6000)  # 48M px > MAX_OCR_PIXELS
+        with self.assertRaises(dx.OcrImageTooLargeError) as cm:
+            dx.extract_text_from_bytes("big.png", data)
+        self.assertIn("像素", str(cm.exception))
+        self.assertIn("上限", str(cm.exception))
+
+    def test_tesseract_timeout(self):
+        """tesseract 超时（issue #51 P2-2）：pytesseract timeout kwarg 生效（断言传参），
+        超时 RuntimeError → OcrUnavailableError 中文超时文案（mock 执行点，不依赖真实引擎）。"""
+        from unittest import mock
+
+        with mock.patch("pytesseract.image_to_string",
+                        side_effect=RuntimeError("Tesseract process timeout")) as m:
+            with self.assertRaises(dx.OcrUnavailableError) as cm:
+                dx.extract_text_from_bytes("note.png", make_png_bytes("HELLO"))
+        self.assertIn("超时", str(cm.exception))
+        self.assertEqual(m.call_args.kwargs.get("timeout"), dx.OCR_PAGE_TIMEOUT)
+
+    def test_image_internal_exception_wrapped(self):
+        """图片 OCR 路径内部异常兜底（issue #51 P2-3）：pytesseract/Pillow 非引擎类异常
+        （MemoryError/OSError/TypeError 等）→ CorruptDocumentError 中文文案，不裸泄。"""
+        from unittest import mock
+
+        with mock.patch("pytesseract.image_to_string", side_effect=MemoryError("boom")):
+            with self.assertRaises(dx.CorruptDocumentError) as cm:
+                dx.extract_text_from_bytes("note.png", make_png_bytes("HELLO"))
+        self.assertIn("OCR", str(cm.exception))
 
 
 class TestOcrScannedPdf(unittest.TestCase):
@@ -318,6 +381,33 @@ class TestOcrScannedPdf(unittest.TestCase):
             dx.extract_text_from_bytes("long.pdf", data)
         self.assertIn("50", str(cm.exception))
         self.assertIn("页", str(cm.exception))
+
+    def test_pixel_limit_huge_mediabox(self):
+        """超大 MediaBox 畸形 PDF（issue #51 P1-1）：渲染前按 page.rect×DPI 系数拦截
+        （在 get_pixmap 与 OCR 调用之前，无需 tesseract），且提取器不崩——后续正常提取照旧。"""
+        data = make_huge_mediabox_pdf_bytes()  # 20000pt 见方 → 180DPI 渲染 25 亿 px
+        with self.assertRaises(dx.OcrImageTooLargeError) as cm:
+            dx.extract_text_from_bytes("evil.pdf", data)
+        self.assertIn("像素", str(cm.exception))
+        self.assertIn("上限", str(cm.exception))
+        # 进程不崩：正常文档提取不受影响（对齐 #49 P1-1 超大文本用例的存活断言）
+        text = dx.extract_text_from_bytes("ok.docx", make_docx_bytes(["正常文档内容仍然可用"]))
+        self.assertIn("正常文档内容", text)
+
+
+class TestEmptyResultMessage(unittest.TestCase):
+    """空结果文案分路径（issue #51 P2-4）：非 OCR 空文档给原文案，不带 OCR 质量提示。"""
+
+    def test_empty_docx_message_no_ocr_hint(self):
+        with self.assertRaises(dx.EmptyDocumentError) as cm:
+            dx.extract_text_from_bytes("blank.docx", make_docx_bytes(["", "  "]))
+        self.assertIn("未提取到文本", str(cm.exception))
+        self.assertNotIn("OCR", str(cm.exception))
+
+    def test_empty_txt_message_no_ocr_hint(self):
+        with self.assertRaises(dx.EmptyDocumentError) as cm:
+            dx.extract_text_from_bytes("blank.txt", b"   \n  ")
+        self.assertNotIn("OCR", str(cm.exception))
 
 
 class TestExtractedTextCap(unittest.TestCase):
