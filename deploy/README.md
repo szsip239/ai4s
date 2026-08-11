@@ -26,6 +26,7 @@ python3 scripts/apply-pricing.py  # credit 价格表落库（pricing.json：官�
 python3 scripts/dlp-regression.py    # DLP 对抗回归（issue #20）：改词表/规则后必跑（含 EDM 段与 admin API 段）
 python3 scripts/dlp-capability.py    # DLP 能力水位（issue #42）：词表/规则调优后与回归一起跑；gap 不 fail，负例误伤/开关矩阵失败才非零（公共部分在 dlp_testkit.py）
 python3 scripts/edm-add.py <文件>    # EDM 商密文档指纹入库（issue #34 起为 admin API 薄壳，凭据见下）
+cd ../shim && python3 -m unittest discover -s tests    # shim 单测；本机先在 shim/ 下 pip install -r requirements-dev.txt（EDM 解析库，issue #49）
 ```
 
 ## DLP 统一配置（issue #31–#36）

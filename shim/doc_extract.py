@@ -4,15 +4,16 @@
 文本类（.txt/.md 等）按多编码链解码（GBK 中文文档可正确解码，护栏不回退）。
 提取结果不含任何合成标记行（如 "--- Page N ---"）——指纹按真实内容计算，
 避免标记行在跨文档间产生相同的行级指纹（误命中）或让空文档混过入库最小长度门槛。
-扫描版 PDF（无内嵌文本）提取为空 → EmptyDocumentError，由 admin_api 转「需 OCR」提示。
+扫描版 PDF（无内嵌文本）→ ScannedPdfError，由 admin_api 转「需 OCR」提示。
+提取文本长度上限 MAX_EXTRACTED_CHARS（issue #49 P1-1）：zip 压缩态/流扩张可使 16MB 文件
+提出数十 MB 文本，edm_lib.shingles 全量滑窗内存随字符数线性膨胀，无上限可 OOM 打挂 shim
+（检测链 fail-open 窗口）；8M 字符 ≈ 500 页 PDF（~1.5M 字符）的 5 倍余量。
+第三方解析库（fitz/docx/openpyxl/pptx）一律函数级懒加载（issue #49 P2-7）：
+app.py → admin_api → doc_extract 模块级 import 链不含第三方库，解析库缺失/损坏不波及
+/request /response 检测路径。
 """
 import io
 from pathlib import PurePosixPath
-
-import fitz  # PyMuPDF（AGPL/商业双许可，私有部署内部使用；issue #48 备注）
-from docx import Document as _DocxDocument
-from openpyxl import load_workbook as _load_workbook
-from pptx import Presentation as _PptxPresentation
 
 OFFICE_EXTENSIONS = frozenset({".pdf", ".docx", ".xlsx", ".pptx"})
 TEXT_EXTENSIONS = frozenset({".txt", ".text", ".log", ".md", ".markdown"})
@@ -25,6 +26,9 @@ _TEXT_DECODINGS = ("utf-8-sig", "utf-8", "gbk", "gb18030", "latin-1")
 
 _PDF_MAGIC = b"%PDF-"
 _OOXML_MAGIC = b"PK\x03\x04"  # docx/xlsx/pptx 均为 zip 包
+
+# 提取文本字符数上限（issue #49 P1-1）：防 zip/流扩张提出超大文本 OOM 打挂 shim
+MAX_EXTRACTED_CHARS = 8 * 1000 * 1000
 
 
 class DocumentExtractionError(Exception):
@@ -40,7 +44,15 @@ class CorruptDocumentError(DocumentExtractionError):
 
 
 class EmptyDocumentError(DocumentExtractionError):
-    """空文件或未提取到文本（扫描 PDF 走此路）。"""
+    """空文件或未提取到文本。"""
+
+
+class ScannedPdfError(EmptyDocumentError):
+    """扫描版 PDF 专用（issue #49 P2-5）：页面无内嵌文本层，admin_api 按类型转「需 OCR」。"""
+
+
+class ExtractedTextTooLargeError(DocumentExtractionError):
+    """提取文本超过 MAX_EXTRACTED_CHARS（issue #49 P1-1）。"""
 
 
 def extract_text_from_bytes(filename: str, data: bytes) -> str:
@@ -71,7 +83,14 @@ def extract_text_from_bytes(filename: str, data: bytes) -> str:
         text = _decode_text(data)
 
     if not text.strip():
+        if ext == ".pdf":
+            raise ScannedPdfError(f"「{filename}」未提取到文本（扫描件无内嵌文本层）")
         raise EmptyDocumentError(f"「{filename}」未提取到文本")
+    if len(text) > MAX_EXTRACTED_CHARS:
+        raise ExtractedTextTooLargeError(
+            f"「{filename}」提取文本 {len(text)} 字符超过 {MAX_EXTRACTED_CHARS // 1000000}00 万字符上限"
+            "（zip/流扩张防 OOM 保护），请拆分文档后上传"
+        )
     return text
 
 
@@ -82,6 +101,8 @@ def _check_magic(data: bytes, magic: bytes, filename: str, kind: str) -> None:
 
 
 def _extract_pdf(data: bytes, filename: str) -> str:
+    import fitz  # PyMuPDF；懒加载（issue #49 P2-7）：解析库缺失不波及模块 import
+
     _check_magic(data, _PDF_MAGIC, filename, "PDF")
     try:
         with fitz.open(stream=data, filetype="pdf") as doc:
@@ -95,18 +116,22 @@ def _extract_pdf(data: bytes, filename: str) -> str:
 
 
 def _extract_docx(data: bytes, filename: str) -> str:
+    from docx import Document as DocxDocument  # 懒加载（issue #49 P2-7）
+
     _check_magic(data, _OOXML_MAGIC, filename, "Office 文件")
     try:
-        doc = _DocxDocument(io.BytesIO(data))
+        doc = DocxDocument(io.BytesIO(data))
         return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
     except Exception as e:
         raise CorruptDocumentError(f"「{filename}」DOCX 解析失败（{e}）") from e
 
 
 def _extract_xlsx(data: bytes, filename: str) -> str:
+    from openpyxl import load_workbook  # 懒加载（issue #49 P2-7）
+
     _check_magic(data, _OOXML_MAGIC, filename, "Office 文件")
     try:
-        wb = _load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
         try:
             lines = []
             for sheet_name in wb.sheetnames:
@@ -122,9 +147,11 @@ def _extract_xlsx(data: bytes, filename: str) -> str:
 
 
 def _extract_pptx(data: bytes, filename: str) -> str:
+    from pptx import Presentation as PptxPresentation  # 懒加载（issue #49 P2-7）
+
     _check_magic(data, _OOXML_MAGIC, filename, "Office 文件")
     try:
-        prs = _PptxPresentation(io.BytesIO(data))
+        prs = PptxPresentation(io.BytesIO(data))
         lines = []
         for slide in prs.slides:
             for shape in slide.shapes:

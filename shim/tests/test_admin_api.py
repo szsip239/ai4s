@@ -10,6 +10,7 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import threading
@@ -1195,6 +1196,41 @@ class AdminEdmCorpusUploadTest(unittest.TestCase):
         self.assertEqual(status, 401)
         status, _ = self._upload("authdoc", "a.docx", data, token="reader-token")
         self.assertEqual(status, 403)
+
+    def test_upload_oversized_extracted_text_400(self):
+        """提取文本超 8M 字符上限（issue #49 P1-1）→ 400 明确报错，shim 不崩（后续请求正常）。"""
+        data = ("x" * (8 * 1000 * 1000 + 1)).encode("utf-8")  # ~8MB body（16MB 线路限内），提取文本超限
+        status, body = self._upload("hugedoc", "huge.txt", data)
+        self.assertEqual(status, 400, body)
+        self.assertIn("上限", body.get("error", ""))
+        self.assertEqual(os.listdir(self.corpus_dir), [])  # 未落盘
+        # shim 未崩：后续正常上传仍 200
+        status, body = self._upload("afterhuge", "a.docx", make_docx_bytes([_UPLOAD_DOCX_PARAGRAPH]))
+        self.assertEqual(status, 200, body)
+
+
+class ShimLazyImportTest(unittest.TestCase):
+    """无解析库环境 import 健壮性（issue #49 P2-7）：第三方解析库（fitz/docx/openpyxl/pptx）
+    被屏蔽时 app/admin_api/doc_extract 仍可 import（懒加载链），检测路径主函数可用。"""
+
+    def test_import_app_without_parser_deps(self):
+        shim_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        code = (
+            "import sys, importlib.abc\n"
+            "BLOCKED = {'fitz', 'pymupdf', 'docx', 'openpyxl', 'pptx'}\n"
+            "class Block(importlib.abc.MetaPathFinder):\n"
+            "    def find_spec(self, name, path=None, target=None):\n"
+            "        if name.split('.')[0] in BLOCKED:\n"
+            "            raise ImportError('blocked: ' + name)\n"
+            "sys.meta_path.insert(0, Block())\n"
+            f"sys.path.insert(0, {shim_dir!r})\n"
+            "import app, admin_api, doc_extract\n"
+            "assert app.edm_hit_count('hello world', (set(), set())) == 0\n"  # 检测路径可用
+            "print('lazy-import-ok')\n"
+        )
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("lazy-import-ok", r.stdout)
 
 
 class EdmLibParityTest(unittest.TestCase):

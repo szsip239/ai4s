@@ -5,11 +5,13 @@ issue #31 骨架：healthz/ping、内省鉴权（读 read_channels / 写 write_c
 issue #32 配置面 CRUD：wordlist GET/PUT（整体替换 terms）、recognizers GET/POST/PUT/DELETE（regex 过 re.compile 校验）。
 issue #48 EDM 文件直传：POST /dlp-admin/edm/corpus/upload?name=&filename=（raw bytes），
 doc_extract 提取文本后与粘贴路径（POST /dlp-admin/edm/corpus）汇入同一 ingest。
+issue #49：doc_extract 懒加载到 upload 调用点（解析库 import 失败不波及 /request /response 检测路径）；
+提取文本 8M 字符上限（doc_extract.MAX_EXTRACTED_CHARS，防 zip/流扩张 OOM）。
 
 与检测路径（/request /response 调用链）完全隔离：admin 平面 fail-closed——
 内省不可达回 503，不适用检测链的 fail-open 分级（契约 docs/contracts/dlp-webhook-shim.md）。
 本模块自身仅标准库；doc_extract 的文档解析依赖第三方库（PyMuPDF/python-docx/openpyxl/
-python-pptx，全 manylinux wheel），检测路径 app.py 不受影响（仍纯 stdlib）。
+python-pptx，全 manylinux wheel），仅 upload 端点函数级引用，检测路径 app.py 不受影响（仍纯 stdlib）。
 """
 import json
 import os
@@ -21,7 +23,6 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-import doc_extract  # EDM 文档文本提取（issue #48，自研）：PDF/DOCX/XLSX/PPTX → 纯文本
 import edm_lib  # EDM 指纹算法共享库（issue #34）：入库/检测同法（契约铁律）
 
 # axonhub 内省端点（容器内默认同栈服务名；测试经环境变量指向本地假服务）
@@ -655,8 +656,8 @@ def _edm_corpus_upload_post(handler, _me):
     """POST 文件直传 EDM 语料（issue #48）：raw bytes body（application/octet-stream），
     ?name=<入库名>&filename=<原始文件名>。doc_extract 按扩展名提取文本
     （PDF/DOCX/XLSX/PPTX 解析，文本类多编码解码）后汇入 _edm_ingest_text；
-    提取不截断——16MB 已由 HTTP 体上限拦截，取全文保证指纹完整。
-    .doc/图片/扫描 PDF 等明确拒绝，错误文案用户可见。"""
+    提取不截断——16MB 已由 HTTP 体上限拦截，提取文本 8M 字符上限（doc_extract 内，
+    防 zip/流扩张 OOM，issue #49 P1-1）；.doc/图片/扫描 PDF 等明确拒绝，错误文案用户可见。"""
     qs = urllib.parse.parse_qs(urllib.parse.urlsplit(handler.path).query)
     name = (qs.get("name") or [""])[0]
     filename = (qs.get("filename") or [""])[0]
@@ -669,14 +670,12 @@ def _edm_corpus_upload_post(handler, _me):
     data = _read_raw_body(handler, _MAX_EDM_BODY)
     if data is None:
         return
+    import doc_extract  # 懒加载（issue #49 P2-7）：解析库仅本端点需要，import 失败不波及检测路径
     try:
         text = doc_extract.extract_text_from_bytes(filename, data)
-    except doc_extract.EmptyDocumentError as e:
-        if "未提取到文本" in str(e) and filename.lower().endswith(".pdf"):
-            _respond(handler, 400, {"error": f"「{filename}」未提取到文本：扫描件需 OCR，暂不支持"
-                                              "（请用文字版 PDF 或导出文本后上传）"})
-        else:
-            _respond(handler, 400, {"error": str(e)})
+    except doc_extract.ScannedPdfError:  # 按类型判定（issue #49 P2-5），不嗅探字符串
+        _respond(handler, 400, {"error": f"「{filename}」未提取到文本：扫描件需 OCR，暂不支持"
+                                          "（请用文字版 PDF 或导出文本后上传）"})
         return
     except doc_extract.DocumentExtractionError as e:
         _respond(handler, 400, {"error": str(e)})

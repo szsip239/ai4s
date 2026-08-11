@@ -177,7 +177,7 @@ async function postFile<T>(path: string, file: File): Promise<T> {
       } catch {
         // 非 JSON 错误体：保留 HTTP 状态文案
       }
-      throw new Error(message);
+      throw new DlpApiError(message, resp.status); // 带 status（issue #49 P2-4），与 apiRequest 的 ApiError 形状一致
     }
     return (await resp.json()) as T;
   });

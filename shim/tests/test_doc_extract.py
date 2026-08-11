@@ -199,9 +199,28 @@ class TestRejections(unittest.TestCase):
             dx.extract_text_from_bytes("f.docx", b"PK\x03\x04" + b"\x00" * 512)
 
     def test_scanned_pdf_empty(self):
-        """扫描版 PDF（页面无内嵌文本）→ EmptyDocumentError（admin_api 转「需 OCR」提示）。"""
+        """扫描版 PDF（无内嵌文本）→ ScannedPdfError（EmptyDocumentError 子类，issue #49 P2-5）。"""
+        with self.assertRaises(dx.ScannedPdfError):
+            dx.extract_text_from_bytes("scan.pdf", make_pdf_bytes([""]))
+        # 兼容语义：仍是 EmptyDocumentError 子类
         with self.assertRaises(dx.EmptyDocumentError):
             dx.extract_text_from_bytes("scan.pdf", make_pdf_bytes([""]))
+
+
+class TestExtractedTextCap(unittest.TestCase):
+    """提取文本 8M 字符上限（issue #49 P1-1）：zip/流扩张防 OOM，超限明确中文报错。"""
+
+    def test_over_cap_rejected(self):
+        data = ("x" * (dx.MAX_EXTRACTED_CHARS + 1)).encode("utf-8")  # ~8MB，线路 16MB 上限内
+        with self.assertRaises(dx.ExtractedTextTooLargeError) as cm:
+            dx.extract_text_from_bytes("big.txt", data)
+        self.assertIn("上限", str(cm.exception))
+
+    def test_just_under_cap_passes(self):
+        line = "商密文档边界行 abcdefghijklmnopqrstuvwxyz0123456789"  # >12 字符，避免误判场景干扰
+        data = (line * 100).encode("utf-8")  # 远小于上限的正常文档
+        text = dx.extract_text_from_bytes("ok.txt", data)
+        self.assertIn("商密文档边界行", text)
 
 
 if __name__ == "__main__":
