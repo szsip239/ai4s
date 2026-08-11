@@ -1098,6 +1098,7 @@ from test_doc_extract import (  # noqa: E402
     make_png_bytes,
     make_png_with_dimensions,
     make_scanned_pdf_bytes,
+    make_watermarked_scanned_pdf_bytes,
 )
 
 # e2e 语料内容：单行 > 50 字符（shingle 多窗口）且 ≥12（行级通道），粘贴片段双通道可命中
@@ -1267,6 +1268,19 @@ class AdminEdmCorpusUploadTest(unittest.TestCase):
         with open(os.path.join(self.corpus_dir, "scanmemo.txt"), encoding="utf-8") as f:
             corpus_text = f.read()
         self._assert_fragment_hit("scanmemo", _corpus_prefix(corpus_text))
+
+    @unittest.skipUnless(_chi_sim_available(), "本机无 tesseract chi_sim 语言包")
+    def test_upload_watermarked_pdf_e2e(self):
+        """水印文本层 PDF 直传（issue #52 缺口 2）：内嵌每页仅「扫描全能王 创建」水印 →
+        密度启发式回退 OCR → 200 建指纹；corpus 覆盖正文（非仅水印），取实存片段命中。"""
+        data = make_watermarked_scanned_pdf_bytes(
+            ["Q3 WATERMARK settlement ZX-88 ratio 0.666 tokenhub 0.555 scanbody"])
+        status, body = self._upload("wmscan", "contract-wm.pdf", data)
+        self.assertEqual(status, 200, body)
+        with open(os.path.join(self.corpus_dir, "wmscan.txt"), encoding="utf-8") as f:
+            corpus_text = f.read()
+        self.assertIn("ZX-88", corpus_text)  # 正文被 OCR 覆盖，不是只有水印
+        self._assert_fragment_hit("wmscan", _corpus_prefix(corpus_text))
 
     @unittest.skipUnless(_chi_sim_available(), "本机无 tesseract chi_sim 语言包")
     def test_upload_chinese_image_e2e(self):

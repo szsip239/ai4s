@@ -8,6 +8,11 @@
 图片直接 `pytesseract.image_to_string(lang="chi_sim+eng")`；扫描 PDF 用 PyMuPDF 渲染页图
 （180 DPI）逐页 OCR，页数上限 MAX_OCR_PAGES。tesseract 缺失/执行失败 → OcrUnavailableError；
 OCR 全空 → EmptyDocumentError。OCR 质量边界：中文印刷体一般、手写差、表格版面丢失。
+水印文本层回退（issue #52 缺口 2，真实试点「扫描全能王 创建」式水印）：内嵌文本非空但
+有效字符/页 < OCR_FALLBACK_MIN_CHARS_PER_PAGE 且页面含扫描图时仍回退 OCR——水印层非空
+会挡住朴素 OCR 回退，正文指纹全丢。docx/pptx 提取覆盖表格与文本框（issue #52 缺口 1）：
+python-docx iter_inner_content() 按文档顺序遍历段落+表格（旧实现 document.paragraphs
+丢失全部表格文本，试点真实文档 95% 内容在表格）；pptx 递归组合 shape、表格按行拼单元格。
 OCR 资源护栏（issue #51 评审修复）：渲染/解码目标像素两路径共用 MAX_OCR_PIXELS 上限
 （PDF 页按 page.rect×DPI 系数渲染前拦，直传图片按 Image.open 读到的 size 解码前拦）——
 数万 pt MediaBox 的畸形 PDF 仅几 KB，三重字节/页数/字符上限都兜不住其渲染像素量，
@@ -55,6 +60,9 @@ MAX_OCR_PIXELS = 40_000_000
 # tesseract 单次执行超时秒数（issue #51 P2-2，pytesseract timeout kwarg，单页/单图同值）：
 # 防引擎挂死拖住管理端会话、线程占用无界
 OCR_PAGE_TIMEOUT = 60
+# 水印文本层密度阈值（issue #52 缺口 2）：内嵌有效字符/页低于此值且页面含扫描图 → 回退 OCR。
+# 「扫描全能王 创建」式水印每页仅数字符（试点真实合同 8 字符/页）；正常数字 PDF 每页数百字符起
+OCR_FALLBACK_MIN_CHARS_PER_PAGE = 50
 _OCR_DPI = 180
 _OCR_LANG = "chi_sim+eng"
 
@@ -150,9 +158,9 @@ def _extract_pdf(data: bytes, filename: str) -> str:
             if doc.is_encrypted and not doc.authenticate(""):
                 raise CorruptDocumentError(f"「{filename}」已加密，无法读取")
             text = "\n\n".join(page.get_text() for page in doc)
-            if text.strip():
+            if text.strip() and not _needs_ocr_fallback(doc, text):
                 return text
-            # 无内嵌文本层 → 扫描件 OCR（issue #50）：渲染页图逐页识别
+            # 无内嵌文本层（issue #50），或水印文本层挡住（issue #52 缺口 2）→ 渲染页图逐页 OCR
             return _ocr_pdf_pages(doc, filename)
     except (CorruptDocumentError, OcrUnavailableError, OcrImageTooLargeError, EmptyDocumentError):
         raise
@@ -160,12 +168,22 @@ def _extract_pdf(data: bytes, filename: str) -> str:
         raise CorruptDocumentError(f"「{filename}」PDF 解析失败（{e}）") from e
 
 
+def _needs_ocr_fallback(doc, text: str) -> bool:
+    """水印文本层判定（issue #52 缺口 2）：有效字符/页 < OCR_FALLBACK_MIN_CHARS_PER_PAGE
+    且页面含扫描图 → 回退 OCR。「扫描全能王 创建」式水印页页几字符，非空文本层会挡住
+    朴素 OCR 回退，正文指纹全丢；无图的稀疏文本页（数字文档留白多）不回退——OCR 无可识别对象。"""
+    effective = len("".join(text.split()))  # 有效字符：剔除全部空白
+    if effective / max(doc.page_count, 1) >= OCR_FALLBACK_MIN_CHARS_PER_PAGE:
+        return False
+    return any(page.get_images() for page in doc)
+
+
 def _ocr_pdf_pages(doc, filename: str) -> str:
     """扫描 PDF 逐页 OCR：PyMuPDF 渲染 180 DPI 页图 → Tesseract。页数/像素超上限明确报错。"""
     if doc.page_count > MAX_OCR_PAGES:
         raise EmptyDocumentError(
-            f"「{filename}」无内嵌文本需 OCR，共 {doc.page_count} 页超过 {MAX_OCR_PAGES} 页上限"
-            "（防超长扫描件拖死上传），请拆分文档后上传"
+            f"「{filename}」无有效文本层需 OCR（扫描件或仅水印文本），共 {doc.page_count} 页超过 "
+            f"{MAX_OCR_PAGES} 页上限（防超长扫描件拖死上传），请拆分文档后上传"
         )
     from PIL import Image  # 懒加载（issue #49 P2-7 纪律覆盖 OCR 依赖）
 
@@ -237,11 +255,23 @@ def _run_tesseract(img, filename: str) -> str:
 
 def _extract_docx(data: bytes, filename: str) -> str:
     from docx import Document as DocxDocument  # 懒加载（issue #49 P2-7）
+    from docx.table import Table as DocxTable
 
     _check_magic(data, _OOXML_MAGIC, filename, "Office 文件")
     try:
         doc = DocxDocument(io.BytesIO(data))
-        return "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        # iter_inner_content()（python-docx 1.2.0）按文档顺序产出段落+表格（issue #52 缺口 1：
+        # 旧实现只取 document.paragraphs，试点真实文档 95% 内容在表格里全丢）
+        lines = []
+        for block in doc.iter_inner_content():
+            if isinstance(block, DocxTable):
+                for row in block.rows:
+                    line = "\t".join(cell.text.strip() for cell in row.cells)
+                    if line.strip():
+                        lines.append(line)
+            elif block.text.strip():
+                lines.append(block.text)
+        return "\n".join(lines)
     except Exception as e:
         raise CorruptDocumentError(f"「{filename}」DOCX 解析失败（{e}）") from e
 
@@ -275,12 +305,29 @@ def _extract_pptx(data: bytes, filename: str) -> str:
         lines = []
         for slide in prs.slides:
             for shape in slide.shapes:
-                text = getattr(shape, "text", "")
-                if text.strip():
-                    lines.append(text)
+                lines.extend(_pptx_shape_lines(shape))
         return "\n".join(lines)
     except Exception as e:
         raise CorruptDocumentError(f"「{filename}」PPTX 解析失败（{e}）") from e
+
+
+def _pptx_shape_lines(shape) -> list:
+    """单 shape 的文本行（issue #52 缺口 1 补齐）：组合 shape 递归；表格按行拼单元格；
+    文本框/占位符取 shape.text。旧实现 getattr(shape,'text','') 对表格/组合一律落空。"""
+    if hasattr(shape, "shapes"):  # 组合 shape：递归取子 shape
+        lines = []
+        for sub in shape.shapes:
+            lines.extend(_pptx_shape_lines(sub))
+        return lines
+    if getattr(shape, "has_table", False):  # 表格（GraphicFrame）
+        lines = []
+        for row in shape.table.rows:
+            line = "\t".join(cell.text.strip() for cell in row.cells)
+            if line.strip():
+                lines.append(line)
+        return lines
+    text = getattr(shape, "text", "")
+    return [text] if text.strip() else []
 
 
 def _decode_text(data: bytes) -> str:

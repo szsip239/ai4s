@@ -112,6 +112,82 @@ def make_scanned_pdf_bytes(pages_text, fontname="helv") -> bytes:
     return buf.getvalue()
 
 
+def make_watermarked_scanned_pdf_bytes(pages_text, watermark="扫描全能王 创建") -> bytes:
+    """扫描图 + 真文本水印同页（issue #52 缺口 2 样本，「扫描全能王」式）：正文只以页图存在，
+    内嵌文本层每页仅水印数字符——非空文本层会挡住朴素 OCR 回退，正文指纹全丢。"""
+    import fitz
+
+    doc = fitz.open()
+    for t in pages_text:
+        src = fitz.open()
+        sp = src.new_page()
+        sp.insert_text((72, 72), t, fontsize=16)
+        pix = sp.get_pixmap(matrix=fitz.Matrix(2, 2))
+        page = doc.new_page(width=sp.rect.width, height=sp.rect.height)
+        page.insert_image(page.rect, pixmap=pix)  # 正文仅以扫描图存在
+        page.insert_text((72, 750), watermark, fontname="china-s", fontsize=9)  # 真文本水印层
+        src.close()
+    buf = io.BytesIO()
+    doc.save(buf)
+    doc.close()
+    return buf.getvalue()
+
+
+def make_pdf_with_image_bytes(text, fontname="helv") -> bytes:
+    """密集数字文本 + 内嵌小图（issue #52 不回退分支样本）：密度 ≥ 阈值，即使有图也不走 OCR。
+    中文文本需 fontname='china-s'（helv 渲染中文变 '·'）。"""
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page()
+    # insert_textbox 在矩形内自动换行（单行超页宽会被 fitz 截断，密度样本必须用盒式写入）
+    page.insert_textbox(fitz.Rect(72, 72, 540, 400), text, fontname=fontname, fontsize=12)
+    img = fitz.open()
+    ip = img.new_page(width=100, height=100)
+    pix = ip.get_pixmap()
+    page.insert_image(fitz.Rect(72, 400, 172, 500), pixmap=pix)
+    buf = io.BytesIO()
+    doc.save(buf)
+    doc.close()
+    img.close()
+    return buf.getvalue()
+
+
+def make_docx_with_table_bytes(before, table_rows, after) -> bytes:
+    """段落-表格-段落交错（issue #52 缺口 1 样本）：检验 iter_inner_content 文档顺序与表格提取。"""
+    from docx import Document
+
+    doc = Document()
+    doc.add_paragraph(before)
+    table = doc.add_table(rows=len(table_rows), cols=len(table_rows[0]))
+    for i, row in enumerate(table_rows):
+        for j, cell_text in enumerate(row):
+            table.cell(i, j).text = cell_text
+    doc.add_paragraph(after)
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def make_pptx_with_table_bytes(textbox_text, table_rows) -> bytes:
+    """文本框 + 表格同页（issue #52 pptx 缺口样本）：旧实现对表格 GraphicFrame 一律取空文本。"""
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[5])
+    tb = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(6), Inches(0.5))
+    tb.text_frame.text = textbox_text
+    graphic = slide.shapes.add_table(len(table_rows), len(table_rows[0]),
+                                     Inches(1), Inches(2), Inches(6), Inches(1.5))
+    for i, row in enumerate(table_rows):
+        for j, cell_text in enumerate(row):
+            graphic.table.cell(i, j).text = cell_text
+    buf = io.BytesIO()
+    prs.save(buf)
+    return buf.getvalue()
+
+
 def make_huge_mediabox_pdf_bytes(side_pt=20000) -> bytes:
     """单页空白 PDF（无文本层），MediaBox 改成 side_pt 见方（issue #51 P1-1 畸形大版面样本）：
     文件仅几百字节，180DPI 渲染却需 (side_pt×2.5)² 像素（20000pt → 25 亿 px）。"""
@@ -175,6 +251,21 @@ class TestExtractDocx(unittest.TestCase):
         text = dx.extract_text_from_bytes("合同.docx", make_docx_bytes(["机密合同条款 第一条"]))
         self.assertIn("机密合同条款 第一条", text)
 
+    def test_table_in_document_order(self):
+        """docx 表格提取（issue #52 缺口 1）：iter_inner_content 按文档顺序遍历段落+表格，
+        表格按行拼单元格——试点真实文档 95% 内容在表格，旧实现（仅 document.paragraphs）全丢。"""
+        data = make_docx_with_table_bytes(
+            "合同首部段落",
+            [["甲方", "甲公司"], ["乙方", "乙公司"]],
+            "合同尾部段落",
+        )
+        text = dx.extract_text_from_bytes("contract.docx", data)
+        self.assertIn("甲方\t甲公司", text)
+        self.assertIn("乙方\t乙公司", text)
+        # 文档顺序：首部段落 < 表格行 < 尾部段落
+        self.assertLess(text.index("合同首部段落"), text.index("甲方"))
+        self.assertLess(text.index("乙方\t乙公司"), text.index("合同尾部段落"))
+
 
 class TestExtractXlsx(unittest.TestCase):
     def test_multiple_sheets(self):
@@ -200,6 +291,15 @@ class TestExtractPptx(unittest.TestCase):
     def test_chinese(self):
         text = dx.extract_text_from_bytes("路演.pptx", make_pptx_bytes([["路演机密数据 2026"]]))
         self.assertIn("路演机密数据 2026", text)
+
+    def test_textbox_and_table(self):
+        """pptx 文本框+表格提取（issue #52 缺口 1 核查补齐）：旧实现 getattr(shape,'text','')
+        对表格 GraphicFrame 一律落空。"""
+        data = make_pptx_with_table_bytes("季度汇报标题", [["指标", "数值"], ["违约金", "百分之二十"]])
+        text = dx.extract_text_from_bytes("deck.pptx", data)
+        self.assertIn("季度汇报标题", text)
+        self.assertIn("指标\t数值", text)
+        self.assertIn("违约金\t百分之二十", text)
 
 
 class TestExtractPdf(unittest.TestCase):
@@ -393,6 +493,41 @@ class TestOcrScannedPdf(unittest.TestCase):
         # 进程不崩：正常文档提取不受影响（对齐 #49 P1-1 超大文本用例的存活断言）
         text = dx.extract_text_from_bytes("ok.docx", make_docx_bytes(["正常文档内容仍然可用"]))
         self.assertIn("正常文档内容", text)
+
+
+class TestOcrFallbackDensity(unittest.TestCase):
+    """水印文本层密度启发式（issue #52 缺口 2）：有效字符/页 < 阈值且页面含扫描图才回退 OCR。"""
+
+    @unittest.skipUnless(_chi_sim_available(), "本机无 tesseract chi_sim 语言包")
+    def test_watermark_text_layer_triggers_ocr(self):
+        """水印文本层 PDF（页图 + 每页「扫描全能王 创建」真文本水印）：非空文本层不挡回退，
+        OCR 提取出正文（朴素「非空即返回」实现下指纹库只剩水印）。"""
+        data = make_watermarked_scanned_pdf_bytes(["WATERMARK BODY EVIDENCE 789"])
+        text = dx.extract_text_from_bytes("contract-scan.pdf", data)
+        self.assertIn("WATERMARK", text)
+        self.assertIn("789", text)
+
+    def test_dense_digital_pdf_no_ocr(self):
+        """密度 ≥ 阈值的数字 PDF（带内嵌图）不回退 OCR（不回归）：内嵌文本直接返回，
+        pytesseract 全程不被调用（mock 守调用点，无需真实引擎）。"""
+        from unittest import mock
+
+        dense = "密度足够的数字文档正文内容" * 6  # >50 有效字符/页
+        data = make_pdf_with_image_bytes(dense, fontname="china-s")
+        with mock.patch("pytesseract.image_to_string",
+                        side_effect=AssertionError("不应调用 OCR")):
+            text = dx.extract_text_from_bytes("digital.pdf", data)
+        self.assertIn("密度足够", text)
+
+    def test_sparse_text_without_images_no_ocr(self):
+        """稀疏文本但页面无扫描图 → 不回退 OCR（OCR 无可识别对象）：内嵌文本原样返回。"""
+        from unittest import mock
+
+        data = make_pdf_bytes(["短句"], fontname="china-s")  # 2 字符/页 < 阈值，但无图
+        with mock.patch("pytesseract.image_to_string",
+                        side_effect=AssertionError("不应调用 OCR")):
+            text = dx.extract_text_from_bytes("sparse.pdf", data)
+        self.assertIn("短句", text)
 
 
 class TestEmptyResultMessage(unittest.TestCase):
