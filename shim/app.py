@@ -25,6 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import admin_api  # DLP 统一配置 admin 平面（issue #31）：/dlp-admin/*，与检测路径隔离
 import edm_lib    # EDM 指纹算法共享库（issue #34）：入库/检测同法（契约铁律）
+import alert_poller  # 告警巡检+提额审批（issue #56 并入）：import 不起线程，仅 __main__ start_daemon
 
 PRESIDIO_URL = os.environ.get("PRESIDIO_URL", "http://presidio:3000")
 WORDLIST_PATH = os.environ.get("WORDLIST_PATH", "/dlp/confidential-terms.json")
@@ -826,4 +827,7 @@ if __name__ == "__main__":
     # 启动即打一行生效来源（issue #35）：settings.json 可读 → 配置来自 JSON 覆盖层；否则全量 env/内置默认
     _s = load_settings()
     print(f"[settings] 配置来源: {'settings.json' if _s else 'env/内置默认（settings.json 缺失/损坏）'} path={SETTINGS_PATH}", flush=True)
+    # 告警巡检 daemon 线程（issue #56：alert-poller 并入）：与检测路径隔离——
+    # 循环体整体 try/except，单轮异常只记日志；daemon 线程随主进程退出
+    alert_poller.start_daemon()
     ThreadingHTTPServer(("0.0.0.0", 8080), Handler).serve_forever()

@@ -156,41 +156,27 @@ services:
       L1_ENABLED: ${L1_ENABLED:-1}
       L2_ENABLED: ${L2_ENABLED:-1}
       RESPONSE_ENABLED: ${RESPONSE_ENABLED:-1}
+      # issue #56 告警巡检并入（原 alert-poller 容器，daemon 线程 30s 轮询，与检测路径隔离）：
+      # DLP fail-open 探活 + 上游渠道/员工 key 额度（issue #17/#18）+ 提额审批同步（issue #19）；
+      # SHIM_URL 探活默认进程内自调 http://localhost:8080，无需配置
+      AXONHUB_BASE: http://axonhub:8090
+      AXONHUB_ADMIN_EMAIL: ${AXONHUB_ADMIN_EMAIL:?AXONHUB_ADMIN_EMAIL is required}
+      AXONHUB_ADMIN_PASSWORD: ${AXONHUB_ADMIN_PASSWORD:?AXONHUB_ADMIN_PASSWORD is required}
+      FEISHU_APP_ID: ${FEISHU_APP_ID:-}
+      FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
+      APPROVAL_QUOTA_CODE: ${APPROVAL_QUOTA_CODE:-}
+      POLL_INTERVAL: "30"
     volumes:
       - ./dlp:/dlp:rw # 词表/format-rules/settings.json 挂载（issue #31 起 rw：admin API 写回）；shim 每请求重读热更新
       - ../recognizers:/recognizers:rw # PII recognizer 定义（issue #15），issue #31 起 rw
       - ./edm:/edm:rw # EDM 指纹库（issue #29），issue #31 起 rw
       - ./agentgateway:/agentgateway:rw # L1 规则渲染写回（issue #33 用，#31 预挂）
+      - ./.local/alert-state:/state # 告警防抖状态（issue #56 平移自 alert-poller，gitignored）
     networks:
       - ai4s
     depends_on:
       - presidio
-    restart: unless-stopped
-
-  # 告警巡检（issue #17）：axonhub 无事件源的告警靠轮询补齐——DLP fail-open 探活 + 上游/员工额度
-  alert-poller:
-    build: ../alert-poller
-    container_name: ai4s-alert-poller
-    environment:
-      AXONHUB_BASE: http://axonhub:8090
-      AXONHUB_ADMIN_EMAIL: ${AXONHUB_ADMIN_EMAIL:?AXONHUB_ADMIN_EMAIL is required}
-      AXONHUB_ADMIN_PASSWORD: ${AXONHUB_ADMIN_PASSWORD:?AXONHUB_ADMIN_PASSWORD is required}
-      FEISHU_ALERT_WEBHOOK: ${FEISHU_ALERT_WEBHOOK:-}
-      FEISHU_ALERT_SECRET: ${FEISHU_ALERT_SECRET:-}
-      # issue #19 提额审批同步：飞书应用凭据 + 审批单 code
-      FEISHU_APP_ID: ${FEISHU_APP_ID:-}
-      FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
-      APPROVAL_QUOTA_CODE: ${APPROVAL_QUOTA_CODE:-}
-      SHIM_URL: http://shim:8080
-      PRESIDIO_URL: http://presidio:3000
-      POLL_INTERVAL: "30"
-    volumes:
-      - ./.local/alert-state:/state # 告警防抖状态（gitignored）
-    networks:
-      - ai4s
-    depends_on:
       - axonhub
-      - shim
     restart: unless-stopped
 
   # PromptGuard 2 注入检测实测（issue #30）：profile=promptguard，不进默认栈

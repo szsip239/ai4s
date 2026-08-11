@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""ai4s 告警巡检（issue #17）+ 提额审批同步（issue #19）：axonhub 无事件源的事务靠主动轮询补齐。
+"""ai4s 告警巡检（issue #17）+ 提额审批同步（issue #19），issue #56 起并入 shim 后台线程。
 
-巡检项（状态翻转才发飞书，恢复也通知，状态存 /state 防抖）：
+axonhub 无事件源的事务靠主动轮询补齐。巡检项（状态翻转才发飞书，恢复也通知，状态存 /state 防抖）：
   1. DLP fail-open 探活：shim /healthz、presidio /health 任一不可达 → 告警
-     （agentgateway failureMode=failOpen，组件挂掉流量静默直传，必须有人喊）
+     （agentgateway failureMode=failOpen，组件挂掉流量静默直传，必须有人喊）；
+     并入 shim 后 SHIM_URL 默认进程内自调 http://localhost:8080（issue #56）
   2. 上游渠道额度：queryChannels → providerQuotaStatus ∈ {warning, exhausted} → 告警
   3. 员工 API key 额度：apiKeys → apiKeyQuotaUsages，usage 达到 quota → 告警；≥80% → 预警（issue #18）
 
@@ -11,16 +12,21 @@
   轮询飞书审批实例（APPROVAL_QUOTA_CODE 定义），APPROVED 且未处理过的：
   申请人 open_id → axonhub 用户（email = ou_*@casdoor.oidc）→ 其 enabled Key
   → 按表单"目标档位"换挂对应 Profile 模板 → 群里回执。拒绝/撤回只标记已处理。
+  FEISHU_APP_ID/FEISHU_APP_SECRET/APPROVAL_QUOTA_CODE 任一缺失即整体跳过（与独立容器时代一致）。
 
 发送：飞书群机器人签名校验（与 shim /feishu-alert 同算法）；axonhub 实时事件
-（channel.auto_disabled）走 shim 适配器，本服务不重复。
-依赖仅标准库，镜像 python:3.12-alpine。secret 不进日志。
+（channel.auto_disabled）走 shim /feishu-alert 适配器，本模块不重复。
+依赖仅标准库。secret 不进日志。
+
+隔离纪律（issue #56）：本模块只被 app.py __main__ 以 daemon 线程启动（import app 不起线程，
+单测环境安全）；轮询循环体整体 try/except，单轮异常只记日志不杀线程、绝不影响检测路径。
 """
 import base64
 import hashlib
 import hmac
 import json
 import os
+import threading
 import time
 import urllib.request
 
@@ -29,7 +35,8 @@ ADMIN_EMAIL = os.environ.get("AXONHUB_ADMIN_EMAIL", "")
 ADMIN_PASSWORD = os.environ.get("AXONHUB_ADMIN_PASSWORD", "")
 FEISHU_WEBHOOK = os.environ.get("FEISHU_ALERT_WEBHOOK", "")
 FEISHU_SECRET = os.environ.get("FEISHU_ALERT_SECRET", "")
-SHIM_URL = os.environ.get("SHIM_URL", "http://shim:8080")
+# issue #56：线程在 shim 进程内，探活默认自调本进程 HTTP 栈（真实验证服务活着，无新代码路径）
+SHIM_URL = os.environ.get("SHIM_URL", "http://localhost:8080")
 PRESIDIO_URL = os.environ.get("PRESIDIO_URL", "http://presidio:3000")
 POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "30"))
 STATE_PATH = os.environ.get("STATE_PATH", "/state/alert-state.json")
@@ -44,7 +51,7 @@ def feishu_sign(ts: str, secret: str) -> str:
 
 def send_feishu(text: str) -> bool:
     if not FEISHU_WEBHOOK:
-        print("[alert-poller] FEISHU_ALERT_WEBHOOK 未配置，丢弃消息", flush=True)
+        print("[alert] FEISHU_ALERT_WEBHOOK 未配置，丢弃消息", flush=True)
         return False
     for attempt in range(3):
         try:
@@ -62,9 +69,9 @@ def send_feishu(text: str) -> bool:
                 resp = json.load(r)
             if resp.get("code") == 0 or resp.get("StatusCode") == 0:
                 return True
-            print(f"[alert-poller] 飞书返回非零: code={resp.get('code')}", flush=True)
+            print(f"[alert] 飞书返回非零: code={resp.get('code')}", flush=True)
         except Exception as e:
-            print(f"[alert-poller] 飞书发送失败(第{attempt + 1}次): {type(e).__name__}", flush=True)
+            print(f"[alert] 飞书发送失败(第{attempt + 1}次): {type(e).__name__}", flush=True)
         time.sleep(1)
     return False
 
@@ -190,8 +197,22 @@ def apply_tier(ax: Axonhub, open_id: str, tier_name: str):
     return f"已将 {len(own)} 个 Key 换挂 {tier_name}（{', '.join(k['name'] for k in own)}）"
 
 
+def approval_action(status: str) -> str:
+    """审批实例状态 → 处理分支（issue #56 抽纯函数，行为与独立容器时代一致）：
+    process=APPROVED 执行提额并回执；receipt=REJECTED 只回执；skip=PENDING 下轮再看；
+    mark=CANCELED/DELETED 及其余终态只标记已处理。"""
+    if status == "PENDING":
+        return "skip"
+    if status == "APPROVED":
+        return "process"
+    if status == "REJECTED":
+        return "receipt"
+    return "mark"
+
+
 def approval_sync(ax: Axonhub, state: dict):
-    """轮询提额审批单，处理 APPROVED 实例（issue #19）。拒绝/撤回标记跳过，异常不标记下轮重试。"""
+    """轮询提额审批单，处理 APPROVED 实例（issue #19）。拒绝/撤回标记跳过，异常不标记下轮重试。
+    凭据（APPROVAL_QUOTA_CODE/FEISHU_APP_ID/FEISHU_APP_SECRET）任一缺失整体跳过——只巡检不审批。"""
     if not (APPROVAL_QUOTA_CODE and FEISHU_APP_ID and FEISHU_APP_SECRET):
         return
     now_ms = int(time.time() * 1000)
@@ -201,7 +222,7 @@ def approval_sync(ax: Axonhub, state: dict):
             f"/approval/v4/instances?approval_code={APPROVAL_QUOTA_CODE}&start_time={start_ms}&end_time={now_ms}"
         )
     except Exception as e:
-        print(f"[alert-poller] 审批实例列表失败: {type(e).__name__}: {e}", flush=True)
+        print(f"[alert] 审批实例列表失败: {type(e).__name__}: {e}", flush=True)
         return
     ids = data.get("instance_code_list") or data.get("instances") or []
     done = state.setdefault("approval_done", [])
@@ -211,12 +232,12 @@ def approval_sync(ax: Axonhub, state: dict):
         try:
             inst = feishu_get(f"/approval/v4/instances/{ic}")
         except Exception as e:
-            print(f"[alert-poller] 审批实例 {ic} 详情失败: {type(e).__name__}", flush=True)
+            print(f"[alert] 审批实例 {ic} 详情失败: {type(e).__name__}", flush=True)
             continue
-        status = inst.get("status")
-        if status == "PENDING":
+        action = approval_action(inst.get("status"))
+        if action == "skip":
             continue
-        if status == "APPROVED":
+        if action == "process":
             try:
                 form = json.loads(inst.get("form") or "[]")
             except Exception:
@@ -230,15 +251,15 @@ def approval_sync(ax: Axonhub, state: dict):
                 try:
                     result = apply_tier(ax, open_id, tier_name)
                 except Exception as e:
-                    print(f"[alert-poller] 提额执行失败 {ic}: {type(e).__name__}: {e}", flush=True)
+                    print(f"[alert] 提额执行失败 {ic}: {type(e).__name__}: {e}", flush=True)
                     continue  # 不标记，下轮重试
             if send_feishu(f"[ai4s 提额] 审批通过\n申请人: {open_id}\n目标档: {tier_text}\n结果: {result}\n实例: {ic}"):
-                print(f"[alert-poller] 提额已处理: {ic} -> {tier_text}", flush=True)
-        elif status == "REJECTED":
+                print(f"[alert] 提额已处理: {ic} -> {tier_text}", flush=True)
+        elif action == "receipt":
             open_id = inst.get("open_id") or inst.get("user_id") or ""
             if send_feishu(f"[ai4s 提额] 审批未通过\n申请人: {open_id}\n额度维持现状，未做变更\n实例: {ic}"):
-                print(f"[alert-poller] 提额拒绝回执: {ic}", flush=True)
-        # CANCELED / DELETED：只标记
+                print(f"[alert] 提额拒绝回执: {ic}", flush=True)
+        # mark（CANCELED / DELETED / 其余终态）：只标记
         done.append(ic)
     state["approval_done"] = done[-200:]
 
@@ -261,6 +282,45 @@ def save_state(state: dict):
 
 def now_str() -> str:
     return time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+
+
+# ---- 巡检判定纯函数（issue #56：借迁移给核心分支补单测）----
+
+
+def quota_dims(quota: dict, usage: dict) -> list:
+    """API key 单 profile 各维度用量比率：[(维度名, ratio, "用量/配额" 文本)]。
+    维度缺失或配额为 0（含 cost 为 None/"0"）不参与判定（与独立容器时代一致）。"""
+    dims = []
+    if quota.get("requests"):
+        dims.append(("请求数", (usage.get("requestCount") or 0) / quota["requests"], f"{usage.get('requestCount')}/{quota['requests']}"))
+    if quota.get("totalTokens"):
+        dims.append(("token", (usage.get("totalTokens") or 0) / quota["totalTokens"], f"{usage.get('totalTokens')}/{quota['totalTokens']}"))
+    if quota.get("cost") is not None and float(quota["cost"]):
+        dims.append(("credit", float(usage.get("totalCost") or 0) / float(quota["cost"]), f"{usage.get('totalCost')}/{quota['cost']}"))
+    return dims
+
+
+def classify_quota(dims: list):
+    """额度判定：over=任一维度 ratio ≥1.0（耗尽告警）；near=任一维度 ∈[0.8,1.0)（80% 预警）。
+    返回 (over, near) 两个子列表；调用方按 bool(over) / bool(near) and not over 取 bad 位
+    （耗尽优先——已耗尽只发耗尽告警，不同时发预警）。"""
+    over = [d for d in dims if d[1] >= 1.0]
+    near = [d for d in dims if 0.8 <= d[1] < 1.0]
+    return over, near
+
+
+def flip_actions(findings: dict, state: dict) -> list:
+    """防抖翻转判定：findings key -> (bad, 告警文本, 恢复文本) 对比 state 中的 prev 位，
+    返回 [(key, 'alert'|'recover', text)]——只列出发生翻转、需要发送的项；
+    发送成功后才允许调用方更新 state（发送失败不更新，下轮自然重试）。"""
+    actions = []
+    for k, (bad, alert_text, recover_text) in findings.items():
+        prev = state.get(k, False)
+        if bad and not prev:
+            actions.append((k, "alert", alert_text))
+        elif not bad and prev:
+            actions.append((k, "recover", recover_text))
+    return actions
 
 
 def check_cycle(ax: Axonhub, state: dict) -> dict:
@@ -297,7 +357,7 @@ def check_cycle(ax: Axonhub, state: dict) -> dict:
                 f"[ai4s 恢复] 上游渠道额度恢复: {n['name']}",
             )
     except Exception as e:
-        print(f"[alert-poller] 渠道额度查询失败: {type(e).__name__}", flush=True)
+        print(f"[alert] 渠道额度查询失败: {type(e).__name__}", flush=True)
 
     # 3) 员工 API key 额度
     try:
@@ -313,17 +373,7 @@ def check_cycle(ax: Axonhub, state: dict) -> dict:
             except Exception:
                 continue
             for u in usages:
-                q, g = u.get("quota") or {}, u.get("usage") or {}
-                # 各维度用量比率：requests / totalTokens / cost
-                dims = []
-                if q.get("requests"):
-                    dims.append(("请求数", (g.get("requestCount") or 0) / q["requests"], f"{g.get('requestCount')}/{q['requests']}"))
-                if q.get("totalTokens"):
-                    dims.append(("token", (g.get("totalTokens") or 0) / q["totalTokens"], f"{g.get('totalTokens')}/{q['totalTokens']}"))
-                if q.get("cost") is not None and float(q["cost"]):
-                    dims.append(("credit", float(g.get("totalCost") or 0) / float(q["cost"]), f"{g.get('totalCost')}/{q['cost']}"))
-                over = [d for d in dims if d[1] >= 1.0]
-                near = [d for d in dims if 0.8 <= d[1] < 1.0]
+                over, near = classify_quota(quota_dims(u.get("quota") or {}, u.get("usage") or {}))
                 hits = [f"{name} {txt}" for name, _, txt in over]
                 findings[f"quota:apikey:{key['id']}:{u.get('profileName')}"] = (
                     bool(over),
@@ -338,24 +388,18 @@ def check_cycle(ax: Axonhub, state: dict) -> dict:
                     f"[ai4s 恢复] API Key 额度预警解除（新周期/提额生效）: {key['name']}（profile {u.get('profileName')}）",
                 )
     except Exception as e:
-        print(f"[alert-poller] API key 额度查询失败: {type(e).__name__}", flush=True)
+        print(f"[alert] API key 额度查询失败: {type(e).__name__}", flush=True)
 
     # 状态翻转才发送；发送失败不更新状态（下轮自然重试）
-    for k, (bad, alert_text, recover_text) in findings.items():
-        prev = state.get(k, False)
-        if bad and not prev:
-            if send_feishu(alert_text):
-                state[k] = True
-                print(f"[alert-poller] 已告警: {k}", flush=True)
-        elif not bad and prev:
-            if send_feishu(recover_text):
-                state[k] = False
-                print(f"[alert-poller] 已恢复: {k}", flush=True)
+    for k, kind, text in flip_actions(findings, state):
+        if send_feishu(text):
+            state[k] = kind == "alert"
+            print(f"[alert] 已{'告警' if kind == 'alert' else '恢复'}: {k}", flush=True)
     return state
 
 
-def main():
-    print(f"[alert-poller] 启动，间隔 {POLL_INTERVAL}s", flush=True)
+def _poll_loop():
+    print(f"[alert] 巡检启动，间隔 {POLL_INTERVAL}s", flush=True)
     ax = Axonhub()
     state = load_state()
     while True:
@@ -364,9 +408,14 @@ def main():
             approval_sync(ax, state)
             save_state(state)
         except Exception as e:
-            print(f"[alert-poller] 本轮异常: {type(e).__name__}: {e}", flush=True)
+            # 单轮异常只记日志：不杀线程、绝不影响 shim 检测路径（issue #56 隔离纪律）
+            print(f"[alert] 本轮异常: {type(e).__name__}: {e}", flush=True)
         time.sleep(POLL_INTERVAL)
 
 
-if __name__ == "__main__":
-    main()
+def start_daemon() -> threading.Thread:
+    """以 daemon 线程启动巡检循环（issue #56 并入 shim）。只应由 app.py __main__ 调用——
+    import 本模块不启动线程，本机单测环境 import app 安全。"""
+    t = threading.Thread(target=_poll_loop, name="alert-poller", daemon=True)
+    t.start()
+    return t

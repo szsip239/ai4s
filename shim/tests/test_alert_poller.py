@@ -1,0 +1,271 @@
+#!/usr/bin/env python3
+"""alert_poller 巡检判定核心分支测试（issue #56：随 alert-poller 并入 shim 补齐——原独立容器无测试）。
+
+seam 纪律：判定逻辑抽纯函数（quota_dims/classify_quota/flip_actions/parse_tier/approval_action）
+直接测；check_cycle/approval_sync 只在线路边界 mock（http_get / Axonhub.gql / feishu_get /
+send_feishu / apply_tier），不 mock 模块内部判定函数。
+"""
+import os
+import sys
+import unittest
+from unittest import mock
+
+# 让测试可 import shim 目录下的 alert_poller（discover 从 shim/tests 启动）
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import alert_poller as ap
+
+
+class TestQuotaDims(unittest.TestCase):
+    """额度维度比率：维度缺失/配额 0 不参与；usage 缺键按 0。"""
+
+    def test_all_dims(self):
+        dims = ap.quota_dims(
+            {"requests": 100, "totalTokens": 1000, "cost": "10"},
+            {"requestCount": 50, "totalTokens": 800, "totalCost": "9.5"},
+        )
+        self.assertEqual([d[0] for d in dims], ["请求数", "token", "credit"])
+        self.assertAlmostEqual(dims[0][1], 0.5)
+        self.assertAlmostEqual(dims[1][1], 0.8)
+        self.assertAlmostEqual(dims[2][1], 0.95)
+        self.assertEqual(dims[2][2], "9.5/10")
+
+    def test_missing_usage_defaults_zero(self):
+        dims = ap.quota_dims({"requests": 100}, {})
+        self.assertEqual(len(dims), 1)
+        self.assertAlmostEqual(dims[0][1], 0.0)
+
+    def test_absent_and_zero_quota_skipped(self):
+        # requests/totalTokens 缺失、cost None 或 "0" → 空 dims（无判定维度）
+        self.assertEqual(ap.quota_dims({}, {}), [])
+        self.assertEqual(ap.quota_dims({"requests": 0, "totalTokens": None, "cost": None}, {}), [])
+        self.assertEqual(ap.quota_dims({"cost": "0"}, {"totalCost": "1"}), [])
+
+
+class TestClassifyQuota(unittest.TestCase):
+    """warning/exhausted 判定：over ≥100%；near ∈[80%,100%)。"""
+
+    def test_under_80_ok(self):
+        over, near = ap.classify_quota([("请求数", 0.79, "79/100")])
+        self.assertEqual(over, [])
+        self.assertEqual(near, [])
+
+    def test_near_at_80(self):
+        over, near = ap.classify_quota([("token", 0.8, "80/100")])
+        self.assertEqual(over, [])
+        self.assertEqual(len(near), 1)
+
+    def test_over_at_100(self):
+        over, near = ap.classify_quota([("请求数", 1.0, "100/100")])
+        self.assertEqual(len(over), 1)
+        self.assertEqual(near, [])  # ≥1.0 不算 near
+
+    def test_mixed_dims(self):
+        dims = [("请求数", 1.2, "120/100"), ("token", 0.85, "85/100"), ("credit", 0.5, "5/10")]
+        over, near = ap.classify_quota(dims)
+        self.assertEqual([d[0] for d in over], ["请求数"])
+        self.assertEqual([d[0] for d in near], ["token"])
+        # 耗尽优先语义（调用方）：bool(near) and not over 为 False——已耗尽不再发 80% 预警
+        self.assertFalse(bool(near) and not over)
+
+
+class TestFlipActions(unittest.TestCase):
+    """防抖翻转：只在 bad 位变化时产出动作。"""
+
+    F = {
+        "k1": (True, "ALERT-1", "RECOVER-1"),
+        "k2": (False, "ALERT-2", "RECOVER-2"),
+    }
+
+    def test_new_bad_alerts(self):
+        self.assertEqual(ap.flip_actions(self.F, {}), [("k1", "alert", "ALERT-1")])
+
+    def test_steady_bad_no_repeat(self):
+        self.assertEqual(ap.flip_actions(self.F, {"k1": True}), [])
+
+    def test_recover_after_bad(self):
+        self.assertEqual(ap.flip_actions(self.F, {"k1": True, "k2": True}),
+                         [("k2", "recover", "RECOVER-2")])
+
+    def test_good_stays_silent(self):
+        self.assertEqual(ap.flip_actions({"k": (False, "a", "r")}, {}), [])
+
+
+class TestParseTier(unittest.TestCase):
+    def test_premium(self):
+        for text in ("高档", "申请高档额度", "premium", "Premium 档", "pro", "PRO"):
+            self.assertEqual(ap.parse_tier(text), "高档", text)
+
+    def test_standard(self):
+        for text in ("标准档", "标准", "standard", "Standard", "std", "STD 档"):
+            self.assertEqual(ap.parse_tier(text), "标准档", text)
+
+    def test_unrecognized(self):
+        for text in ("", "随便加点", "abc"):
+            self.assertIsNone(ap.parse_tier(text), text)
+
+
+class TestApprovalAction(unittest.TestCase):
+    def test_branches(self):
+        self.assertEqual(ap.approval_action("PENDING"), "skip")
+        self.assertEqual(ap.approval_action("APPROVED"), "process")
+        self.assertEqual(ap.approval_action("REJECTED"), "receipt")
+        self.assertEqual(ap.approval_action("CANCELED"), "mark")
+        self.assertEqual(ap.approval_action("DELETED"), "mark")
+        self.assertEqual(ap.approval_action("SOME_UNKNOWN"), "mark")  # 未知终态只标记（同原实现）
+
+
+class TestApprovalSync(unittest.TestCase):
+    """审批处理分支：凭据缺失整体跳过；各状态分支的标记/重试语义。"""
+
+    def _run(self, instances_by_id, state=None, apply_side_effect=None):
+        """mock 线路边界跑一轮 approval_sync；返回 (state, send_calls, apply_calls)。"""
+        state = state if state is not None else {}
+        sends, applies = [], []
+
+        def fake_feishu_get(path):
+            if path.startswith("/approval/v4/instances/"):
+                ic = path.rsplit("/", 1)[1]
+                return instances_by_id[ic]
+            return {"instance_code_list": list(instances_by_id)}
+
+        def fake_send(text):
+            sends.append(text)
+            return True
+
+        def fake_apply(ax, open_id, tier_name):
+            applies.append((open_id, tier_name))
+            if apply_side_effect:
+                raise apply_side_effect
+            return "已将 1 个 Key 换挂"
+
+        with mock.patch.multiple(
+            ap, feishu_get=fake_feishu_get, send_feishu=fake_send, apply_tier=fake_apply,
+            APPROVAL_QUOTA_CODE="CODE", FEISHU_APP_ID="id", FEISHU_APP_SECRET="secret",
+        ):
+            ap.approval_sync(mock.Mock(), state)
+        return state, sends, applies
+
+    def test_no_credentials_skips_entirely(self):
+        # 凭据缺失：不调飞书接口直接返回（只巡检不审批，与独立容器时代一致）
+        state = {}
+        with mock.patch.multiple(ap, APPROVAL_QUOTA_CODE="", FEISHU_APP_ID="", FEISHU_APP_SECRET=""), \
+             mock.patch.object(ap, "feishu_get", side_effect=AssertionError("不应被调用")):
+            ap.approval_sync(mock.Mock(), state)
+        self.assertEqual(state, {})
+
+    def test_pending_not_marked(self):
+        state, sends, _ = self._run({"ic1": {"status": "PENDING"}})
+        self.assertEqual(state.get("approval_done"), [])
+        self.assertEqual(sends, [])
+
+    def test_approved_processed_and_marked(self):
+        inst = {"status": "APPROVED", "open_id": "ou_abc",
+                "form": '[{"custom_id": "widget_tier", "value": "高档"}]'}
+        state, sends, applies = self._run({"ic1": inst})
+        self.assertEqual(applies, [("ou_abc", "高档")])
+        self.assertEqual(state["approval_done"], ["ic1"])
+        self.assertEqual(len(sends), 1)
+        self.assertIn("审批通过", sends[0])
+
+    def test_approved_unrecognized_tier_receipt_no_apply(self):
+        inst = {"status": "APPROVED", "open_id": "ou_abc",
+                "form": '[{"custom_id": "widget_tier", "value": "随便"}]'}
+        state, sends, applies = self._run({"ic1": inst})
+        self.assertEqual(applies, [])  # 档位识别失败不执行，但仍回执并标记（同原实现）
+        self.assertEqual(state["approval_done"], ["ic1"])
+        self.assertIn("无法识别目标档位", sends[0])
+
+    def test_apply_failure_not_marked_for_retry(self):
+        inst = {"status": "APPROVED", "open_id": "ou_abc",
+                "form": '[{"custom_id": "widget_tier", "value": "高档"}]'}
+        state, sends, _ = self._run({"ic1": inst}, apply_side_effect=RuntimeError("gql down"))
+        self.assertEqual(state.get("approval_done"), [])  # 执行失败不标记，下轮重试
+        self.assertEqual(sends, [])
+
+    def test_rejected_receipt_and_marked(self):
+        state, sends, _ = self._run({"ic1": {"status": "REJECTED", "open_id": "ou_x"}})
+        self.assertEqual(state["approval_done"], ["ic1"])
+        self.assertIn("审批未通过", sends[0])
+
+    def test_canceled_marked_silently(self):
+        state, sends, _ = self._run({"ic1": {"status": "CANCELED"}})
+        self.assertEqual(state["approval_done"], ["ic1"])
+        self.assertEqual(sends, [])
+
+    def test_done_instances_skipped(self):
+        state, sends, applies = self._run(
+            {"ic1": {"status": "APPROVED", "open_id": "ou_abc", "form": "[]"}},
+            state={"approval_done": ["ic1"]},
+        )
+        self.assertEqual(applies, [])
+        self.assertEqual(sends, [])
+
+    def test_done_list_trimmed_to_200(self):
+        state = {"approval_done": [f"old{i}" for i in range(200)]}
+        state, _, _ = self._run({"new1": {"status": "CANCELED"}}, state=state)
+        self.assertEqual(len(state["approval_done"]), 200)
+        self.assertEqual(state["approval_done"][-1], "new1")
+        self.assertNotIn("old0", state["approval_done"])
+
+
+class TestCheckCycleDebounce(unittest.TestCase):
+    """check_cycle 防抖与恢复翻转（mock 探活 + gql + 发送）。"""
+
+    def _run_cycle(self, state, shim_ok, presidio_ok, send_ok=True):
+        sends = []
+
+        def fake_send(text):
+            sends.append(text)
+            return send_ok
+
+        with mock.patch.object(ap, "http_get", side_effect=[shim_ok, presidio_ok]), \
+             mock.patch.object(ap, "send_feishu", side_effect=fake_send):
+            new_state = ap.check_cycle(mock.Mock(), state)
+        return new_state, sends
+
+    def test_alert_then_steady_then_recover(self):
+        # 轮 1：presidio 挂 → 告警且状态翻转
+        state, sends = self._run_cycle({}, shim_ok=True, presidio_ok=False)
+        self.assertEqual(len(sends), 1)
+        self.assertIn("Presidio 不可达", sends[0])
+        self.assertTrue(state["dlp:presidio"])
+        self.assertNotIn("dlp:shim", state)  # 正常项不落状态
+        # 轮 2：仍挂 → 不重复发
+        state, sends = self._run_cycle(state, shim_ok=True, presidio_ok=False)
+        self.assertEqual(sends, [])
+        self.assertTrue(state["dlp:presidio"])
+        # 轮 3：恢复 → 发恢复通知且状态清除
+        state, sends = self._run_cycle(state, shim_ok=True, presidio_ok=True)
+        self.assertEqual(len(sends), 1)
+        self.assertIn("已恢复", sends[0])
+        self.assertFalse(state["dlp:presidio"])
+
+    def test_send_failure_keeps_state_for_retry(self):
+        # 发送失败不更新状态——下轮仍会尝试告警
+        state, sends = self._run_cycle({}, shim_ok=True, presidio_ok=False, send_ok=False)
+        self.assertEqual(len(sends), 1)
+        self.assertNotIn("dlp:presidio", state)
+        state, sends = self._run_cycle(state, shim_ok=True, presidio_ok=False)
+        self.assertEqual(len(sends), 1)  # 重试发出
+
+    def test_gql_failure_does_not_break_cycle(self):
+        # gql 全挂（axonhub 不可达）：探活 finding 仍产出，循环不抛异常
+        ax = mock.Mock()
+        ax.gql.side_effect = RuntimeError("axonhub down")
+        with mock.patch.object(ap, "http_get", return_value=True), \
+             mock.patch.object(ap, "send_feishu", return_value=True):
+            state = ap.check_cycle(ax, {})
+        self.assertEqual(state, {})
+
+
+class TestImportDoesNotStartThread(unittest.TestCase):
+    """隔离纪律（issue #56）：import alert_poller 不起巡检线程。"""
+
+    def test_no_poller_thread_on_import(self):
+        import threading
+        self.assertNotIn("alert-poller", [t.name for t in threading.enumerate()])
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -10,8 +10,7 @@
 | axonhub | `looplj/axonhub:v1.0.0-beta6`（digest `sha256:d41f3ca1…`） | pin 定 beta，不跟 latest/unstable |
 | PostgreSQL | `postgres:16-alpine`（digest `sha256:57c72fd2…`，实为 16.14） | axonhub 官方 compose 同款主版本 |
 | casdoor | `casbin/casdoor:3.133.0` | SSO 枢纽（issue #14）：飞书 OAuth → 标准 OIDC |
-| shim | 本地构建 `../shim`（python:3.12-slim + apt tesseract-ocr/chi-sim/eng（issue #50 OCR，apt 层 +109MB、镜像总 526MB，2026-08 实测）；pip pin PyMuPDF/python-docx/openpyxl/python-pptx/pytesseract/Pillow） | DLP 词表/PII 适配 + 飞书告警适配 `/feishu-alert`（issue #17）+ 统一配置 admin 平面 `/dlp-admin/*`（issue #31–#36） |
-| alert-poller | 本地构建 `../alert-poller`（python:3.12-alpine） | 告警巡检（issue #17）：DLP fail-open 探活 + 上游/员工额度轮询，30s 间隔 |
+| shim | 本地构建 `../shim`（python:3.12-slim + apt tesseract-ocr/chi-sim/eng（issue #50 OCR，apt 层 +109MB、镜像总 526MB，2026-08 实测）；pip pin PyMuPDF/python-docx/openpyxl/python-pptx/pytesseract/Pillow） | DLP 词表/PII 适配 + 飞书告警适配 `/feishu-alert`（issue #17）+ 统一配置 admin 平面 `/dlp-admin/*`（issue #31–#36）+ 告警巡检 daemon 线程（issue #56 并入原 alert-poller：fail-open 探活/渠道与 key 额度轮询/提额审批同步，30s，与检测路径隔离） |
 | mock-upstream（可选） | `python:3.12-alpine` | 仅无 OAuth 凭据时验证链路用 |
 
 ## 快速开始

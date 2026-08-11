@@ -9,6 +9,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 与 shim/requirements-dev.txt 一致）。PyMuPDF 提供 fitz（AGPL/商业双许可，私有部署内部使用）。
 RUN pip install --no-cache-dir PyMuPDF==1.28.2 python-docx==1.2.0 openpyxl==3.1.5 python-pptx==1.0.2 \
     pytesseract==0.3.13 Pillow==12.3.0
-COPY app.py admin_api.py edm_lib.py doc_extract.py ./
+COPY app.py admin_api.py edm_lib.py doc_extract.py alert_poller.py ./
 EXPOSE 8080
 CMD ["python3", "app.py"]
