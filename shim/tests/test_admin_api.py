@@ -1089,16 +1089,33 @@ class AdminEdmCorpusTest(unittest.TestCase):
 
 
 # 文件直传 fixture 复用提取器单测的现场造档函数（tests 目录已在 discover 路径上）
-from test_doc_extract import make_docx_bytes, make_pdf_bytes  # noqa: E402
+from test_doc_extract import (  # noqa: E402
+    _chi_sim_available,
+    _tesseract_available,
+    make_docx_bytes,
+    make_pdf_bytes,
+    make_png_bytes,
+    make_scanned_pdf_bytes,
+)
 
 # e2e 语料内容：单行 > 50 字符（shingle 多窗口）且 ≥12（行级通道），粘贴片段双通道可命中
 _UPLOAD_DOCX_PARAGRAPH = "q3 采购框架协议机密条款 供应商甲 违约金百分之二十 交付期四十五天 验收标准按附件三执行 争议提交上海仲裁委员会"
 _UPLOAD_PDF_LINE = "q3 confidential settlement memo ZX-77 ratio 0.831 tokenhub 0.917 internal"
 
 
+def _corpus_prefix(corpus_text, n=60):
+    """corpus 实存文本的归一化前缀（≥ shingle 窗口 50 字符）。OCR 输出以实存为准取片段，
+    与引擎对空格/标点的具体判定解耦，自洽保证 shingle 通道命中。"""
+    fragment = " ".join(corpus_text.split())[:n]
+    if len(fragment) < 50:
+        raise AssertionError(f"corpus 文本仅 {len(fragment)} 字符（< 50），OCR 提取量不足以构造 shingle 片段")
+    return fragment
+
+
 class AdminEdmCorpusUploadTest(unittest.TestCase):
-    """EDM 文件直传（issue #48）：POST /dlp-admin/edm/corpus/upload?name=&filename=（raw bytes）。
-    .docx/.pdf 提取文本建指纹 + 粘贴片段命中（检测侧同法断言）；.doc/图片/扫描 PDF 明确拒绝。"""
+    """EDM 文件直传（issue #48/#50）：POST /dlp-admin/edm/corpus/upload?name=&filename=（raw bytes）。
+    .docx/.pdf 提取文本、图片/扫描 PDF 走 OCR 建指纹 + 粘贴片段命中（检测侧同法断言）；
+    .doc/GIF/WebP/未知扩展名明确拒绝。"""
 
     def setUp(self):
         _FAKE_STATE["mode"] = "ok"
@@ -1158,10 +1175,10 @@ class AdminEdmCorpusUploadTest(unittest.TestCase):
         self._assert_fragment_hit("memopdf", _UPLOAD_PDF_LINE)
 
     def test_upload_rejections_400(self):
-        """明确拒绝（issue #48 验收）：老式 .doc → 提示另存 .docx；图片 → 提示需 OCR；未知扩展名 → 支持清单。"""
+        """明确拒绝（issue #48/#50）：老式 .doc → 提示另存 .docx；GIF/WebP → 提示转 PNG/JPG；未知扩展名 → 支持清单。"""
         cases = {
             "old.doc": (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1 ole", ".docx"),
-            "pic.png": (b"\x89PNG\r\n\x1a\n" + b"\x00" * 32, "OCR"),
+            "pic.gif": (b"GIF89a" + b"\x00" * 32, "PNG/JPG"),
             "a.zip": (b"PK\x03\x04" + b"\x00" * 32, ".pdf"),
         }
         for filename, (data, expect) in cases.items():
@@ -1171,11 +1188,12 @@ class AdminEdmCorpusUploadTest(unittest.TestCase):
                 self.assertIn(expect, body.get("error", ""))
         self.assertEqual(os.listdir(self.corpus_dir), [])  # 拒绝路径不落盘
 
-    def test_upload_scanned_pdf_ocr_400(self):
-        """扫描版 PDF（无内嵌文本）→ 400「扫描件需 OCR，暂不支持」。"""
+    def test_upload_blank_scanned_pdf_400(self):
+        """空白扫描页 PDF（issue #50 OCR 路径）：引擎缺失 → 400 OCR 不可用；
+        引擎可用 → OCR 全空 → 400 未提取到文本。两种环境都须干净 400。"""
         status, body = self._upload("scanpdf", "scan.pdf", make_pdf_bytes([""]))
         self.assertEqual(status, 400, body)
-        self.assertIn("扫描件需 OCR", body.get("error", ""))
+        self.assertTrue("OCR" in body.get("error", "") or "未提取到文本" in body.get("error", ""))
 
     def test_upload_bad_params_400(self):
         """name 非法 / 缺 filename → 400；body 空 → 400（空文件）。"""
@@ -1208,6 +1226,29 @@ class AdminEdmCorpusUploadTest(unittest.TestCase):
         status, body = self._upload("afterhuge", "a.docx", make_docx_bytes([_UPLOAD_DOCX_PARAGRAPH]))
         self.assertEqual(status, 200, body)
 
+    @unittest.skipUnless(_tesseract_available(), "本机无 tesseract 二进制")
+    def test_upload_scanned_pdf_e2e(self):
+        """扫描 PDF 直传（issue #50）：无文本层 PDF → OCR 提取 → 200 建指纹；取 corpus 实存文本片段命中。"""
+        data = make_scanned_pdf_bytes(["Q3 SCAN settlement memo ZX-99 ratio 0.777 tokenhub 0.888 scanonly"])
+        status, body = self._upload("scanmemo", "scan-memo.pdf", data)
+        self.assertEqual(status, 200, body)
+        self.assertGreater(body["shingle_count"], 0)
+        with open(os.path.join(self.corpus_dir, "scanmemo.txt"), encoding="utf-8") as f:
+            corpus_text = f.read()
+        self._assert_fragment_hit("scanmemo", _corpus_prefix(corpus_text))
+
+    @unittest.skipUnless(_chi_sim_available(), "本机无 tesseract chi_sim 语言包")
+    def test_upload_chinese_image_e2e(self):
+        """中文图片直传（issue #50）：chi_sim OCR → 200 建指纹；取 corpus 实存文本片段命中。"""
+        # 56 个中文字符无空格（避开 chi_sim 空格→引号误判），归一化后超 shingle 窗口 50 字符
+        data = make_png_bytes("机密采购合同供应商甲违约金百分之二十交付期四十五天验收标准按附件三执行争议提交上海仲裁委员会仲裁分期付款三期结清",
+                              fontname="china-s")
+        status, body = self._upload("cnimg", "采购.png", data)
+        self.assertEqual(status, 200, body)
+        with open(os.path.join(self.corpus_dir, "cnimg.txt"), encoding="utf-8") as f:
+            corpus_text = f.read()
+        self._assert_fragment_hit("cnimg", _corpus_prefix(corpus_text))
+
 
 class ShimLazyImportTest(unittest.TestCase):
     """无解析库环境 import 健壮性（issue #49 P2-7）：第三方解析库（fitz/docx/openpyxl/pptx）
@@ -1217,7 +1258,7 @@ class ShimLazyImportTest(unittest.TestCase):
         shim_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         code = (
             "import sys, importlib.abc\n"
-            "BLOCKED = {'fitz', 'pymupdf', 'docx', 'openpyxl', 'pptx'}\n"
+            "BLOCKED = {'fitz', 'pymupdf', 'docx', 'openpyxl', 'pptx', 'pytesseract', 'PIL'}\n"
             "class Block(importlib.abc.MetaPathFinder):\n"
             "    def find_spec(self, name, path=None, target=None):\n"
             "        if name.split('.')[0] in BLOCKED:\n"

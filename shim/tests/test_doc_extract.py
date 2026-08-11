@@ -78,6 +78,56 @@ def make_pdf_bytes(pages_text, fontname="helv") -> bytes:
     return buf.getvalue()
 
 
+def make_png_bytes(text, fontname="helv") -> bytes:
+    """fitz 渲染文字为 PNG 图片字节（无文本层，放大 2 倍利于 OCR）；
+    fontname='china-s' 可渲染中文（不依赖宿主 CJK 字体）。页面 3200pt 宽，容 ~60 个中文字符。"""
+    import fitz
+
+    doc = fitz.open()
+    page = doc.new_page(width=3200, height=300)
+    page.insert_text((60, 150), text, fontname=fontname, fontsize=48)
+    data = page.get_pixmap(matrix=fitz.Matrix(2, 2)).tobytes("png")
+    doc.close()
+    return data
+
+
+def make_scanned_pdf_bytes(pages_text, fontname="helv") -> bytes:
+    """文字渲染成图后存入新 PDF（无内嵌文本层），模拟扫描件。fontsize 16 保证长行不溢出页宽。"""
+    import fitz
+
+    src = fitz.open()
+    for t in pages_text:
+        page = src.new_page()
+        if t:
+            page.insert_text((72, 72), t, fontname=fontname, fontsize=16)
+    out = fitz.open()
+    for page in src:
+        pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+        new_page = out.new_page(width=page.rect.width, height=page.rect.height)
+        new_page.insert_image(new_page.rect, pixmap=pix)
+    buf = io.BytesIO()
+    out.save(buf)
+    out.close()
+    src.close()
+    return buf.getvalue()
+
+
+def _tesseract_available() -> bool:
+    import shutil
+
+    return shutil.which("tesseract") is not None
+
+
+def _chi_sim_available() -> bool:
+    import shutil
+    import subprocess
+
+    if not shutil.which("tesseract"):
+        return False
+    r = subprocess.run(["tesseract", "--list-langs"], capture_output=True, text=True)
+    return "chi_sim" in (r.stdout + r.stderr)
+
+
 # ---------------------------------------------------------------------------
 # 各格式提取
 # ---------------------------------------------------------------------------
@@ -176,10 +226,17 @@ class TestRejections(unittest.TestCase):
             dx.extract_text_from_bytes("old.doc", b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1 ole")
         self.assertIn(".docx", str(cm.exception))
 
-    def test_image(self):
-        with self.assertRaises(dx.UnsupportedDocumentError) as cm:
-            dx.extract_text_from_bytes("pic.png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
-        self.assertIn("OCR", str(cm.exception))
+    def test_gif_webp_image(self):
+        """GIF/WebP 不纳入 OCR 面（issue #50 范围 png/jpg/jpeg/bmp/tiff），明确报错转 PNG/JPG。"""
+        for fn in ("a.gif", "a.webp"):
+            with self.subTest(fn=fn), self.assertRaises(dx.UnsupportedDocumentError) as cm:
+                dx.extract_text_from_bytes(fn, b"GIF89a" + b"\x00" * 32)
+            self.assertIn("PNG/JPG", str(cm.exception))
+
+    def test_image_magic_mismatch(self):
+        """图片魔数校验：内容不是有效图片 → Corrupt（无需 tesseract）。"""
+        with self.assertRaises(dx.CorruptDocumentError):
+            dx.extract_text_from_bytes("pic.png", b"this is not a png at all.........")
 
     def test_unknown_extension(self):
         with self.assertRaises(dx.UnsupportedDocumentError):
@@ -198,13 +255,69 @@ class TestRejections(unittest.TestCase):
         with self.assertRaises(dx.CorruptDocumentError):
             dx.extract_text_from_bytes("f.docx", b"PK\x03\x04" + b"\x00" * 512)
 
-    def test_scanned_pdf_empty(self):
-        """扫描版 PDF（无内嵌文本）→ ScannedPdfError（EmptyDocumentError 子类，issue #49 P2-5）。"""
-        with self.assertRaises(dx.ScannedPdfError):
-            dx.extract_text_from_bytes("scan.pdf", make_pdf_bytes([""]))
-        # 兼容语义：仍是 EmptyDocumentError 子类
-        with self.assertRaises(dx.EmptyDocumentError):
-            dx.extract_text_from_bytes("scan.pdf", make_pdf_bytes([""]))
+    def test_scanned_pdf_blank_page_ocr_path(self):
+        """扫描版 PDF（空白页无文本层）走 OCR 路径（issue #50）：引擎缺失 → OcrUnavailableError；
+        引擎可用但全白页 → OCR 全空 → EmptyDocumentError。"""
+        data = make_pdf_bytes([""])
+        if _tesseract_available():
+            with self.assertRaises(dx.EmptyDocumentError):
+                dx.extract_text_from_bytes("scan.pdf", data)
+        else:
+            with self.assertRaises(dx.OcrUnavailableError):
+                dx.extract_text_from_bytes("scan.pdf", data)
+
+
+class TestOcrImage(unittest.TestCase):
+    """图片 OCR（issue #50）：fitz 现场渲染文字图片（不依赖宿主字体），真实走 Tesseract。"""
+
+    @unittest.skipUnless(_tesseract_available(), "本机无 tesseract 二进制")
+    def test_eng_image(self):
+        text = dx.extract_text_from_bytes("note.png", make_png_bytes("HELLO OCR 123"))
+        self.assertIn("HELLO", text)
+        self.assertIn("123", text)
+
+    @unittest.skipUnless(_chi_sim_available(), "本机无 tesseract chi_sim 语言包")
+    def test_chi_sim_image(self):
+        text = dx.extract_text_from_bytes("采购.png", make_png_bytes("机密采购合同", fontname="china-s"))
+        self.assertIn("机密", text)
+        self.assertIn("合同", text)
+
+    def test_tesseract_missing_degradation(self):
+        """tesseract 二进制缺失 → OcrUnavailableError 明确中文报错（mock 执行点，不依赖真实引擎）。"""
+        import pytesseract
+        from unittest import mock
+
+        with mock.patch("pytesseract.image_to_string",
+                        side_effect=pytesseract.TesseractNotFoundError):
+            with self.assertRaises(dx.OcrUnavailableError) as cm:
+                dx.extract_text_from_bytes("note.png", make_png_bytes("HELLO"))
+        self.assertIn("tesseract", str(cm.exception))
+
+    def test_ocr_empty_result(self):
+        """OCR 识别全空（低质量图）→ EmptyDocumentError（质量边界文案）。"""
+        from unittest import mock
+
+        with mock.patch("pytesseract.image_to_string", return_value="  \n "):
+            with self.assertRaises(dx.EmptyDocumentError):
+                dx.extract_text_from_bytes("note.png", make_png_bytes("HELLO"))
+
+
+class TestOcrScannedPdf(unittest.TestCase):
+    """扫描 PDF OCR（issue #50）：内嵌文本为空时渲染页图逐页识别。"""
+
+    @unittest.skipUnless(_tesseract_available(), "本机无 tesseract 二进制")
+    def test_scanned_pdf_with_text_image(self):
+        data = make_scanned_pdf_bytes(["CONFIDENTIAL SCAN 456"])
+        text = dx.extract_text_from_bytes("scan.pdf", data)
+        self.assertIn("CONFIDENTIAL", text)
+
+    def test_page_limit(self):
+        """OCR 页数上限 50：51 页无文本 PDF → 明确中文报错（在 OCR 调用前拦截，无需 tesseract）。"""
+        data = make_pdf_bytes([""] * 51)
+        with self.assertRaises(dx.EmptyDocumentError) as cm:
+            dx.extract_text_from_bytes("long.pdf", data)
+        self.assertIn("50", str(cm.exception))
+        self.assertIn("页", str(cm.exception))
 
 
 class TestExtractedTextCap(unittest.TestCase):

@@ -1,7 +1,8 @@
 /**
  * EDM 语料面板（issue #36）：GET/POST/DELETE /dlp-admin/edm/corpus[/<name>]。
  * 上传 = name + 全文（issue #47 起支持文件读入 .txt/.md/.text/.log 或直接粘贴；issue #48 起支持
- * .pdf/.docx/.xlsx/.pptx 直传——服务端解析提取文本后指纹化，前端不预览；服务端指纹化入库，
+ * .pdf/.docx/.xlsx/.pptx 直传、issue #50 起支持 .png/.jpg/.jpeg/.bmp/.tiff 图片与扫描 PDF——
+ * 服务端解析/OCR 提取文本后指纹化，前端不预览；服务端指纹化入库，
  * shingle+行级双通道，原文只存单向哈希轮廓）；删除二次确认（指纹库与 corpus 文件同步移除）。
  * 上传对话框 dirty（已输入未提交）经 onDirtyChange 上报（review #2，离开提示同款）。
  */
@@ -40,11 +41,11 @@ const NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
 const MAX_FILE_BYTES = 16 * 1024 * 1024;
 /** 文本类扩展名粗判（前端 FileReader 读入，可预览可编辑）；file.type 为 text/* 亦可（如 .markdown 扩展名） */
 const TEXT_EXT_RE = /\.(txt|md|text|log)$/i;
-/** Office 文档（issue #48，服务端解析提取文本，前端不预览） */
-const OFFICE_EXT_RE = /\.(pdf|docx|xlsx|pptx)$/i;
+/** 直传服务端解析的格式（issue #48 文档 + issue #50 图片 OCR），前端不预览 */
+const DIRECT_UPLOAD_EXT_RE = /\.(pdf|docx|xlsx|pptx|png|jpe?g|bmp|tiff?)$/i;
 /** 明确拒绝并给出指引的两类（与服务端报错同款文案，前端先拦少一次往返） */
 const LEGACY_DOC_EXT_RE = /\.doc$/i;
-const IMAGE_EXT_RE = /\.(png|jpe?g|gif|webp|bmp|tiff?)$/i;
+const GIF_WEBP_EXT_RE = /\.(gif|webp)$/i;
 
 function Ai4sEdmUploadDialog({
   onDirtyChange,
@@ -94,14 +95,16 @@ function Ai4sEdmUploadDialog({
       e.target.value = ''; // 复位，允许重选同一文件
       return;
     }
-    if (IMAGE_EXT_RE.test(picked.name)) {
-      setFormError(`「${picked.name}」是图片：需 OCR 提取文字，暂不支持，请导出为文本或文字版 PDF 后上传`);
+    if (GIF_WEBP_EXT_RE.test(picked.name)) {
+      setFormError(`「${picked.name}」是 GIF/WebP 图片，暂不支持：请转 PNG/JPG 后上传`);
       e.target.value = '';
       return;
     }
     const isText = TEXT_EXT_RE.test(picked.name) || picked.type.startsWith('text/');
-    if (!isText && !OFFICE_EXT_RE.test(picked.name)) {
-      setFormError(`「${picked.name}」不是支持的文件类型：支持 .txt/.md/.text/.log 纯文本与 .pdf/.docx/.xlsx/.pptx 文档`);
+    if (!isText && !DIRECT_UPLOAD_EXT_RE.test(picked.name)) {
+      setFormError(
+        `「${picked.name}」不是支持的文件类型：支持 .txt/.md/.text/.log 纯文本、.pdf/.docx/.xlsx/.pptx 文档与 .png/.jpg/.jpeg/.bmp/.tiff 图片`,
+      );
       e.target.value = '';
       return;
     }
@@ -165,12 +168,13 @@ function Ai4sEdmUploadDialog({
             <Input
               id='edm-upload-file'
               type='file'
-              accept='.txt,.md,.text,.log,.pdf,.docx,.xlsx,.pptx,text/plain,text/markdown'
+              accept='.txt,.md,.text,.log,.pdf,.docx,.xlsx,.pptx,.png,.jpg,.jpeg,.bmp,.tiff,.tif,text/plain,text/markdown,image/png,image/jpeg,image/bmp,image/tiff'
               onChange={onFilePick}
             />
             <p className='text-xs text-muted-foreground'>
-              支持 .txt/.md/.text/.log 纯文本（读入后自动填入下方全文与文档名，可再编辑）与
-              .pdf/.docx/.xlsx/.pptx 文档（服务端解析提取文本，不预览）；单文件 ≤ 16MB。扫描件 PDF 与图片需 OCR，暂不支持
+              支持 .txt/.md/.text/.log 纯文本（读入后自动填入下方全文与文档名，可再编辑）、.pdf/.docx/.xlsx/.pptx
+              文档与 .png/.jpg/.jpeg/.bmp/.tiff 图片（服务端解析，扫描件/图片走本地 OCR：中文印刷体识别一般、
+              手写体差、表格版面会丢失，均不预览）；单文件 ≤ 16MB
             </p>
           </div>
           <div className='space-y-1.5'>
