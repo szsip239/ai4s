@@ -828,6 +828,9 @@ if __name__ == "__main__":
     _s = load_settings()
     print(f"[settings] 配置来源: {'settings.json' if _s else 'env/内置默认（settings.json 缺失/损坏）'} path={SETTINGS_PATH}", flush=True)
     # 告警巡检 daemon 线程（issue #56：alert-poller 并入）：与检测路径隔离——
-    # 循环体整体 try/except，单轮异常只记日志；daemon 线程随主进程退出
+    # 循环体整体 try/except，单轮异常只记日志；daemon 线程随主进程退出。
+    # 先实例化 server 再 start_daemon（issue #57 P2-1 启动竞态）：ThreadingHTTPServer 构造即完成
+    # bind+listen，巡检线程首轮自探活 localhost:8080/healthz 不会抢在 bind 前误报 shim 不可达
+    server = ThreadingHTTPServer(("0.0.0.0", 8080), Handler)
     alert_poller.start_daemon()
-    ThreadingHTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+    server.serve_forever()

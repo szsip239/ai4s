@@ -30,6 +30,8 @@ import threading
 import time
 import urllib.request
 
+import admin_api  # 原子写复用（issue #57 P2-2）：唯一 tmp + .bak 滚动 + finally 清理
+
 AXONHUB_BASE = os.environ.get("AXONHUB_BASE", "http://axonhub:8090")
 ADMIN_EMAIL = os.environ.get("AXONHUB_ADMIN_EMAIL", "")
 ADMIN_PASSWORD = os.environ.get("AXONHUB_ADMIN_PASSWORD", "")
@@ -38,7 +40,22 @@ FEISHU_SECRET = os.environ.get("FEISHU_ALERT_SECRET", "")
 # issue #56：线程在 shim 进程内，探活默认自调本进程 HTTP 栈（真实验证服务活着，无新代码路径）
 SHIM_URL = os.environ.get("SHIM_URL", "http://localhost:8080")
 PRESIDIO_URL = os.environ.get("PRESIDIO_URL", "http://presidio:3000")
-POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "30"))
+
+
+def _env_int(name: str, default: int) -> int:
+    """env 整型宽容解析（app.py setting_value 同款纪律，issue #57 P1）：非法值落 default +
+    warning——模块级 int() 非法 env 会在 import 期炸掉整个 shim（检测路径全灭），import 永不抛。"""
+    v = os.environ.get(name, "")
+    if v == "":
+        return default
+    try:
+        return int(v)
+    except ValueError:
+        print(f"[alert] {name} 非法值（期望整数），回退默认 {default}", flush=True)
+        return default
+
+
+POLL_INTERVAL = _env_int("POLL_INTERVAL", 30)
 STATE_PATH = os.environ.get("STATE_PATH", "/state/alert-state.json")
 FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "")
 FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "")
@@ -273,11 +290,12 @@ def load_state() -> dict:
 
 
 def save_state(state: dict):
-    os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
-    tmp = STATE_PATH + ".tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(state, f)
-    os.replace(tmp, STATE_PATH)
+    # admin_api 原子写纪律（issue #57 P2-2）：唯一 tmp + .bak 滚动 + finally 清理，
+    # 读者只见完整旧版或完整新版；makedirs 对空 dirname 容错（STATE_PATH 被 env 覆写为纯文件名时）
+    d = os.path.dirname(STATE_PATH)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    admin_api.write_json_atomic(STATE_PATH, state)
 
 
 def now_str() -> str:

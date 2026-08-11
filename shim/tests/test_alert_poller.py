@@ -4,9 +4,13 @@
 seam 纪律：判定逻辑抽纯函数（quota_dims/classify_quota/flip_actions/parse_tier/approval_action）
 直接测；check_cycle/approval_sync 只在线路边界 mock（http_get / Axonhub.gql / feishu_get /
 send_feishu / apply_tier），不 mock 模块内部判定函数。
+issue #57 增补：POLL_INTERVAL 非法值 import 安全（P1）、save_state 原子写与纯文件名边角（P2-2）。
 """
+import json
 import os
+import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -265,6 +269,82 @@ class TestImportDoesNotStartThread(unittest.TestCase):
     def test_no_poller_thread_on_import(self):
         import threading
         self.assertNotIn("alert-poller", [t.name for t in threading.enumerate()])
+
+
+_SHIM_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+class TestPollIntervalImportSafety(unittest.TestCase):
+    """issue #57 P1：POLL_INTERVAL 非法值 import 不抛、生效默认 30；合法值正常生效。
+    用子进程隔离——模块级 env 解析只发生在 import 时，主测试进程已 import 过。"""
+
+    def _import_with(self, interval: str):
+        code = (
+            "import sys; sys.path.insert(0, " + repr(_SHIM_DIR) + ");"
+            "import alert_poller; print('INTERVAL=' + str(alert_poller.POLL_INTERVAL))"
+        )
+        return subprocess.run(
+            [sys.executable, "-c", code],
+            env={**os.environ, "POLL_INTERVAL": interval},
+            capture_output=True, text=True, timeout=30,
+        )
+
+    def test_invalid_falls_back_30_with_warning(self):
+        r = self._import_with("abc")
+        self.assertEqual(r.returncode, 0, r.stderr)  # import 不抛
+        self.assertIn("INTERVAL=30", r.stdout)
+        self.assertIn("POLL_INTERVAL", r.stdout)  # warning 打出（不含非法值本身之外的信息）
+
+    def test_valid_value_honored(self):
+        r = self._import_with("7")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("INTERVAL=7", r.stdout)
+
+    def test_empty_default_30(self):
+        r = self._import_with("")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("INTERVAL=30", r.stdout)
+
+
+class TestSaveState(unittest.TestCase):
+    """issue #57 P2-2：save_state 对齐原子写惯例（唯一 tmp + .bak 滚动 + finally）。"""
+
+    def test_atomic_write_with_bak_rollover(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "alert-state.json")
+            with mock.patch.object(ap, "STATE_PATH", path):
+                ap.save_state({"v": 1})
+                with open(path, encoding="utf-8") as f:
+                    self.assertEqual(json.load(f), {"v": 1})
+                ap.save_state({"v": 2})
+                with open(path, encoding="utf-8") as f:
+                    self.assertEqual(json.load(f), {"v": 2})
+                # .bak 保留上一版（写前备份）
+                with open(path + ".bak", encoding="utf-8") as f:
+                    self.assertEqual(json.load(f), {"v": 1})
+                # 无 tmp 残留（finally 清理）
+                self.assertEqual([f for f in os.listdir(td) if ".tmp" in f], [])
+
+    def test_plain_filename_no_dirname(self):
+        # STATE_PATH 被 env 覆写为纯文件名（dirname 为空）：makedirs 容错不抛，状态正常落盘
+        with tempfile.TemporaryDirectory() as td:
+            cwd = os.getcwd()
+            os.chdir(td)
+            try:
+                with mock.patch.object(ap, "STATE_PATH", "alert-state.json"):
+                    ap.save_state({"ok": True})
+                with open("alert-state.json", encoding="utf-8") as f:
+                    self.assertEqual(json.load(f), {"ok": True})
+            finally:
+                os.chdir(cwd)
+
+    def test_nested_dir_created(self):
+        with tempfile.TemporaryDirectory() as td:
+            path = os.path.join(td, "sub", "dir", "alert-state.json")
+            with mock.patch.object(ap, "STATE_PATH", path):
+                ap.save_state({"ok": True})
+            with open(path, encoding="utf-8") as f:
+                self.assertEqual(json.load(f), {"ok": True})
 
 
 if __name__ == "__main__":
