@@ -6,6 +6,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import { apiRequest } from '@/lib/api-client';
+import { getTokenFromStorage } from '@/stores/authStore';
 
 /**
  * 本层统一错误：携带 HTTP status（如 settings 缺失 404=env 兜底态），供调用方按状态码判定而非文案。
@@ -153,6 +154,35 @@ function del<T>(path: string): Promise<T> {
   return call(() => apiRequest<T>(`${BASE}${path}`, { method: 'DELETE', requireAuth: true }));
 }
 
+/** 文件直传（issue #48）：raw bytes body（application/octet-stream），apiRequest 只发 JSON 故单独写；
+ * 鉴权与 apiRequest requireAuth 同机制（Bearer 取 localStorage），错误形状 {"error": "原因"} 提取进 Error.message */
+async function postFile<T>(path: string, file: File): Promise<T> {
+  return call(async () => {
+    const token = getTokenFromStorage();
+    const resp = await fetch(`${BASE}${path}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: file,
+    });
+    if (!resp.ok) {
+      let message = `HTTP ${resp.status}: ${resp.statusText}`;
+      try {
+        const data: unknown = await resp.json();
+        if (data && typeof data === 'object' && 'error' in data && typeof data.error === 'string') {
+          message = data.error;
+        }
+      } catch {
+        // 非 JSON 错误体：保留 HTTP 状态文案
+      }
+      throw new Error(message);
+    }
+    return (await resp.json()) as T;
+  });
+}
+
 /** 写操作失败统一 toast（API error 原因带在 description） */
 function onMutError(action: string) {
   return (e: unknown) =>
@@ -242,6 +272,23 @@ export function useUploadEdmDoc() {
   return useMutation({
     mutationFn: ({ name, text }: { name: string; text: string }) =>
       post<{ name: string; shingle_count: number; line_count: number }>('/edm/corpus', { name, text }),
+    onSuccess: async (data) => {
+      await qc.invalidateQueries({ queryKey: QK.edmCorpus });
+      toast.success(`语料 ${data.name} 已入库：shingle ${data.shingle_count} / 行级 ${data.line_count} 指纹`);
+    },
+    onError: onMutError('语料上传'),
+  });
+}
+
+/** 文件直传（issue #48）：.pdf/.docx/.xlsx/.pptx 服务端解析提取文本后指纹化，响应形状与粘贴路径一致 */
+export function useUploadEdmFile() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ name, file }: { name: string; file: File }) =>
+      postFile<{ name: string; shingle_count: number; line_count: number }>(
+        `/edm/corpus/upload?name=${encodeURIComponent(name)}&filename=${encodeURIComponent(file.name)}`,
+        file,
+      ),
     onSuccess: async (data) => {
       await qc.invalidateQueries({ queryKey: QK.edmCorpus });
       toast.success(`语料 ${data.name} 已入库：shingle ${data.shingle_count} / 行级 ${data.line_count} 指纹`);

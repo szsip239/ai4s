@@ -96,6 +96,19 @@ def _get(path, token=None, scheme="Bearer"):
     return _request("GET", path, token=token, scheme=scheme)
 
 
+def _request_raw(method, path, token=None, data=b"", content_type="application/octet-stream"):
+    """raw bytes 请求体（issue #48 文件直传）；返回 (status, json body)。"""
+    req = urllib.request.Request(_SHIM_BASE + path, data=data, method=method)
+    req.add_header("Content-Type", content_type)
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status, json.load(r)
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read() or b"{}")
+
+
 class AdminApiTest(unittest.TestCase):
     def setUp(self):
         # 每用例复位假 axonhub 行为
@@ -1074,6 +1087,116 @@ class AdminEdmCorpusTest(unittest.TestCase):
         self.assertIn("超限", body.get("error", ""))
 
 
+# 文件直传 fixture 复用提取器单测的现场造档函数（tests 目录已在 discover 路径上）
+from test_doc_extract import make_docx_bytes, make_pdf_bytes  # noqa: E402
+
+# e2e 语料内容：单行 > 50 字符（shingle 多窗口）且 ≥12（行级通道），粘贴片段双通道可命中
+_UPLOAD_DOCX_PARAGRAPH = "q3 采购框架协议机密条款 供应商甲 违约金百分之二十 交付期四十五天 验收标准按附件三执行 争议提交上海仲裁委员会"
+_UPLOAD_PDF_LINE = "q3 confidential settlement memo ZX-77 ratio 0.831 tokenhub 0.917 internal"
+
+
+class AdminEdmCorpusUploadTest(unittest.TestCase):
+    """EDM 文件直传（issue #48）：POST /dlp-admin/edm/corpus/upload?name=&filename=（raw bytes）。
+    .docx/.pdf 提取文本建指纹 + 粘贴片段命中（检测侧同法断言）；.doc/图片/扫描 PDF 明确拒绝。"""
+
+    def setUp(self):
+        _FAKE_STATE["mode"] = "ok"
+        _FAKE_STATE["tokens"] = {
+            "reader-token": {"id": "42", "isOwner": False, "scopes": ["read_channels"]},
+            "writer-token": {"id": "7", "isOwner": False, "scopes": ["read_channels", "write_channels"]},
+        }
+        self._tmp = tempfile.TemporaryDirectory()
+        d = self._tmp.name
+        self.fp_path = os.path.join(d, "fingerprints.json")
+        self.corpus_dir = os.path.join(d, "corpus")
+        os.makedirs(self.corpus_dir)
+        with open(self.fp_path, "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "docs": {}}, f)
+        self._saved = (admin_api.EDM_FP_PATH, admin_api.EDM_CORPUS_DIR)
+        admin_api.EDM_FP_PATH = self.fp_path
+        admin_api.EDM_CORPUS_DIR = self.corpus_dir
+
+    def tearDown(self):
+        admin_api.EDM_FP_PATH, admin_api.EDM_CORPUS_DIR = self._saved
+        self._tmp.cleanup()
+
+    def _upload(self, name, filename, data, token="writer-token"):
+        import urllib.parse
+        qs = urllib.parse.urlencode({"name": name, "filename": filename})
+        return _request_raw("POST", f"/dlp-admin/edm/corpus/upload?{qs}", token=token, data=data)
+
+    def _stored_doc(self, name):
+        with open(self.fp_path, encoding="utf-8") as f:
+            return json.load(f)["docs"][name]
+
+    def _assert_fragment_hit(self, name, fragment):
+        """粘贴 fragment（文档真实片段）对库中指纹的命中数 ≥ 2（检测侧 app.edm_hit_count 同法）。"""
+        doc = self._stored_doc(name)
+        hits = shim_app.edm_hit_count(fragment, (set(doc["shingles"]), set(doc["lines"])))
+        self.assertGreaterEqual(hits, 2)
+
+    def test_upload_docx_e2e(self):
+        """直传 .docx → 200 建指纹 + corpus 落提取文本；粘贴文中片段命中（双通道达阈 2）。"""
+        data = make_docx_bytes([_UPLOAD_DOCX_PARAGRAPH, "第二条 保密义务与审计配合"])
+        status, body = self._upload("q3contract", "采购协议.docx", data)
+        self.assertEqual(status, 200, body)
+        self.assertEqual(body["name"], "q3contract")
+        self.assertGreater(body["shingle_count"], 0)
+        self.assertGreater(body["line_count"], 0)
+        with open(os.path.join(self.corpus_dir, "q3contract.txt"), encoding="utf-8") as f:
+            stored_text = f.read()
+        self.assertIn(_UPLOAD_DOCX_PARAGRAPH, stored_text)
+        self._assert_fragment_hit("q3contract", _UPLOAD_DOCX_PARAGRAPH)
+
+    def test_upload_pdf_e2e(self):
+        """直传文字版 .pdf → 200 建指纹；粘贴 PDF 行片段命中。"""
+        data = make_pdf_bytes([_UPLOAD_PDF_LINE])
+        status, body = self._upload("memopdf", "memo.pdf", data)
+        self.assertEqual(status, 200, body)
+        self.assertGreater(body["shingle_count"], 0)
+        self._assert_fragment_hit("memopdf", _UPLOAD_PDF_LINE)
+
+    def test_upload_rejections_400(self):
+        """明确拒绝（issue #48 验收）：老式 .doc → 提示另存 .docx；图片 → 提示需 OCR；未知扩展名 → 支持清单。"""
+        cases = {
+            "old.doc": (b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1 ole", ".docx"),
+            "pic.png": (b"\x89PNG\r\n\x1a\n" + b"\x00" * 32, "OCR"),
+            "a.zip": (b"PK\x03\x04" + b"\x00" * 32, ".pdf"),
+        }
+        for filename, (data, expect) in cases.items():
+            with self.subTest(filename=filename):
+                status, body = self._upload("rejectdoc", filename, data)
+                self.assertEqual(status, 400, body)
+                self.assertIn(expect, body.get("error", ""))
+        self.assertEqual(os.listdir(self.corpus_dir), [])  # 拒绝路径不落盘
+
+    def test_upload_scanned_pdf_ocr_400(self):
+        """扫描版 PDF（无内嵌文本）→ 400「扫描件需 OCR，暂不支持」。"""
+        status, body = self._upload("scanpdf", "scan.pdf", make_pdf_bytes([""]))
+        self.assertEqual(status, 400, body)
+        self.assertIn("扫描件需 OCR", body.get("error", ""))
+
+    def test_upload_bad_params_400(self):
+        """name 非法 / 缺 filename → 400；body 空 → 400（空文件）。"""
+        data = make_docx_bytes([_UPLOAD_DOCX_PARAGRAPH])
+        status, body = self._upload("bad/name", "a.docx", data)
+        self.assertEqual(status, 400)
+        status, body = _request_raw("POST", "/dlp-admin/edm/corpus/upload?name=nofn",
+                                    token="writer-token", data=data)
+        self.assertEqual(status, 400)
+        self.assertIn("filename", body.get("error", ""))
+        status, body = self._upload("emptydoc", "a.docx", b"")
+        self.assertEqual(status, 400)
+
+    def test_upload_auth(self):
+        """直传走写级鉴权：无 token → 401；只读 token → 403。"""
+        data = make_docx_bytes([_UPLOAD_DOCX_PARAGRAPH])
+        status, _ = self._upload("authdoc", "a.docx", data, token=None)
+        self.assertEqual(status, 401)
+        status, _ = self._upload("authdoc", "a.docx", data, token="reader-token")
+        self.assertEqual(status, 403)
+
+
 class EdmLibParityTest(unittest.TestCase):
     """edm_lib 收编等价裁判（issue #34）：入库与检测同法（契约铁律）。
     现 fingerprints.json 对现 corpus 逐文件重算并集，须与磁盘条目一致（真实库只读，不写）。"""
@@ -1092,7 +1215,10 @@ class EdmLibParityTest(unittest.TestCase):
         for fn in sorted(os.listdir(corpus_dir)):
             if fn.startswith(".") or fn.endswith((".bak", ".tmp")):
                 continue
-            with open(os.path.join(corpus_dir, fn), encoding="utf-8", errors="ignore") as f:
+            fp = os.path.join(corpus_dir, fn)
+            if not os.path.isfile(fp):
+                continue  # 子目录（如试点演练 pilot/）跳过：只逐文件重算
+            with open(fp, encoding="utf-8", errors="ignore") as f:
                 fps = edm_lib.doc_fingerprints(f.read())
             hashes |= set(fps["shingles"])
             lhashes |= set(fps["lines"])

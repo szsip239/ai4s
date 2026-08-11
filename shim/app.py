@@ -10,7 +10,8 @@
 检测职责划分：
   - 非 CJK 词：Presidio /analyze（ad-hoc deny-list recognizer 随请求注入，词表热更新）
   - CJK 词：shim 直配兜底（Presidio deny-list 依赖 NLP 分词，中文不可靠）
-依赖仅标准库，镜像 python:3.12-alpine。
+本模块（检测路径）依赖仅标准库；镜像 python:3.12-slim（issue #48 起含 doc_extract 文档解析依赖，
+检测路径不 import 第三方库，纪律不变）。
 """
 import base64
 import hashlib

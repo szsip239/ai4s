@@ -3,10 +3,13 @@
 
 issue #31 骨架：healthz/ping、内省鉴权（读 read_channels / 写 write_channels，isOwner 直通）、write_json_atomic（.bak 滚动）。
 issue #32 配置面 CRUD：wordlist GET/PUT（整体替换 terms）、recognizers GET/POST/PUT/DELETE（regex 过 re.compile 校验）。
+issue #48 EDM 文件直传：POST /dlp-admin/edm/corpus/upload?name=&filename=（raw bytes），
+doc_extract 提取文本后与粘贴路径（POST /dlp-admin/edm/corpus）汇入同一 ingest。
 
 与检测路径（/request /response 调用链）完全隔离：admin 平面 fail-closed——
 内省不可达回 503，不适用检测链的 fail-open 分级（契约 docs/contracts/dlp-webhook-shim.md）。
-依赖仅标准库（同 app.py 纪律，镜像 python:3.12-alpine）。
+本模块自身仅标准库；doc_extract 的文档解析依赖第三方库（PyMuPDF/python-docx/openpyxl/
+python-pptx，全 manylinux wheel），检测路径 app.py 不受影响（仍纯 stdlib）。
 """
 import json
 import os
@@ -15,8 +18,10 @@ import shutil
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
+import doc_extract  # EDM 文档文本提取（issue #48，自研）：PDF/DOCX/XLSX/PPTX → 纯文本
 import edm_lib  # EDM 指纹算法共享库（issue #34）：入库/检测同法（契约铁律）
 
 # axonhub 内省端点（容器内默认同栈服务名；测试经环境变量指向本地假服务）
@@ -106,9 +111,8 @@ def _load_json_file(path):
         return None
 
 
-def _read_body(handler, max_body=_MAX_ADMIN_BODY):
-    """读 admin 请求体 JSON；超限 → 已回 413，非法 → 已回 400，返回 None。
-    路由级上限（review #5）：默认 _MAX_ADMIN_BODY（1MB），EDM corpus POST 放宽 _MAX_EDM_BODY。
+def _read_raw_body(handler, max_body):
+    """读 admin 请求体原始字节；超限 → 已回 413 并返回 None。
     超限先分块 drain 再响应——否则客户端发送中途断连，看到 BrokenPipe 而非干净 413。"""
     raw_len = int(handler.headers.get("Content-Length") or 0)
     if raw_len > max_body:
@@ -120,8 +124,17 @@ def _read_body(handler, max_body=_MAX_ADMIN_BODY):
             remaining -= len(chunk)
         _respond(handler, 413, {"error": f"body 超限: {raw_len} 字节 > 上限 {max_body}"})
         return None
+    return handler.rfile.read(raw_len)
+
+
+def _read_body(handler, max_body=_MAX_ADMIN_BODY):
+    """读 admin 请求体 JSON；超限 → 已回 413，非法 → 已回 400，返回 None。
+    路由级上限（review #5）：默认 _MAX_ADMIN_BODY（1MB），EDM corpus POST 放宽 _MAX_EDM_BODY。"""
+    raw = _read_raw_body(handler, max_body)
+    if raw is None:
+        return None
     try:
-        return json.loads(handler.rfile.read(raw_len) or b"{}")
+        return json.loads(raw or b"{}")
     except Exception:
         _respond(handler, 400, {"error": "invalid JSON body"})
         return None
@@ -580,21 +593,10 @@ def _edm_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def _edm_corpus_post(handler, _me):
-    """POST 新增 EDM 语料文档（issue #34）：name/text 校验 → corpus 原文原子写 →
-    该文档指纹全量重算并入 fingerprints.json（不动其他文档）→ 原子写。
-    指纹写失败时回滚删 corpus 文件，两侧不留半更新。"""
-    payload = _read_body(handler, _MAX_EDM_BODY)  # EDM 文档放宽 16MB（review #5）
-    if payload is None:
-        return
-    name = payload.get("name") if isinstance(payload, dict) else None
-    if not isinstance(name, str) or not _EDM_NAME_RE.match(name):
-        _respond(handler, 400, {"error": "name 必须匹配 [A-Za-z0-9_.-]{1,64}"})
-        return
-    text = payload.get("text")
-    if not isinstance(text, str) or not text.strip():
-        _respond(handler, 400, {"error": "text 必须是非空字符串"})
-        return
+def _edm_ingest_text(handler, name: str, text: str):
+    """EDM 语料入库共用段（粘贴 JSON 与文件直传两条上传路径汇入，issue #48）：
+    text 校验 → corpus 原文原子写 → 该文档指纹全量重算并入 fingerprints.json（不动其他文档）
+    → 原子写。指纹写失败时回滚删 corpus 文件，两侧不留半更新。"""
     if len(edm_lib.normalize(text)) < _EDM_MIN_TEXT:
         _respond(handler, 400, {"error": f"text 过短：归一化后不足 {_EDM_MIN_TEXT} 字符，无法产生有效行级指纹"
                                           "（整段 shingle 单指纹也达不到命中阈值 2，入库即死规则）"})
@@ -631,6 +633,55 @@ def _edm_corpus_post(handler, _me):
         return
     _respond(handler, 200, {"name": name, "shingle_count": len(fps["shingles"]),
                             "line_count": len(fps["lines"]), "added_at": now})
+
+
+def _edm_corpus_post(handler, _me):
+    """POST 新增 EDM 语料文档（issue #34，粘贴路径）：name/text 校验后汇入 _edm_ingest_text。"""
+    payload = _read_body(handler, _MAX_EDM_BODY)  # EDM 文档放宽 16MB（review #5）
+    if payload is None:
+        return
+    name = payload.get("name") if isinstance(payload, dict) else None
+    if not isinstance(name, str) or not _EDM_NAME_RE.match(name):
+        _respond(handler, 400, {"error": "name 必须匹配 [A-Za-z0-9_.-]{1,64}"})
+        return
+    text = payload.get("text")
+    if not isinstance(text, str) or not text.strip():
+        _respond(handler, 400, {"error": "text 必须是非空字符串"})
+        return
+    _edm_ingest_text(handler, name, text)
+
+
+def _edm_corpus_upload_post(handler, _me):
+    """POST 文件直传 EDM 语料（issue #48）：raw bytes body（application/octet-stream），
+    ?name=<入库名>&filename=<原始文件名>。doc_extract 按扩展名提取文本
+    （PDF/DOCX/XLSX/PPTX 解析，文本类多编码解码）后汇入 _edm_ingest_text；
+    提取不截断——16MB 已由 HTTP 体上限拦截，取全文保证指纹完整。
+    .doc/图片/扫描 PDF 等明确拒绝，错误文案用户可见。"""
+    qs = urllib.parse.parse_qs(urllib.parse.urlsplit(handler.path).query)
+    name = (qs.get("name") or [""])[0]
+    filename = (qs.get("filename") or [""])[0]
+    if not _EDM_NAME_RE.match(name):
+        _respond(handler, 400, {"error": "name 必须匹配 [A-Za-z0-9_.-]{1,64}"})
+        return
+    if not filename:
+        _respond(handler, 400, {"error": "缺少 filename 参数（取扩展名决定解析方式）"})
+        return
+    data = _read_raw_body(handler, _MAX_EDM_BODY)
+    if data is None:
+        return
+    try:
+        text = doc_extract.extract_text_from_bytes(filename, data)
+    except doc_extract.EmptyDocumentError as e:
+        if "未提取到文本" in str(e) and filename.lower().endswith(".pdf"):
+            _respond(handler, 400, {"error": f"「{filename}」未提取到文本：扫描件需 OCR，暂不支持"
+                                              "（请用文字版 PDF 或导出文本后上传）"})
+        else:
+            _respond(handler, 400, {"error": str(e)})
+        return
+    except doc_extract.DocumentExtractionError as e:
+        _respond(handler, 400, {"error": str(e)})
+        return
+    _edm_ingest_text(handler, name, text)
 
 
 def _edm_corpus_delete_item(handler, _me, name):
@@ -788,6 +839,7 @@ _ROUTES = {
     ("POST", "/dlp-admin/format-rules/render"): ("write", _format_rules_render_post),
     ("GET", "/dlp-admin/edm/corpus"): ("read", _edm_corpus_get),
     ("POST", "/dlp-admin/edm/corpus"): ("write", _edm_corpus_post),
+    ("POST", "/dlp-admin/edm/corpus/upload"): ("write", _edm_corpus_upload_post),
     ("GET", "/dlp-admin/settings"): ("read", _settings_get),
     ("PUT", "/dlp-admin/settings"): ("write", _settings_put),
 }
