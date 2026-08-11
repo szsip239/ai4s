@@ -6,6 +6,7 @@ import {
   IconShield,
   IconFileText,
   IconFolders,
+  IconUsersGroup,
   IconUsers,
   IconDatabase,
   IconSettings,
@@ -16,8 +17,10 @@ import { cn } from '@/lib/utils';
  * ai4s 顶部导航（C 结构）
  * 全部条目内联展示：图标 + 中文标签；激活项 = accent-soft 底 + accent 字（与 C×W token 联动）。
  * 新增代码按 vendor 隔离规则只落 src/ai4s/。
- * issue #54 归并（11→9）：渠道管理+模型 →「接入管理」（页内 Tab 切换），用户+角色 →「用户与角色」；
- * 审计日志域的用量统计/追踪/线程、项目成员的用户/角色同样经各页 Ai4sPageTabs 可达。
+ * issue #54 归并：渠道管理+模型 →「接入管理」（页内 Tab 切换），用户+角色 →「用户与角色」；
+ * 观测域的用量统计/追踪/线程、成员域的用户/角色同样经各页 Ai4sPageTabs 可达。
+ * issue #55 收尾：「审计日志」统一为「观测」（与 ⌘K 域名一致）；补「成员」入口
+ * （/project/users、/project/roles 直达时顶栏有激活项）。
  */
 
 const NAV_ITEMS = [
@@ -25,8 +28,9 @@ const NAV_ITEMS = [
   { title: '我的 Key', href: '/project/api-keys', match: ['/project/api-keys'], icon: IconKey },
   { title: '接入管理', href: '/channels', match: ['/channels', '/models'], icon: IconRoute },
   { title: '脱敏规则', href: '/prompt-protection-rules', match: ['/prompt-protection-rules'], icon: IconShield },
-  { title: '审计日志', href: '/project/requests', match: ['/project/requests', '/project/usage-stats', '/project/traces', '/project/threads'], icon: IconFileText },
+  { title: '观测', href: '/project/requests', match: ['/project/requests', '/project/usage-stats', '/project/traces', '/project/threads'], icon: IconFileText },
   { title: '项目', href: '/projects', match: ['/projects'], icon: IconFolders },
+  { title: '成员', href: '/project/users', match: ['/project/users', '/project/roles'], icon: IconUsersGroup },
   { title: '用户与角色', href: '/users', match: ['/users', '/roles'], icon: IconUsers },
   { title: '数据存储', href: '/data-storages', match: ['/data-storages'], icon: IconDatabase },
   { title: '系统设置', href: '/system', match: ['/system'], icon: IconSettings },
