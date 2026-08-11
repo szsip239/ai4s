@@ -6,6 +6,8 @@ import { usePaginationSearch } from '@/hooks/use-pagination-search';
 import useInterval from '@/hooks/useInterval';
 import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
+import { Ai4sPageTabs } from '@/ai4s/components/Ai4sPageTabs';
+import { pageTabGroups } from '@/ai4s/components/page-tab-groups';
 import { TracesTable } from './components';
 import { TracesProvider } from './context';
 import { useTraces } from './data';
@@ -146,6 +148,7 @@ export default function TracesManagement() {
       </Header>
 
       <Main fixed>
+        <Ai4sPageTabs tabs={pageTabGroups.observability(t)} />
         <TracesContent />
       </Main>
     </TracesProvider>

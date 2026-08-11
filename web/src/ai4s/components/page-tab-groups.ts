@@ -1,0 +1,38 @@
+import { type LinkProps } from '@tanstack/react-router';
+
+/**
+ * 页内 Tab 项（issue #54 侧栏归并）：label 为已翻译文案，url 为目标路由（routeTree 强类型）。
+ */
+export interface PageTab {
+  label: string;
+  url: LinkProps['to'];
+}
+
+/**
+ * 页内 Tab 组定义：同域页面共享一组，各页调用时传入 t() 取文案。
+ * label 复用 sidebar.items.* 既有 locale 键（与侧栏同源，不产生新翻译负担）。
+ */
+export const pageTabGroups = {
+  /** 接入管理：渠道 | 模型 */
+  access: (t: (key: string) => string): PageTab[] => [
+    { label: t('sidebar.items.channels'), url: '/channels' },
+    { label: t('sidebar.items.models'), url: '/models' },
+  ],
+  /** 用户与角色（管理组）：用户 | 角色 */
+  usersRoles: (t: (key: string) => string): PageTab[] => [
+    { label: t('sidebar.items.users'), url: '/users' },
+    { label: t('sidebar.items.roles'), url: '/roles' },
+  ],
+  /** 观测（项目组）：请求 | 用量统计 | 追踪 | 线程 */
+  observability: (t: (key: string) => string): PageTab[] => [
+    { label: t('sidebar.items.requests'), url: '/project/requests' },
+    { label: t('sidebar.items.usageStats'), url: '/project/usage-stats' },
+    { label: t('sidebar.items.traces'), url: '/project/traces' },
+    { label: t('sidebar.items.threads'), url: '/project/threads' },
+  ],
+  /** 成员（项目组）：用户 | 角色 */
+  members: (t: (key: string) => string): PageTab[] => [
+    { label: t('sidebar.items.users'), url: '/project/users' },
+    { label: t('sidebar.items.roles'), url: '/project/roles' },
+  ],
+};

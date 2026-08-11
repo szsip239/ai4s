@@ -8,6 +8,8 @@ import { useHorizontalScroll } from '@/hooks/use-horizontal-scroll';
 import { Button } from '@/components/ui/button';
 import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
+import { Ai4sPageTabs } from '@/ai4s/components/Ai4sPageTabs';
+import { pageTabGroups } from '@/ai4s/components/page-tab-groups';
 import { PermissionGuard } from '@/components/permission-guard';
 import { useOnboardingInfo } from '@/features/system/data/system';
 import { createColumns } from './components/models-columns';
@@ -174,6 +176,7 @@ export default function ModelsManagement() {
       </Header>
 
       <Main fixed>
+        <Ai4sPageTabs tabs={pageTabGroups.access(t)} />
         <ModelsContent />
       </Main>
       <ModelsDialogs />

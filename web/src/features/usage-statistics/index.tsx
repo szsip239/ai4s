@@ -4,6 +4,8 @@ import { Search, Loader2 } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
+import { Ai4sPageTabs } from '@/ai4s/components/Ai4sPageTabs';
+import { pageTabGroups } from '@/ai4s/components/page-tab-groups';
 import { Button } from '@/components/ui/button';
 import { DateRangePicker, type DateTimeRangeValue } from '@/components/date-range-picker';
 import { buildDateRangeWhereClause } from '@/utils/date-range';
@@ -91,6 +93,7 @@ export default function UsageStatisticsPage() {
       </Header>
 
       <Main fixed className='flex flex-col'>
+        <Ai4sPageTabs tabs={pageTabGroups.observability(t)} />
         <div className='flex items-center justify-between gap-4 mb-4 flex-shrink-0'>
           <div className='flex items-center gap-2'>
             <div className='relative w-72'>

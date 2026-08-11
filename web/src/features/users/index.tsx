@@ -5,6 +5,8 @@ import { usePaginationSearch } from '@/hooks/use-pagination-search';
 import { usePermissions } from '@/hooks/usePermissions';
 import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
+import { Ai4sPageTabs } from '@/ai4s/components/Ai4sPageTabs';
+import { pageTabGroups } from '@/ai4s/components/page-tab-groups';
 import { createColumns } from './components/users-columns';
 import { UsersDialogs } from './components/users-dialogs';
 import { UsersPrimaryButtons } from './components/users-primary-buttons';
@@ -115,6 +117,7 @@ export default function UsersManagement() {
       </Header>
 
       <Main fixed>
+        <Ai4sPageTabs tabs={pageTabGroups.usersRoles(t)} />
         <UsersContent />
       </Main>
       <UsersDialogs />

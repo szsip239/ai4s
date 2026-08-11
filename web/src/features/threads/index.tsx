@@ -6,6 +6,8 @@ import { usePaginationSearch } from '@/hooks/use-pagination-search';
 import useInterval from '@/hooks/useInterval';
 import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
+import { Ai4sPageTabs } from '@/ai4s/components/Ai4sPageTabs';
+import { pageTabGroups } from '@/ai4s/components/page-tab-groups';
 import { ThreadsTable } from './components/threads-table';
 import type { Thread } from './data/schema';
 import { useThreads } from './data/threads';
@@ -145,6 +147,7 @@ export default function ThreadsManagement() {
       </Header>
 
       <Main fixed>
+        <Ai4sPageTabs tabs={pageTabGroups.observability(t)} />
         <ThreadsContent />
       </Main>
     </>

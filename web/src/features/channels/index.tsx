@@ -6,6 +6,8 @@ import { usePaginationSearch } from '@/hooks/use-pagination-search';
 import { usePermissions } from '@/hooks/usePermissions';
 import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
+import { Ai4sPageTabs } from '@/ai4s/components/Ai4sPageTabs';
+import { pageTabGroups } from '@/ai4s/components/page-tab-groups';
 import { createColumns } from './components/channels-columns';
 import { ChannelsErrorBanner } from './components/channels-error-banner';
 import { ChannelsPrimaryButtons } from './components/channels-primary-buttons';
@@ -312,6 +314,7 @@ export default function ChannelsManagement() {
       </Header>
 
       <Main fixed>
+        <Ai4sPageTabs tabs={pageTabGroups.access(t)} />
         <ChannelsContent />
       </Main>
       <Suspense fallback={null}>

@@ -8,11 +8,8 @@ import {
   IconKey,
   IconActivity,
   IconDatabase,
-  IconAB2,
-  IconBaselineDensityMedium,
   IconAi,
   IconNote,
-  IconChartBar,
 } from '@tabler/icons-react';
 import { Command } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -62,7 +59,9 @@ export function useSidebarData(): SidebarData {
     return 'User';
   };
 
-  // 原始导航组配置
+  // 原始导航组配置（issue #54 侧栏归并 17→11：同域页面合并为入口+页内 Tab，
+  // 被合并路由（/models、/roles、/project/usage-stats、/project/traces、/project/threads、
+  // /project/roles）保持可达，经各页 PageTabs 切换）
   const rawNavGroups: NavGroup[] = [
     {
       title: t('sidebar.groups.admin'),
@@ -73,39 +72,29 @@ export function useSidebarData(): SidebarData {
           icon: IconLayoutDashboard,
         } as NavLink,
         {
-          title: t('sidebar.items.projects'),
-          url: '/projects',
-          icon: IconPackages,
-        } as NavLink,
-        {
-          title: t('sidebar.items.channels'),
-          url: '/channels',
-          icon: IconAi,
-        } as NavLink,
-        {
-          title: t('sidebar.items.models'),
-          url: '/models',
-          icon: IconRobot,
-        } as NavLink,
-        {
           title: t('sidebar.items.promptProtectionRules'),
           url: '/prompt-protection-rules',
           icon: IconShield,
         } as NavLink,
         {
-          title: t('sidebar.items.dataStorages'),
-          url: '/data-storages',
-          icon: IconDatabase,
+          title: t('sidebar.items.accessManagement'),
+          url: '/channels',
+          icon: IconAi,
         } as NavLink,
         {
-          title: t('sidebar.items.users'),
+          title: t('sidebar.items.projects'),
+          url: '/projects',
+          icon: IconPackages,
+        } as NavLink,
+        {
+          title: t('sidebar.items.usersAndRoles'),
           url: '/users',
           icon: IconUsers,
         } as NavLink,
         {
-          title: t('sidebar.items.roles'),
-          url: '/roles',
-          icon: IconShield,
+          title: t('sidebar.items.dataStorages'),
+          url: '/data-storages',
+          icon: IconDatabase,
         } as NavLink,
         // {
         //   title: 'Permission Demo',
@@ -123,51 +112,30 @@ export function useSidebarData(): SidebarData {
           icon: IconKey,
         } as NavLink,
         {
-          title: t('sidebar.items.prompts'),
-          url: '/project/prompts',
-          icon: IconNote,
-        } as NavLink,
-        {
-          title: t('sidebar.items.requests'),
+          title: t('sidebar.items.observability'),
           url: '/project/requests',
           icon: IconActivity,
         } as NavLink,
         {
-          title: t('sidebar.items.usageStats'),
-          url: '/project/usage-stats',
-          icon: IconChartBar,
-        } as NavLink,
-        // {
-        //   title: t('sidebar.items.usageLogs'),
-        //   url: '/project/usage-logs',
-        //   icon: IconActivityHeartbeat,
-        // } as NavLink,
-        {
-          title: t('sidebar.items.traces'),
-          url: '/project/traces',
-          icon: IconAB2,
-        } as NavLink,
-        {
-          title: t('sidebar.items.threads'),
-          url: '/project/threads',
-          icon: IconBaselineDensityMedium,
-        } as NavLink,
-
-        {
-          title: t('sidebar.items.users'),
-          url: '/project/users',
-          icon: IconUsers,
-        } as NavLink,
-        {
-          title: t('sidebar.items.roles'),
-          url: '/project/roles',
-          icon: IconShield,
+          title: t('sidebar.items.prompts'),
+          url: '/project/prompts',
+          icon: IconNote,
         } as NavLink,
         {
           title: t('sidebar.items.playground'),
           url: '/project/playground',
           icon: IconRobot,
         } as NavLink,
+        {
+          title: t('sidebar.items.members'),
+          url: '/project/users',
+          icon: IconUsers,
+        } as NavLink,
+        // {
+        //   title: t('sidebar.items.usageLogs'),
+        //   url: '/project/usage-logs',
+        //   icon: IconActivityHeartbeat,
+        // } as NavLink,
       ],
     },
     {

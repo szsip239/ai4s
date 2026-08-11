@@ -15,6 +15,8 @@ import { usePaginationSearch } from '@/hooks/use-pagination-search';
 import useInterval from '@/hooks/useInterval';
 import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
+import { Ai4sPageTabs } from '@/ai4s/components/Ai4sPageTabs';
+import { pageTabGroups } from '@/ai4s/components/page-tab-groups';
 import { RequestsTable, type RequestTableFilters } from './components';
 import { RequestsProvider } from './context';
 import { useRequests } from './data';
@@ -379,6 +381,7 @@ export default function RequestsManagement() {
       </Header>
 
       <Main fixed>
+        <Ai4sPageTabs tabs={pageTabGroups.observability(t)} />
         <RequestsContent />
       </Main>
     </RequestsProvider>
