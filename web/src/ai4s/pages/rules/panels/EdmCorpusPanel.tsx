@@ -1,10 +1,10 @@
 /**
  * EDM 语料面板（issue #36）：GET/POST/DELETE /dlp-admin/edm/corpus[/<name>]。
- * 上传 = name + 粘贴全文（服务端指纹化入库，shingle+行级双通道，原文只存单向哈希轮廓）；
- * 删除二次确认（指纹库与 corpus 文件同步移除）。
+ * 上传 = name + 全文（issue #47 起支持文件读入 .txt/.md/.text/.log 或直接粘贴；服务端指纹化入库，
+ * shingle+行级双通道，原文只存单向哈希轮廓）；删除二次确认（指纹库与 corpus 文件同步移除）。
  * 上传对话框 dirty（已输入未提交）经 onDirtyChange 上报（review #2，离开提示同款）。
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { IconLoader2, IconTrash, IconUpload } from '@tabler/icons-react';
 import {
   AlertDialog,
@@ -35,6 +35,10 @@ import { Ai4sQueryState } from './QueryState';
 
 /** 语料名约束（与服务端 _EDM_NAME_RE 同款）：[A-Za-z0-9_.-]{1,64} */
 const NAME_RE = /^[A-Za-z0-9_.-]{1,64}$/;
+/** 单文件上限：对齐服务端 EDM corpus POST 体上限（shim admin_api.py _MAX_EDM_BODY = 16MB） */
+const MAX_FILE_BYTES = 16 * 1024 * 1024;
+/** 文本类扩展名粗判（与 accept 一致）；file.type 为 text/* 亦可（如 .markdown 扩展名） */
+const TEXT_EXT_RE = /\.(txt|md|text|log)$/i;
 
 function Ai4sEdmUploadDialog({
   onDirtyChange,
@@ -47,18 +51,64 @@ function Ai4sEdmUploadDialog({
   const [name, setName] = useState('');
   const [text, setText] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
+  // 文件名自动带入的最近值：用户手改过 name 后不再覆盖
+  const nameAutoRef = useRef<string | null>(null);
 
-  // dirty = 任一字段已有输入（清空即复位 clean）
+  // dirty = 任一字段已有输入（清空即复位 clean；文件读入填入同样算 dirty）
   const dirty = name !== '' || text !== '';
   useEffect(() => {
     onDirtyChange?.(dirty);
     return () => onDirtyChange?.(false);
   }, [dirty, onDirtyChange]);
 
+  /** 文件选择（issue #47）：FileReader 读全文填入文本域（保持可预览/可编辑），文档名取文件名去扩展名（可手改） */
+  const onFilePick = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!TEXT_EXT_RE.test(file.name) && !file.type.startsWith('text/')) {
+      setFormError(`「${file.name}」不是文本类文件：仅支持 .txt/.md/.text/.log 等纯文本，.docx/.pdf 请先另存为文本再上传`);
+      e.target.value = ''; // 复位，允许重选同一文件
+      return;
+    }
+    if (file.size > MAX_FILE_BYTES) {
+      setFormError(
+        `「${file.name}」大小 ${(file.size / 1024 / 1024).toFixed(1)}MB 超过约 16MB 上限，请拆分文档或改用 CLI scripts/edm-add.py 入库`,
+      );
+      e.target.value = '';
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      e.target.value = ''; // 读完即复位（成功/乱码路径一致），允许重选同一文件
+      const content = typeof reader.result === 'string' ? reader.result : '';
+      // GBK 等非 UTF-8 护栏：readAsText 按 UTF-8 解码产生 U+FFFD；乱码入库即成永不命中的死规则，前端拦住
+      if (content.includes('\uFFFD')) {
+        setFormError(`「${file.name}」检测到乱码字符，文件可能不是 UTF-8 编码，请另存为 UTF-8 后再传`);
+        return; // 不填入，name/text 保持原值
+      }
+      setText(content);
+      setFormError(null);
+      const base = file.name.replace(/\.[^.]+$/, '');
+      // 函数式更新：读文件期间用户手输 name 不被过期闭包覆盖；nameAutoRef 仅在真正带入时更新
+      setName((prev) => {
+        if (prev === '' || prev === nameAutoRef.current) {
+          nameAutoRef.current = base;
+          return base;
+        }
+        return prev;
+      });
+    };
+    reader.onerror = () => {
+      e.target.value = '';
+      setFormError('文件读取失败，请重试或改用粘贴');
+    };
+    reader.readAsText(file);
+  };
+
   const submit = () => {
     // 客户端预检（服务端权威校验：归一化后 <12 字符拒收——入库即死规则）
     if (!NAME_RE.test(name)) return setFormError('name 须为 [A-Za-z0-9_.-]（1~64 字符）');
-    if (!text.trim()) return setFormError('请粘贴文档全文');
+    if (!text.trim()) return setFormError('请粘贴全文或从文件读入');
     upload.mutate({ name, text }, { onSuccess: onClose });
   };
 
@@ -71,17 +121,36 @@ function Ai4sEdmUploadDialog({
         </DialogHeader>
         <div className='grid gap-4'>
           <div className='space-y-1.5'>
-            <Label>文档名（[A-Za-z0-9_.-]，1~64 字符）</Label>
-            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder='contract-2026-q3' />
+            <Label htmlFor='edm-upload-file'>从文件读入（可选）</Label>
+            <Input
+              id='edm-upload-file'
+              type='file'
+              accept='.txt,.md,.text,.log,text/plain,text/markdown'
+              onChange={onFilePick}
+            />
+            <p className='text-xs text-muted-foreground'>
+              支持 .txt/.md/.text/.log 纯文本，单文件 ≤ 16MB；读入后自动填入下方全文与文档名，可再编辑
+            </p>
           </div>
           <div className='space-y-1.5'>
-            <Label>文档全文（粘贴文本；过短或乱序后不足 12 字符归一化长度将被拒收）</Label>
+            <Label>文档名（[A-Za-z0-9_.-]，1~64 字符）</Label>
+            <Input
+              value={name}
+              onChange={(e) => {
+                nameAutoRef.current = null;
+                setName(e.target.value);
+              }}
+              placeholder='contract-2026-q3'
+            />
+          </div>
+          <div className='space-y-1.5'>
+            <Label>文档全文（粘贴文本或从文件读入；过短或乱序后不足 12 字符归一化长度将被拒收）</Label>
             <Textarea
               rows={12}
               className='font-mono text-xs'
               value={text}
               onChange={(e) => setText(e.target.value)}
-              placeholder='粘贴商密文档全文…'
+              placeholder='粘贴商密文档全文，或从上方选择文件读入…'
             />
           </div>
           {formError && <p className='text-sm text-destructive'>{formError}</p>}
