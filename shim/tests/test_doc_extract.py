@@ -169,6 +169,44 @@ def make_docx_with_table_bytes(before, table_rows, after) -> bytes:
     return buf.getvalue()
 
 
+def make_docx_merged_table_bytes() -> bytes:
+    """水平合并单元格 docx（issue #53 P2-1 样本）：合并后 row.cells 重复返回同一 cell。"""
+    from docx import Document
+
+    doc = Document()
+    table = doc.add_table(rows=2, cols=3)
+    table.cell(0, 0).text = "合并甲"
+    table.cell(0, 0).merge(table.cell(0, 1))  # 水平合并 → row.cells = [c, c, 丙]
+    table.cell(0, 2).text = "丙"
+    table.cell(1, 0).text = "丁"
+    table.cell(1, 1).text = "戊"
+    table.cell(1, 2).text = "己"
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def make_mixed_density_pdf_bytes(pages) -> bytes:
+    """多页混合密度样本（issue #53 P2-3 边界用例）：pages = [(text, full_page_image), ...]。
+    full_page_image=True 时先铺整页图（扫描页，面积比 100%）；文本以换行盒式写入文本层。"""
+    import fitz
+
+    doc = fitz.open()
+    for text, full_page_image in pages:
+        page = doc.new_page()
+        if full_page_image:
+            img = fitz.open()
+            ip = img.new_page(width=200, height=200)
+            page.insert_image(page.rect, pixmap=ip.get_pixmap())
+            img.close()
+        if text:
+            page.insert_textbox(fitz.Rect(72, 72, 540, 760), text, fontname="china-s", fontsize=12)
+    buf = io.BytesIO()
+    doc.save(buf)
+    doc.close()
+    return buf.getvalue()
+
+
 def make_pptx_with_table_bytes(textbox_text, table_rows) -> bytes:
     """文本框 + 表格同页（issue #52 pptx 缺口样本）：旧实现对表格 GraphicFrame 一律取空文本。"""
     from pptx import Presentation
@@ -265,6 +303,14 @@ class TestExtractDocx(unittest.TestCase):
         # 文档顺序：首部段落 < 表格行 < 尾部段落
         self.assertLess(text.index("合同首部段落"), text.index("甲方"))
         self.assertLess(text.index("乙方\t乙公司"), text.index("合同尾部段落"))
+
+    def test_merged_cells_dedup(self):
+        """docx 合并单元格相邻去重（issue #53 P2-1）：水平合并的重复 cell 保序去重，
+        不产生「合并甲\t合并甲\t丙」式重复段（与员工粘贴原文的 shingle 窗口失配）。"""
+        text = dx.extract_text_from_bytes("merged.docx", make_docx_merged_table_bytes())
+        self.assertIn("合并甲\t丙", text)
+        self.assertNotIn("合并甲\t合并甲", text)
+        self.assertIn("丁\t戊\t己", text)  # 未合并行原样
 
 
 class TestExtractXlsx(unittest.TestCase):
@@ -528,6 +574,35 @@ class TestOcrFallbackDensity(unittest.TestCase):
                         side_effect=AssertionError("不应调用 OCR")):
             text = dx.extract_text_from_bytes("sparse.pdf", data)
         self.assertIn("短句", text)
+
+    def test_sparse_text_with_small_logo_no_ocr(self):
+        """稀疏文本 + 小 logo 图不回退（issue #53 P1-1 误伤回归守）：单页 <50 字符 +
+        面积仅 ~2% 的信头 logo/签名章小图——按面积比判定不是扫描页，内嵌文本原样返回
+        （get_images() 式判定会误触发回退，把完美文本层换成 OCR 次品甚至 400 拒收）。"""
+        from unittest import mock
+
+        # make_pdf_with_image_bytes 内嵌 100×100pt 小图 ≈ 页面面积 2%（< SCAN_IMAGE_AREA_RATIO）
+        data = make_pdf_with_image_bytes("报价单审批通过", fontname="china-s")
+        with mock.patch("pytesseract.image_to_string",
+                        side_effect=AssertionError("不应调用 OCR")):
+            text = dx.extract_text_from_bytes("quote.pdf", data)
+        self.assertIn("报价单审批通过", text)
+
+    def test_mixed_density_average_boundary(self):
+        """多页混合密度按全文平均判定（issue #53 P2-3 边界）：3 页（150/10/10 字符）平均
+        56.7 ≥ 阈值 → 即便其中 2 页是整页扫描图也不回退（平均密度达标即信任内嵌文本层）。"""
+        from unittest import mock
+
+        data = make_mixed_density_pdf_bytes([
+            ("密" * 150, False),               # 150 字符数字页
+            ("稀疏十字符页一二三四五", True),    # 10 字符 + 整页扫描图
+            ("稀疏十字符页六七八九十", True),    # 10 字符 + 整页扫描图
+        ])
+        with mock.patch("pytesseract.image_to_string",
+                        side_effect=AssertionError("不应调用 OCR")):
+            text = dx.extract_text_from_bytes("mixed.pdf", data)
+        self.assertEqual(text.count("密"), 150)  # 盒式换行，按总数断言
+        self.assertIn("稀疏十字符页一二三四五", text)
 
 
 class TestEmptyResultMessage(unittest.TestCase):

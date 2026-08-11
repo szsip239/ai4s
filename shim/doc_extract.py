@@ -9,8 +9,9 @@
 （180 DPI）逐页 OCR，页数上限 MAX_OCR_PAGES。tesseract 缺失/执行失败 → OcrUnavailableError；
 OCR 全空 → EmptyDocumentError。OCR 质量边界：中文印刷体一般、手写差、表格版面丢失。
 水印文本层回退（issue #52 缺口 2，真实试点「扫描全能王 创建」式水印）：内嵌文本非空但
-有效字符/页 < OCR_FALLBACK_MIN_CHARS_PER_PAGE 且页面含扫描图时仍回退 OCR——水印层非空
-会挡住朴素 OCR 回退，正文指纹全丢。docx/pptx 提取覆盖表格与文本框（issue #52 缺口 1）：
+有效字符/页 < OCR_FALLBACK_MIN_CHARS_PER_PAGE 且页面含扫描图（issue #53 P1-1 按实际显示
+面积判定：单图 bbox > 页面面积 SCAN_IMAGE_AREA_RATIO 才算扫描页，logo/签名章小图不触发）
+时仍回退 OCR——水印层非空会挡住朴素 OCR 回退，正文指纹全丢。docx/pptx 提取覆盖表格与文本框（issue #52 缺口 1）：
 python-docx iter_inner_content() 按文档顺序遍历段落+表格（旧实现 document.paragraphs
 丢失全部表格文本，试点真实文档 95% 内容在表格）；pptx 递归组合 shape、表格按行拼单元格。
 OCR 资源护栏（issue #51 评审修复）：渲染/解码目标像素两路径共用 MAX_OCR_PIXELS 上限
@@ -63,6 +64,12 @@ OCR_PAGE_TIMEOUT = 60
 # 水印文本层密度阈值（issue #52 缺口 2）：内嵌有效字符/页低于此值且页面含扫描图 → 回退 OCR。
 # 「扫描全能王 创建」式水印每页仅数字符（试点真实合同 8 字符/页）；正常数字 PDF 每页数百字符起
 OCR_FALLBACK_MIN_CHARS_PER_PAGE = 50
+# 扫描页判定面积比（issue #53 P1-1）：单图实际显示 bbox 面积 > 页面面积×此值才算扫描页。
+# get_images() 只看 /Resources 引用——信头 logo/签名章小图都算「含图」，稀疏数字单页
+# （<50 字符/页）+ logo 会误触发回退：内嵌完美文本被换成 OCR 次品（指纹质量静默退化），
+# OCR 全空或引擎缺失时甚至 400 拒收（#52 前可正常入库，行为回归）。get_image_info()
+# 只含实际显示的图片，按面积过滤——试点扫描件整页图实测 ≈86%，logo/签名章 <1%
+SCAN_IMAGE_AREA_RATIO = 0.5
 _OCR_DPI = 180
 _OCR_LANG = "chi_sim+eng"
 
@@ -171,11 +178,25 @@ def _extract_pdf(data: bytes, filename: str) -> str:
 def _needs_ocr_fallback(doc, text: str) -> bool:
     """水印文本层判定（issue #52 缺口 2）：有效字符/页 < OCR_FALLBACK_MIN_CHARS_PER_PAGE
     且页面含扫描图 → 回退 OCR。「扫描全能王 创建」式水印页页几字符，非空文本层会挡住
-    朴素 OCR 回退，正文指纹全丢；无图的稀疏文本页（数字文档留白多）不回退——OCR 无可识别对象。"""
+    朴素 OCR 回退，正文指纹全丢；无扫描图的稀疏文本页（数字文档留白多）不回退——OCR 无可识别对象。"""
     effective = len("".join(text.split()))  # 有效字符：剔除全部空白
     if effective / max(doc.page_count, 1) >= OCR_FALLBACK_MIN_CHARS_PER_PAGE:
         return False
-    return any(page.get_images() for page in doc)
+    return any(_is_scan_page(page) for page in doc)
+
+
+def _is_scan_page(page) -> bool:
+    """单图实际显示 bbox 面积 > 页面面积×SCAN_IMAGE_AREA_RATIO 才算扫描页（issue #53 P1-1）：
+    get_image_info() 仅含实际显示的图片，logo/签名章小图（实测 <1%）不触发回退；
+    get_images() 看 /Resources 引用不过滤显示尺寸，会误伤稀疏数字单页。"""
+    page_area = page.rect.width * page.rect.height
+    if page_area <= 0:
+        return False
+    for info in page.get_image_info():
+        x0, y0, x1, y1 = info["bbox"]
+        if (x1 - x0) * (y1 - y0) > SCAN_IMAGE_AREA_RATIO * page_area:
+            return True
+    return False
 
 
 def _ocr_pdf_pages(doc, filename: str) -> str:
@@ -266,7 +287,7 @@ def _extract_docx(data: bytes, filename: str) -> str:
         for block in doc.iter_inner_content():
             if isinstance(block, DocxTable):
                 for row in block.rows:
-                    line = "\t".join(cell.text.strip() for cell in row.cells)
+                    line = "\t".join(_dedup_adjacent_cells([cell.text.strip() for cell in row.cells]))
                     if line.strip():
                         lines.append(line)
             elif block.text.strip():
@@ -274,6 +295,18 @@ def _extract_docx(data: bytes, filename: str) -> str:
         return "\n".join(lines)
     except Exception as e:
         raise CorruptDocumentError(f"「{filename}」DOCX 解析失败（{e}）") from e
+
+
+def _dedup_adjacent_cells(cells: list) -> list:
+    """行内相邻重复 cell 文本去重（保序，issue #53 P2-1）：python-docx/pptx 水平合并单元格
+    row.cells 会重复返回同一合并 cell（["A","A","C"]），原样提取产生 "A\tA\tC" 式重复段，
+    与员工粘贴原文的 shingle 窗口失配。跨行重复（垂直合并产物）保守不动——相邻整行重复
+    也可能是真实重复数据行，误去重会丢正文。"""
+    out = []
+    for cell in cells:
+        if not out or out[-1] != cell:
+            out.append(cell)
+    return out
 
 
 def _extract_xlsx(data: bytes, filename: str) -> str:
@@ -322,7 +355,7 @@ def _pptx_shape_lines(shape) -> list:
     if getattr(shape, "has_table", False):  # 表格（GraphicFrame）
         lines = []
         for row in shape.table.rows:
-            line = "\t".join(cell.text.strip() for cell in row.cells)
+            line = "\t".join(_dedup_adjacent_cells([cell.text.strip() for cell in row.cells]))
             if line.strip():
                 lines.append(line)
         return lines
