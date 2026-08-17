@@ -119,6 +119,15 @@ routes:
             openAI: {}
           hostOverride: axonhub:8090
 
+  # /health：axonhub 健康端点 exact 直达（issue #60 宿主口收拢后，bootstrap.sh 的 axonhub 健康等待经此保持原语义；
+  # exact 优先于 catch-all 静态站，SPA 无 /health 路由不受影响）
+  - gateways: [default, mtls]
+    matches:
+      - path:
+          exact: /health
+    backends:
+      - host: axonhub:8090
+
   # /admin、/oidc、/oauth：axonhub 管理 API、SSO/OIDC 回调、OAuth 流程（契约 docs/contracts/ingress-proxy.md）
   - gateways: [default, mtls]
     matches:

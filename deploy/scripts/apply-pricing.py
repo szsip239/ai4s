@@ -14,7 +14,7 @@ import sys
 import urllib.request
 
 DEPLOY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-AXONHUB_BASE = os.environ.get("AXONHUB_BASE", "http://localhost:8090")
+AXONHUB_BASE = os.environ.get("AXONHUB_BASE", "http://localhost:3000")
 
 
 def load_env():

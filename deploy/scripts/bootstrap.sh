@@ -9,7 +9,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-AXONHUB_BASE="${AXONHUB_BASE:-http://localhost:8090}"
+AXONHUB_BASE="${AXONHUB_BASE:-http://localhost:3000}"
 STATE_DIR=".local"
 mkdir -p "$STATE_DIR"
 
@@ -49,7 +49,7 @@ echo "==> 登录获取 JWT"
 LOGIN_JSON=$(python3 -c 'import json,os;print(json.dumps({"email":os.environ["AXONHUB_ADMIN_EMAIL"],"password":os.environ["AXONHUB_ADMIN_PASSWORD"]}))')
 TOKEN=$(curl -fsS -X POST "$AXONHUB_BASE/admin/auth/signin" -H 'Content-Type: application/json' -d "$LOGIN_JSON" \
   | python3 -c 'import json,sys;print(json.load(sys.stdin)["token"])')
-echo "    登录成功（管理面 http://localhost:8090 用 .env 中的账号登录）"
+echo "    登录成功（管理面 http://localhost:3000 用 .env 中的账号登录）"
 echo -n "$TOKEN" > "$STATE_DIR/admin-jwt"
 
 gql() { # $1=query $2=variables(JSON)

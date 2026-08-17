@@ -1,6 +1,6 @@
 # ai4s 阶段 0 部署：全链路 tracer bullet
 
-链路：员工 curl/CLI → **agentgateway**（:3000，入口反代/DLP 执行点）→ **axonhub**（:8090，控制面）→ Claude/Codex OAuth 订阅上游。
+链路：员工 curl/CLI → **agentgateway**（:3000，入口反代/DLP 执行点）→ **axonhub**（容器内网 :8090，控制面；宿主不暴露，issue #60）→ Claude/Codex OAuth 订阅上游。
 
 ## 组件与版本（pin 定，升级走评审）
 
@@ -36,7 +36,7 @@ cd ../shim && python3 -m unittest discover -s tests    # shim 单测；本机先
 - **分层总开关（issue #40）**：settings.json 增 `l1`/`l2`/`response` 三段（单键 enabled，内置默认 true 保现网行为；env 回退层 `L1_ENABLED`/`L2_ENABLED`/`RESPONSE_ENABLED`，compose 默认透传 1）。l1 关=格式规则全族撤防（密钥拦截全敞口）且 config.yaml 标记区块联动渲染撤空；l2 关=词表/Presidio PII 整体跳过；response 关=响应侧整段放行。翻转 l1 经 `PUT /dlp-admin/settings` 自动联动渲染（失败回滚 settings 并 500）；手改 settings.json 后用 `POST /dlp-admin/format-rules/render` 兜底同步。
 - **pg.normalize（issue #44）**：settings.json `pg` 段增 `normalize` 键（布尔，必填；内置默认 false 保现网行为，env 回退 `PG_NORMALIZE`）。true=PG 打分前置归一化（base64 内联解码/零宽清除/全角转半角，在 promptguard 服务内做单点，只改打分输入不改转发原文）；shim 经 `/guard` 请求体 `normalize` 字段透传。shadow/fail-open 语义不变。
 
-- 管理面：http://localhost:8090 ，用 `.env` 中的 `AXONHUB_ADMIN_EMAIL` / `AXONHUB_ADMIN_PASSWORD` 登录（本地账号；阶段 1 切 飞书 OAuth→Casdoor→OIDC）。
+- 管理面：http://localhost:3000 （经 agentgateway 反代；宿主不再单独暴露 axonhub 调试口，issue #60），用 `.env` 中的 `AXONHUB_ADMIN_EMAIL` / `AXONHUB_ADMIN_PASSWORD` 登录（本地账号；阶段 1 切 飞书 OAuth→Casdoor→OIDC）。
 - 员工入口：`http://localhost:3000/v1`（OpenAI 兼容），唯一对员工的端口。
 - SSO（issue #14 已上线）：员工在 http://localhost:3000/sign-in 点"Casdoor SSO（飞书）"登录，JIT 自动建号。axonhub 无 JIT 默认项目机制，首登后运行 `./scripts/assign-default-project.sh`（幂等，可加 cron）把新员工补进 Default 项目。
 - **Casdoor 展示名（issue #58/#59）**：组织/应用的 `display_name`（当前均为 `Ai-4S-infra`）是运行时 DB 配置，`casdoor_data` volume 重建后会回退初始值，需手工重设：

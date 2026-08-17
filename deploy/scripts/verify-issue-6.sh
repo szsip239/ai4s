@@ -144,7 +144,7 @@ sleep 2
 JWT=$(cat .local/admin-jwt)
 python3 - "$BEFORE_TS" <<'EOF'
 import json,sys,urllib.request
-req=urllib.request.Request("http://localhost:8090/admin/graphql",
+req=urllib.request.Request("http://localhost:3000/admin/graphql",
     data=json.dumps({"query":"{ requests(last: 3) { edges { node { id status createdAt } } } }","variables":{}}).encode(),
     headers={"Authorization":"Bearer "+open(".local/admin-jwt").read().strip(),"Content-Type":"application/json"})
 d=json.load(urllib.request.urlopen(req))

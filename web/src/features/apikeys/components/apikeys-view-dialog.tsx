@@ -42,7 +42,7 @@ export function ApiKeysViewDialog() {
   const apiKey = selectedApiKey?.key || '';
   const maskedApiKey = selectedApiKey?.key ? selectedApiKey.key.slice(0, 3) + '...' + selectedApiKey.key.slice(-4) : '';
 
-  const currentOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:8090';
+  const currentOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
 
   const codeExamples = useMemo(() => {
     if (!selectedApiKey?.key) return {};

@@ -3,7 +3,7 @@ import { defineConfig, devices } from '@playwright/test'
 // Set default test environment variables
 process.env.AXONHUB_ADMIN_EMAIL = process.env.AXONHUB_ADMIN_EMAIL || 'my@example.com'
 process.env.AXONHUB_ADMIN_PASSWORD = process.env.AXONHUB_ADMIN_PASSWORD || 'pwd123456'
-process.env.AXONHUB_API_URL = process.env.AXONHUB_API_URL || 'http://localhost:8099'
+process.env.AXONHUB_API_URL = process.env.AXONHUB_API_URL || 'http://localhost:3000'
 
 // Type declaration for process
 declare const process: {
@@ -99,7 +99,7 @@ export default defineConfig({
     stderr: 'pipe',
     env: {
       VITE_PORT: process.env.VITE_PORT || '9527',
-      VITE_API_URL: process.env.AXONHUB_API_URL || 'http://localhost:8099',
+      VITE_API_URL: process.env.AXONHUB_API_URL || 'http://localhost:3000',
     },
   },
 })

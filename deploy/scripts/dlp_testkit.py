@@ -20,7 +20,7 @@ import urllib.error
 
 DEPLOY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GATEWAY = os.environ.get("GATEWAY_BASE", "http://localhost:3000")
-AXONHUB_BASE = os.environ.get("AXONHUB_BASE", "http://localhost:8090")
+AXONHUB_BASE = os.environ.get("AXONHUB_BASE", "http://localhost:3000")
 ECHO_MODEL = "echo-test"
 ADMIN_URL = os.environ.get("DLP_ADMIN_URL", "http://localhost:18080").rstrip("/")
 

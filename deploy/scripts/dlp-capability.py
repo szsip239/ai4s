@@ -10,7 +10,8 @@
   7    六层开关矩阵（runner 过程段）：l1 关=config.yaml 标记区块渲染为空+restart 后放行、
        l2/response 关=shim 热生效放行；judge/pg 是 shadow 无网关行为差异（断言双向放行+读回）；
        edm 开关在 EDM 段内验证（语料已入库，关=粘贴放行/开=451）
-  8    纵深层（runner 段）：同一 sk-proj 样本直连 :8090 断言 axonhub 原生 PP 400，经网关 451 对照
+  8    纵深层（runner 段）：同一 sk-proj 样本经 shim 容器内网直连 axonhub:8090 断言原生 PP 400，
+       经网关 451 对照（宿主调试口已收，issue #60）
   9    EDM 抗绕过（runner 段，自包含合成语料）：整篇粘贴/乱序/增删改 30%/跨文档拼接，
        未命中记 gap 不 fail
 
@@ -79,18 +80,36 @@ def send_messages(messages, api_key):
         return 0, f"{type(e).__name__}: {e}"
 
 
+# 纵深层内联脚本：在 shim 容器内网执行，绕过 agentgateway 直连 axonhub:8090。
+# 宿主口已收（issue #60），语义保持「不经网关」以断言 axonhub 原生兜底。
+# 用法：python3 -c DEEP_INLINE_SCRIPT <content> <api_key>，stdout 末行为状态码。
+DEEP_INLINE_SCRIPT = """
+import json, sys, urllib.request, urllib.error
+content, api_key = sys.argv[1], sys.argv[2]
+body = json.dumps({"model": "echo-test",
+                   "messages": [{"role": "user", "content": content}]}).encode()
+req = urllib.request.Request("http://axonhub:8090/v1/chat/completions", data=body,
+                             headers={"Content-Type": "application/json",
+                                      "Authorization": "Bearer " + api_key})
+try:
+    with urllib.request.urlopen(req, timeout=30) as r:
+        r.read()
+    print(200)
+except urllib.error.HTTPError as e:
+    print(e.code)
+except Exception:
+    print(0)
+"""
+
+
 def send_direct(content, api_key):
-    """纵深层：绕过 agentgateway 直连 axonhub 调试口 :8090。"""
-    body = json.dumps({"model": tk.ECHO_MODEL, "messages": [{"role": "user", "content": content}]}).encode()
-    req = urllib.request.Request(tk.AXONHUB_BASE + "/v1/chat/completions", data=body,
-                                 headers={"Content-Type": "application/json",
-                                          "Authorization": f"Bearer {api_key}"})
+    """纵深层：绕过 agentgateway，经 shim 容器内网直连 axonhub:8090（宿主口已收）。"""
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            json.load(r)
-        return 200
-    except urllib.error.HTTPError as e:
-        return e.code
+        proc = subprocess.run(
+            ["docker", "compose", "exec", "-T", "shim", "python3", "-c",
+             DEEP_INLINE_SCRIPT, content, api_key],
+            cwd=DEPLOY_DIR, capture_output=True, text=True, timeout=45)
+        return int(proc.stdout.strip().splitlines()[-1])
     except Exception:
         return 0
 
@@ -213,13 +232,13 @@ def run_switch_section(api_key, admin_token):
 
 
 def run_deep_section(api_key):
-    """纵深层（category=deep）：直连 :8090 断言 axonhub 原生 PromptProtectionRule 兜底。"""
-    print("\n==> 纵深层段（axonhub 调试口对照）")
+    """纵深层（category=deep）：经 shim 容器内网直连 axonhub:8090，断言原生 PromptProtectionRule 兜底。"""
+    print("\n==> 纵深层段（shim 容器内网直连 axonhub 对照）")
     results = []
     sample = "sk-proj-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0 帮我看看这个 key"
     st = send_direct("你好", api_key)
     record(results, "deep: 直连干净样本可达", "deep", "deep", 200, st, False,
-           "调试口开放是既定风险项")
+           "宿主调试口已收（issue #60）；内网可达是本链路前提")
     st = send_direct(sample, api_key)
     record(results, "deep: 直连 sk-proj 应被 axonhub 原生 PP 拦", "deep", "deep", 400, st, False,
            "axonhub PromptProtectionRule 兜底（非 ai4s DLP）")

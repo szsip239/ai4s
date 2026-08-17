@@ -1,5 +1,5 @@
 # ai4s 阶段 0 全链路 tracer bullet
-# 链路：员工 curl/CLI → agentgateway(:3000) → axonhub(:8090) → OAuth 订阅上游（或 mock 上游）
+# 链路：员工 curl/CLI → agentgateway(:3000) → axonhub（容器内网 :8090，宿主不暴露） → OAuth 订阅上游（或 mock 上游）
 # 版本纪律（ADR-0002）：镜像 tag 显式 pin，不跟 latest/unstable；升级走评审。
 #
 # 用法：
@@ -37,9 +37,8 @@ services:
       AXONHUB_DB_DSN: postgres://axonhub:${DB_PASSWORD:?DB_PASSWORD is required}@postgres:5432/axonhub?sslmode=disable
     volumes:
       - ./axonhub/config.yml:/etc/axonhub/config.yml:ro
-    ports:
-      # 管理面 / API 直连口（调试用）；员工流量走 agentgateway :3000
-      - "127.0.0.1:8090:8090"
+    # 宿主调试口 :8090 已收（issue #60）：宿主脚本统一走 agentgateway :3000（/admin /oauth /v1 反代，功能等价）；
+    # 容器内仍监听 8090，栈内链路（agentgateway/shim → axonhub:8090）与健康检查不受影响
     networks:
       - ai4s
     depends_on:

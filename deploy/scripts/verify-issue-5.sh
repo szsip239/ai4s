@@ -6,7 +6,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 JWT=$(cat .local/admin-jwt)
-ADMIN=http://localhost:8090/admin/graphql
+ADMIN=http://localhost:3000/admin/graphql
 GW=http://localhost:3000
 FAIL=0
 
@@ -86,12 +86,22 @@ sys.exit(0 if ok else 1)
 EOF
 check "axonhub Prompt Protection Rules 已配置核心三类（reject、enabled）" $?
 
-# 纵深生效：直连 axonhub（绕过 agentgateway）发正样例，应被 axonhub 自层拒绝
-R=$(curl -s -w "\n%{http_code}" "http://localhost:8090/v1/chat/completions" \
-  -H "Authorization: Bearer $(cat .local/test-api-key)" -H "Content-Type: application/json" \
-  -d '{"model":"mock-gpt","messages":[{"role":"user","content":"AKIAIOSFODNN7EXAMPLE 这个还能用吗"}]}')
-CODE=$(echo "$R" | tail -1); BODY=$(echo "$R" | head -1 | head -c 120)
-echo "    直连 axonhub 正样例 → HTTP ${CODE} ${BODY}"
+# 纵深生效：经 shim 容器内网直连 axonhub（绕过 agentgateway；issue #60 宿主 :8090 已收）发正样例，应被 axonhub 自层拒绝
+R=$(docker compose exec -T shim python3 -c '
+import json, sys, urllib.request, urllib.error
+body = json.dumps({"model":"mock-gpt","messages":[{"role":"user","content":"AKIAIOSFODNN7EXAMPLE 这个还能用吗"}]}).encode()
+req = urllib.request.Request("http://axonhub:8090/v1/chat/completions", data=body,
+    headers={"Content-Type":"application/json","Authorization":"Bearer "+sys.argv[1]})
+try:
+    with urllib.request.urlopen(req, timeout=30) as r:
+        print("200", r.read().decode()[:120])
+except urllib.error.HTTPError as e:
+    print(e.code, e.read().decode()[:120])
+except Exception as e:
+    print(0, type(e).__name__)
+' "$(cat .local/test-api-key)")
+CODE=$(echo "$R" | awk '{print $1}'); BODY=$(echo "$R" | cut -d" " -f2- | head -c 120)
+echo "    直连 axonhub（经 shim 内网）正样例 → HTTP ${CODE} ${BODY}"
 [ "$CODE" != "200" ]
 check "直连 axonhub 正样例被自层拒绝（纵深层真实生效）" $?
 

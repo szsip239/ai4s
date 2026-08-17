@@ -7,7 +7,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-AXONHUB_BASE="${AXONHUB_BASE:-http://localhost:8090}"
+AXONHUB_BASE="${AXONHUB_BASE:-http://localhost:3000}"
 STATE_DIR=".local"
 
 if [ ! -f .env ]; then

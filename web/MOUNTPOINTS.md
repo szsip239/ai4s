@@ -32,8 +32,10 @@
 | `src/features/dashboard/index.tsx` | import 区 +1 行、`<Header />` 后 +1 块 | 挂 `<Ai4sBrandCard />` 品牌说明卡（名称+4S 含义，低调横卡） | issue #58 首页 4S 说明；组件本体在 `src/ai4s/components/Ai4sBrandCard.tsx` | 2026-08-18 |
 | `src/features/errors/not-found-error.tsx` | suggestedPages[0].description | 'Overview of your AxonHub instance'→'…Ai-4S-infra instance' | issue #58 用户可见文案 | 2026-08-18 |
 | `src/features/channels/components/channels-system-settings-dialog.tsx` | DEFAULT_TEST_USER_PROMPT 常量 | 渠道测试默认 prompt 中 AxonHub→Ai-4S-infra（单行常量，渠道页高频区最小侵入） | issue #58 用户可见默认文案 | 2026-08-18 |
-| `src/features/apikeys/components/apikeys-view-dialog.tsx` | codex 配置示例 display/real 两段 | 用户侧指引品牌化：`AXONHUB_API_KEY`→`AI4S_API_KEY`、`axonhub-responses`→`ai4s-responses`、注释与 provider name 改 Ai-4S-infra（片段自闭合，仓库内无其他引用） | issue #58 用户可见接入指引 | 2026-08-18 |
+| `src/features/apikeys/components/apikeys-view-dialog.tsx` | codex 配置示例 display/real 两段 | 用户侧指引品牌化：`AXONHUB_API_KEY`→`AI4S_API_KEY`、`axonhub-responses`→`ai4s-responses`、注释与 provider name 改 Ai-4S-infra（片段自闭合，仓库内无其他引用）；currentOrigin SSR 兜底 `http://localhost:8090`→`:3000`（issue #60 宿主口收拢配套） | issue #58 用户可见接入指引 | 2026-08-18 |
 | `src/features/system/data/system.ts` | exportBackup onSuccess | 备份下载文件名 `axonhub-backup-*`→`ai4s-infra-backup-*` | issue #58 用户可见产物名 | 2026-08-18 |
 | `public/logo.svg` | 新增文件（上游区域） | 新品牌主 logo：扁平几何盾牌+「4S」字标，terracotta 渐变取 token 层 #ea580c/#c2410c；引用点：index.html favicon link、auth-layout、app-header、team-switcher、Ai4sBrandPanel/Ai4sBrandCard | issue #58 新 logo；issue #59 补登记 | 2026-08-18 |
 | `public/logo.jpg` | 删除 | 旧 AxonHub logo；全部引用点换 logo.svg 后删除 | issue #58；issue #59 补登记 | 2026-08-18 |
 | `public/favicon.ico` | 替换 | 从 logo.svg 经 rsvg-convert+PIL 重渲打包 16/32/48 三层，与 index.html `sizes="16x16 32x32 48x48"` 声明一致（#58 初版漏 48 层，issue #59 补齐） | issue #58 favicon 回退；issue #59 补 48 层+补登记 | 2026-08-18 |
+| `vite.config.ts` | server.proxy `/admin`、`/oauth`、`/v1` 三处 target 默认值 | dev 代理默认 `http://localhost:8090`→`http://localhost:3000` | issue #60 宿主调试口收拢：宿主侧默认一律走 :3000 网关反代 | 2026-08-18 |
+| `playwright.config.ts` | AXONHUB_API_URL 默认值 + webServer.env.VITE_API_URL 兜底 | 默认 `http://localhost:8099`→`http://localhost:3000` | 同上（issue #60） | 2026-08-18 |

@@ -6,7 +6,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 
 JWT=$(cat .local/admin-jwt)
-ADMIN=http://localhost:8090/admin/graphql
+ADMIN=http://localhost:3000/admin/graphql
 GW=http://localhost:3000
 FAIL=0
 
