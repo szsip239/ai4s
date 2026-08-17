@@ -102,7 +102,8 @@ except Exception as e:
 ' "$(cat .local/test-api-key)")
 CODE=$(echo "$R" | awk '{print $1}'); BODY=$(echo "$R" | cut -d" " -f2- | head -c 120)
 echo "    直连 axonhub（经 shim 内网）正样例 → HTTP ${CODE} ${BODY}"
-[ "$CODE" != "200" ]
+# 非空前置（issue #62）：shim 不在时 compose exec 失败 → CODE 空，空串 != 200 会假绿
+[ -n "$CODE" ] && [ "$CODE" != "200" ]
 check "直连 axonhub 正样例被自层拒绝（纵深层真实生效）" $?
 
 echo "==> [slice3] 阻断不触发渠道切换（多渠道 key）"

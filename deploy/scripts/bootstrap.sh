@@ -19,13 +19,14 @@ if [ ! -f .env ]; then
 fi
 set -a; . ./.env; set +a
 
-echo "==> 等待 axonhub 健康"
+echo "==> 等待 axonhub 健康（轮 docker healthcheck；:3000/health 已按 issue #62 撤掉，避免版本指纹泄到员工面）"
 for i in $(seq 1 60); do
-  if curl -fsS "$AXONHUB_BASE/health" >/dev/null 2>&1; then break; fi
-  if [ "$i" = 60 ]; then echo "ERROR: axonhub 60 次重试后仍不健康" >&2; exit 1; fi
+  HEALTH=$(docker inspect -f '{{.State.Health.Status}}' ai4s-axonhub 2>/dev/null || echo missing)
+  if [ "$HEALTH" = "healthy" ]; then break; fi
+  if [ "$i" = 60 ]; then echo "ERROR: axonhub 60 次重试后仍不健康（docker health: $HEALTH）" >&2; exit 1; fi
   sleep 2
 done
-curl -fsS "$AXONHUB_BASE/health"; echo
+echo "    axonhub docker health: healthy"
 
 echo "==> 检查系统初始化状态"
 IS_INIT=$(curl -fsS "$AXONHUB_BASE/admin/system/status" | python3 -c 'import json,sys;print(json.load(sys.stdin)["isInitialized"])')
