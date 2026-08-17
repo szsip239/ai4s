@@ -39,6 +39,16 @@ cd ../shim && python3 -m unittest discover -s tests    # shim 单测；本机先
 - 管理面：http://localhost:8090 ，用 `.env` 中的 `AXONHUB_ADMIN_EMAIL` / `AXONHUB_ADMIN_PASSWORD` 登录（本地账号；阶段 1 切 飞书 OAuth→Casdoor→OIDC）。
 - 员工入口：`http://localhost:3000/v1`（OpenAI 兼容），唯一对员工的端口。
 - SSO（issue #14 已上线）：员工在 http://localhost:3000/sign-in 点"Casdoor SSO（飞书）"登录，JIT 自动建号。axonhub 无 JIT 默认项目机制，首登后运行 `./scripts/assign-default-project.sh`（幂等，可加 cron）把新员工补进 Default 项目。
+- **Casdoor 展示名（issue #58/#59）**：组织/应用的 `display_name`（当前均为 `Ai-4S-infra`）是运行时 DB 配置，`casdoor_data` volume 重建后会回退初始值，需手工重设：
+
+  ```bash
+  docker exec ai4s-postgres psql -U casdoor -d casdoor -c \
+    "UPDATE application SET display_name='Ai-4S-infra' WHERE owner='admin' AND name='ai4s'; \
+     UPDATE organization SET display_name='Ai-4S-infra' WHERE owner='admin' AND name='ai4s';"
+  docker restart ai4s-casdoor
+  ```
+
+  只改 display_name；组织/应用的机器名（`ai4s`）与 Casdoor 产品名/域名不动。
 
 ## OAuth 渠道凭据
 

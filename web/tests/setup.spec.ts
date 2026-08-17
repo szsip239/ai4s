@@ -60,7 +60,7 @@ test.describe('System Setup', () => {
       await page.getByRole('textbox', { name: /Owner Last Name/i }).fill('User')
       await page.getByRole('textbox', { name: /Owner Email/i }).fill(ownerEmail)
       await page.getByLabel(/Owner Password/i).fill(ownerPassword)
-      await page.getByRole('textbox', { name: /Brand Name/i }).fill('AxonHub')
+      await page.getByRole('textbox', { name: /Brand Name/i }).fill('Ai-4S-infra')
 
       // Submit initialization form
       const submitButton = page.getByRole('button', { name: /Initialize System|初始化系统/i })

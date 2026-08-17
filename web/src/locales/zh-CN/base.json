@@ -310,7 +310,6 @@
   "ai4s.brand.pillars.service.desc": "统一服务",
   "ai4s.brand.pillars.speed.name": "Speed",
   "ai4s.brand.pillars.speed.desc": "极速接入",
-  "ai4s.brand.cardDescription": "AI for Science 基础设施｜4S：Science 科学探索 · Security 安全合规 · Service 统一服务 · Speed 极速接入",
   "auth.signIn.title": "登录到 Ai-4S-infra",
   "auth.signIn.subtitle": "输入您的邮箱和密码以访问您的账户",
   "auth.signIn.form.email.label": "邮箱",
