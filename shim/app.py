@@ -215,7 +215,7 @@ def judge_text(text: str):
             {"role": "user", "content": prompt_fewshot},
             {"role": "user", "content": text[:4000]},
         ],
-        "max_tokens": 300,
+        "max_tokens": 1500,  # issue #61：deepseek-v4-flash 是推理模型，300 会被 reasoning 烧尽（finish_reason=length、content 空 → ERR）；1500 实测够用
         "temperature": 0,
     }).encode()
     req = urllib.request.Request(
