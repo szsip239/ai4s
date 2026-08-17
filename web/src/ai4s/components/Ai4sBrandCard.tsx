@@ -7,7 +7,7 @@ import { Card, CardContent } from '@/components/ui/card';
  * 挂载点登记见 MOUNTPOINTS.md（features/dashboard/index.tsx）。
  */
 
-const PILLARS = ['science', 'security', 'service', 'speed'] as const;
+const PILLARS = ['security', 'smart', 'sustainability', 'success'] as const;
 
 export function Ai4sBrandCard() {
   const { t } = useTranslation();

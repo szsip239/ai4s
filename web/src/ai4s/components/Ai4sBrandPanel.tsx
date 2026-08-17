@@ -6,7 +6,7 @@ import { useTranslation } from 'react-i18next';
  * 左栏为深色 slate 底，配色用暖橙渐变呼应 token 层 terracotta 主色。
  */
 
-const PILLARS = ['science', 'security', 'service', 'speed'] as const;
+const PILLARS = ['security', 'smart', 'sustainability', 'success'] as const;
 
 export function Ai4sBrandPanel() {
   const { t } = useTranslation();
