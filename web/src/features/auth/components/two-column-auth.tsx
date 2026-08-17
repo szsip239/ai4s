@@ -1,6 +1,6 @@
 import type React from 'react';
-import { useTranslation } from 'react-i18next';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Ai4sBrandPanel } from '@/ai4s/components/Ai4sBrandPanel';
 import AutoRouterDiagram from '../sign-in/components/auto-router-diagram';
 
 export interface TwoColumnAuthProps {
@@ -14,7 +14,7 @@ export interface TwoColumnAuthProps {
 /**
  * TwoColumnAuth
  * Reusable left/right layout used by Sign-In and Initialization pages.
- * Left panel: shared AxonHub brand section and diagram.
+ * Left panel: shared brand section (Ai4sBrandPanel, issue #58) and diagram.
  * Right panel: gradient background with a Card shell for page-specific forms.
  */
 export default function TwoColumnAuth({
@@ -24,7 +24,6 @@ export default function TwoColumnAuth({
   rightFooter,
   rightMaxWidthClassName = 'max-w-md',
 }: TwoColumnAuthProps) {
-  const { t } = useTranslation();
   return (
     <div className='flex min-h-screen'>
       {/* Left Side - Brand/Welcome Section */}
@@ -38,13 +37,8 @@ export default function TwoColumnAuth({
         {/* Content */}
         <div className='relative z-10 flex flex-col justify-center px-12 py-16 text-white'>
           <div className='w-full max-w-lg'>
-            <div className='mb-8'>
-              <h1 className='mb-4 text-4xl font-light text-slate-100'>{t('auth.brand.title')}</h1>
-              <h2 className='mb-6 bg-gradient-to-r from-emerald-300 to-teal-200 bg-clip-text text-5xl font-bold text-transparent'>
-                AxonHub
-              </h2>
-              <p className='text-lg leading-relaxed text-slate-300'>{t('auth.brand.description')}</p>
-            </div>
+            {/* 挂载点：品牌区换 Ai4sBrandPanel（logo + 名称 + 4S 四支柱，issue #58）；原 h1/h2/p 块移除 */}
+            <Ai4sBrandPanel />
 
             <div className='mt-4'>
               <AutoRouterDiagram />

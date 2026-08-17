@@ -51,31 +51,31 @@ export function ApiKeysViewDialog() {
       codex: {
         baseUrl: `${currentOrigin}/v1`,
         display: `# Set your API key as an environment variable
-export AXONHUB_API_KEY="${maskedApiKey}"
+export AI4S_API_KEY="${maskedApiKey}"
 
-# Edit \${HOME}/.codex/config.toml and configure AxonHub:
+# Edit \${HOME}/.codex/config.toml and configure Ai-4S-infra:
 model = "gpt-5"
-model_provider = "axonhub-responses"
+model_provider = "ai4s-responses"
 
-[model_providers.axonhub-responses]
-name = "AxonHub using Chat Completions"
+[model_providers.ai4s-responses]
+name = "Ai-4S-infra using Chat Completions"
 base_url = "${currentOrigin}/v1"
-env_key = "AXONHUB_API_KEY"
+env_key = "AI4S_API_KEY"
 wire_api = "responses"
 query_params = {}
 
 # Restart Codex to apply the configuration`,
         real: `# Set your API key as an environment variable
-export AXONHUB_API_KEY="${apiKey}"
+export AI4S_API_KEY="${apiKey}"
 
-# Edit \${HOME}/.codex/config.toml and configure AxonHub:
+# Edit \${HOME}/.codex/config.toml and configure Ai-4S-infra:
 model = "gpt-5"
-model_provider = "axonhub-responses"
+model_provider = "ai4s-responses"
 
-[model_providers.axonhub-responses]
-name = "AxonHub using Chat Completions"
+[model_providers.ai4s-responses]
+name = "Ai-4S-infra using Chat Completions"
 base_url = "${currentOrigin}/v1"
-env_key = "AXONHUB_API_KEY"
+env_key = "AI4S_API_KEY"
 wire_api = "responses"
 query_params = {}
 

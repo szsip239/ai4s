@@ -21,7 +21,7 @@ export function AppHeader() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const queryClient = useQueryClient();
   const { isMobile } = useSidebar();
-  const displayName = brandSettings?.brandName || 'AxonHub';
+  const displayName = brandSettings?.brandName || 'Ai-4S-infra';
 
   const refreshMutation = useMutation({
     mutationFn: async () => {
@@ -61,11 +61,11 @@ export function AppHeader() {
                   height={24}
                   className='size-8 object-cover'
                   onError={(e) => {
-                    e.currentTarget.src = '/logo.jpg';
+                    e.currentTarget.src = '/logo.svg';
                   }}
                 />
               ) : (
-                <img src='/logo.jpg' alt='Default Logo' width={24} height={24} className='size-8 object-cover' />
+                <img src='/logo.svg' alt='Default Logo' width={24} height={24} className='size-8 object-cover' />
               )}
             </div>
             <span className='text-sm leading-none font-semibold'>{displayName}</span>

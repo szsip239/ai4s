@@ -28,7 +28,7 @@ export function TeamSwitcher({
   const { t } = useTranslation();
 
   // Use brand name if available, otherwise fall back to team name
-  const displayName = brandSettings?.brandName || activeTeam?.name || 'AxonHub';
+  const displayName = brandSettings?.brandName || activeTeam?.name || 'Ai-4S-infra';
 
   // Only show dropdown if there are multiple teams
   const showDropdown = teams.length > 1;
@@ -48,12 +48,12 @@ export function TeamSwitcher({
                       className='size-8 object-cover'
                       onError={(e) => {
                         // Fallback to default logo on error
-                        e.currentTarget.src = '/logo.jpg';
+                        e.currentTarget.src = '/logo.svg';
                       }}
                     />
                   ) : (
                     <img
-                      src='/logo.jpg'
+                      src='/logo.svg'
                       alt='Default Logo'
                       className='size-8 object-cover'
                       onError={() => {
@@ -98,12 +98,12 @@ export function TeamSwitcher({
                   className='size-8 object-cover'
                   onError={(e) => {
                     // Fallback to default logo on error
-                    e.currentTarget.src = '/logo.jpg';
+                    e.currentTarget.src = '/logo.svg';
                   }}
                 />
               ) : (
                 <img
-                  src='/logo.jpg'
+                  src='/logo.svg'
                   alt='Default Logo'
                   className='size-8 object-cover'
                   onError={() => {

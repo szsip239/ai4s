@@ -36,7 +36,7 @@ if [ "$IS_INIT" = "False" ]; then
     "ownerPassword":os.environ["AXONHUB_ADMIN_PASSWORD"],
     "ownerFirstName":os.environ.get("AXONHUB_ADMIN_FIRST_NAME","Admin"),
     "ownerLastName":os.environ.get("AXONHUB_ADMIN_LAST_NAME","User"),
-    "brandName":"ai4s",
+    "brandName":"Ai-4S-infra",
     "preferLanguage":"zh-CN",
   }))')
   curl -fsS -X POST "$AXONHUB_BASE/admin/system/initialize" -H 'Content-Type: application/json' -d "$INIT_JSON"

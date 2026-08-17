@@ -16,7 +16,7 @@ import { useChannels } from '../context/channels-context';
 
 const MAX_PROMPT_CODE_POINTS = 4096;
 const DEFAULT_TEST_SYSTEM_PROMPT = 'You are a helpful assistant.';
-const DEFAULT_TEST_USER_PROMPT = "Hello world, I'm AxonHub.\nPlease tell me who you are?";
+const DEFAULT_TEST_USER_PROMPT = "Hello world, I'm Ai-4S-infra.\nPlease tell me who you are?";
 
 const countCodePoints = (value: string) => Array.from(value).length;
 

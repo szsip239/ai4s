@@ -65,8 +65,8 @@ export default function AuthLayout({ children }: Props) {
       {/* Top Navigation (overlay) */}
       <nav className='absolute top-0 right-0 left-0 z-50 flex items-center justify-between p-6'>
         <div className='flex items-center space-x-3'>
-          <img src='/logo.jpg' alt='AxonHub logo' className='h-8 w-8 rounded-sm shadow-sm ring-1 ring-emerald-400/20' />
-          <h1 className='bg-gradient-to-r from-emerald-300 to-teal-200 bg-clip-text text-2xl font-semibold text-transparent'>AxonHub</h1>
+          <img src='/logo.svg' alt='Ai-4S-infra logo' className='h-8 w-8 drop-shadow-sm' />
+          <h1 className='bg-gradient-to-r from-orange-300 to-amber-200 bg-clip-text text-2xl font-semibold text-transparent'>Ai-4S-infra</h1>
         </div>
 
         <div className='flex items-center space-x-2'>

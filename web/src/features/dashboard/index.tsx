@@ -27,6 +27,7 @@ import { ModelPerformanceStats } from './components/model-performance-stats';
 import { ChannelPerformanceStats } from './components/channel-performance-stats';
 import { useDashboardStats } from './data/dashboard';
 import { useRoutePermissions } from '@/hooks/useRoutePermissions';
+import { Ai4sBrandCard } from '@/ai4s/components/Ai4sBrandCard';
 
 interface CollapsibleSectionProps {
   title: string;
@@ -148,6 +149,9 @@ export default function DashboardPage() {
   return (
     <div className='flex-1 space-y-6 p-8 pt-6'>
       <Header />
+
+      {/* 挂载点：品牌说明卡（名称 + 4S 含义，issue #58）；组件本体在 src/ai4s/components/ */}
+      <Ai4sBrandCard />
 
       {/* 概览部分 - 始终展示 */}
       <section className='space-y-4'>

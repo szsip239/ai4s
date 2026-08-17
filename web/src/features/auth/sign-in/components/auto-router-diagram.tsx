@@ -64,7 +64,7 @@ export default function AutoRouterDiagram() {
         </defs>
         <text fontFamily='ui-sans-serif, system-ui, -apple-system' fontSize='18' fill='#e2e8f0'>
           <textPath href='#ar-curve' startOffset='30%'>
-            AxonHub
+            Ai-4S-infra
           </textPath>
         </text>
 
