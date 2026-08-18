@@ -23,8 +23,6 @@
   "sidebar.items.accessManagement": "接入管理",
   "sidebar.items.observability": "观测",
   "sidebar.items.people": "人员",
-  "sidebar.items.projectMembers": "项目成员",
-  "sidebar.items.projectRoles": "项目角色",
   "sidebar.team.name": "Ai-4S-infra",
   "sidebar.team.plan": "AI + 统一",
   "sidebar.userMenu.account": "账户",

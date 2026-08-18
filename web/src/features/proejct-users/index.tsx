@@ -4,8 +4,6 @@ import { usePaginationSearch } from '@/hooks/use-pagination-search';
 import { usePermissions } from '@/hooks/usePermissions';
 import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
-import { Ai4sPageTabs } from '@/ai4s/components/Ai4sPageTabs';
-import { pageTabGroups } from '@/ai4s/components/page-tab-groups';
 import { createColumns } from './components/users-columns';
 import { UsersDialogs } from './components/users-dialogs';
 import { UsersPrimaryButtons } from './components/users-primary-buttons';
@@ -92,7 +90,7 @@ export default function UsersManagement() {
       </Header>
 
       <Main fixed>
-        <Ai4sPageTabs tabs={pageTabGroups.people(t)} />
+        {/* issue #66：本页从人员 Tab 组摘下，恢复无 Tab 裸页（顶栏「人员」权限回退仍直达本页） */}
         <UsersContent />
       </Main>
       <UsersDialogs />

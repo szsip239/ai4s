@@ -23,8 +23,6 @@
   "sidebar.items.accessManagement": "Access Management",
   "sidebar.items.observability": "Observability",
   "sidebar.items.people": "People",
-  "sidebar.items.projectMembers": "Project Members",
-  "sidebar.items.projectRoles": "Project Roles",
   "sidebar.team.name": "Ai-4S-infra",
   "sidebar.team.plan": "AI + Unified",
   "sidebar.teamSwitcher.teams": "Teams",

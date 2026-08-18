@@ -18,13 +18,12 @@ export const pageTabGroups = {
     { label: t('sidebar.items.channels'), url: '/channels' },
     { label: t('sidebar.items.models'), url: '/models' },
   ],
-  /** 人员（issue #65 合并全局/项目两域，取代旧 usersRoles/members 两组）：
-      用户（全局）| 项目成员 | 角色（系统）| 项目角色 */
+  /** 人员（issue #65 合并全局/项目两域，取代旧 usersRoles/members 两组；
+      issue #66 去 Tab 化四→二：只留有内容的两页——用户（全局 /users）| 角色（项目角色页 /project/roles）；
+      /project/users、/roles 从组里摘下恢复无 Tab 裸页，页面保留可直访） */
   people: (t: (key: string) => string): PageTab[] => [
     { label: t('sidebar.items.users'), url: '/users' },
-    { label: t('sidebar.items.projectMembers'), url: '/project/users' },
-    { label: t('sidebar.items.roles'), url: '/roles' },
-    { label: t('sidebar.items.projectRoles'), url: '/project/roles' },
+    { label: t('sidebar.items.roles'), url: '/project/roles' },
   ],
   /** 观测（项目组）：请求 | 用量统计 | 追踪 | 线程 */
   observability: (t: (key: string) => string): PageTab[] => [

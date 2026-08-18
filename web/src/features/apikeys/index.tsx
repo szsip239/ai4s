@@ -19,6 +19,11 @@ import { ApiKeyType } from './data/schema';
 
 type ApiKeyTabKey = ApiKeyType | 'all';
 
+// issue #66 去 Tab 化：类型 Tab 条不再渲染（在用 key 几乎全项目级，空 Tab 无信息量；
+// 分类由表格「类型」列承载）。activeTab 状态与 whereClause 过滤逻辑保留、默认停 'all'；
+// 恢复 Tab 条时把开关改回 true 即可。
+const SHOW_TYPE_TABS = false;
+
 const DEFAULT_SORTING: SortingState = [{ id: 'createdAt', desc: true }];
 const SORTABLE_COLUMN_IDS = new Set(['name', 'createdAt', 'updatedAt']);
 
@@ -202,22 +207,25 @@ function ApiKeysContent() {
 
   return (
     <div className='flex min-h-0 flex-1 flex-col overflow-hidden'>
-      <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as ApiKeyTabKey)} className='w-full'>
-        <TabsList className='shadow-soft border-border bg-background grid w-full grid-cols-4 rounded-2xl border'>
-          <TabsTrigger value='all' data-value='all'>
-            {t('apikeys.tabs.all')}
-          </TabsTrigger>
-          <TabsTrigger value='user' data-value='user'>
-            {t('apikeys.type.user')}
-          </TabsTrigger>
-          <TabsTrigger value='personal' data-value='personal'>
-            {t('apikeys.type.personal')}
-          </TabsTrigger>
-          <TabsTrigger value='service_account' data-value='service_account'>
-            {t('apikeys.type.service_account')}
-          </TabsTrigger>
-        </TabsList>
-      </Tabs>
+      {/* issue #66：类型 Tab 条整体不渲染，默认 'all' 视图（开关见文件顶部 SHOW_TYPE_TABS） */}
+      {SHOW_TYPE_TABS && (
+        <Tabs value={activeTab} onValueChange={(value) => setActiveTab(value as ApiKeyTabKey)} className='w-full'>
+          <TabsList className='shadow-soft border-border bg-background grid w-full grid-cols-4 rounded-2xl border'>
+            <TabsTrigger value='all' data-value='all'>
+              {t('apikeys.tabs.all')}
+            </TabsTrigger>
+            <TabsTrigger value='user' data-value='user'>
+              {t('apikeys.type.user')}
+            </TabsTrigger>
+            <TabsTrigger value='personal' data-value='personal'>
+              {t('apikeys.type.personal')}
+            </TabsTrigger>
+            <TabsTrigger value='service_account' data-value='service_account'>
+              {t('apikeys.type.service_account')}
+            </TabsTrigger>
+          </TabsList>
+        </Tabs>
+      )}
       <div className='mt-6 flex min-h-0 flex-1 flex-col overflow-hidden'>
         <ApiKeysTable
           data={tableData}
