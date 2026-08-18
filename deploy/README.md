@@ -39,6 +39,13 @@ cd ../shim && python3 -m unittest discover -s tests    # shim 单测；本机先
 - 管理面：http://localhost:3000 （经 agentgateway 反代；宿主不再单独暴露 axonhub 调试口，issue #60），用 `.env` 中的 `AXONHUB_ADMIN_EMAIL` / `AXONHUB_ADMIN_PASSWORD` 登录（本地账号；阶段 1 切 飞书 OAuth→Casdoor→OIDC）。
 - 员工入口：`http://localhost:3000/v1`（OpenAI 兼容），唯一对员工的端口。
 - SSO（issue #14 已上线）：员工在 http://localhost:3000/sign-in 点"Casdoor SSO（飞书）"登录，JIT 自动建号。axonhub 无 JIT 默认项目机制，首登后运行 `./scripts/assign-default-project.sh`（幂等，可加 cron）把新员工补进 Default 项目。
+- **Tailnet 内网访问（issue #63）**：宿主经 tailscale serve 暴露两条 tailnet-only HTTPS 入口，其他 tailnet 设备直接可用：
+  - console+API：`https://<host>.<tailnet>.ts.net:8445`（→ 127.0.0.1:3000；本机 localhost:3000 入口不受影响）
+  - Casdoor：`https://<host>.<tailnet>.ts.net:8444`（→ 127.0.0.1:8000）
+  - 命令：`tailscale serve --bg --https=8445 http://127.0.0.1:3000` / `tailscale serve --bg --https=8444 http://127.0.0.1:8000`（存于 tailscaled 状态，重启自愈；关闭用 `tailscale serve --https=<port> off`）。**不要用 443**：本机 sibling-project-nginx 占用 0.0.0.0:443 时会截胡同名流量。
+  - SSO 规范名已收敛到 ts.net：`axonhub/config.yml` 的 public_url/redirect_url=…:8445、issuer_url=…:8444，`casdoor/app.conf` origin=…:8444（issuer 与 origin 必须一致）。
+  - **前置依赖（飞书后台手工项）**：飞书开放平台应用（cli_xxxxxxxxxxxxxxxx）→ 安全设置 → 重定向 URL 须含 `https://<host>.<tailnet>.ts.net:8444/callback`，否则 SSO 最后一步报错误码 20029。
+  - Casdoor 应用的 `redirect_uris` 追加项（含 :8445 回调）是运行时 DB 配置，`casdoor_data` volume 重建后需经 `/api/update-application` 重设（同上方 display_name 的恢复套路）。
 - **Casdoor 展示名（issue #58/#59）**：组织/应用的 `display_name`（当前均为 `Ai-4S-infra`）是运行时 DB 配置，`casdoor_data` volume 重建后会回退初始值，需手工重设：
 
   ```bash
