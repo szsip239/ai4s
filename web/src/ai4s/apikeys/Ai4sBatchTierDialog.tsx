@@ -113,7 +113,7 @@ export function Ai4sBatchTierDialog() {
       const profileInput = templateToProfileInput(targetTemplate);
       const r = await executeBatchTierChange(matched, targetTemplate, profileInput, effectiveProjectId);
       setResults(r);
-      invalidate();
+      invalidate(r.map((x) => x.id));
     } finally {
       setExecuting(false);
     }

@@ -163,11 +163,14 @@ export async function executeBatchTierChange(
   return results;
 }
 
-/** 换档完成后失效 key 列表缓存（告警轮询读的 apiKeyQuotaUsages 也一并失效，按新档配额计算） */
+/** 换档完成后失效缓存：列表 + 逐条详情（['apiKey', id]，对照 vendor useUpdateApiKeyProfiles onSuccess）；告警轮询读的 apiKeyQuotaUsages 一并失效，按新档配额计算 */
 export function useInvalidateAfterBatchTier() {
   const queryClient = useQueryClient();
-  return () => {
+  return (ids: string[]) => {
     queryClient.invalidateQueries({ queryKey: ['apiKeys'] });
+    for (const id of ids) {
+      queryClient.invalidateQueries({ queryKey: ['apiKey', id] });
+    }
     queryClient.invalidateQueries({ queryKey: ['ai4sBatchTierKeys'] });
     queryClient.invalidateQueries({ queryKey: ['apiKeyQuotaUsages'] });
   };

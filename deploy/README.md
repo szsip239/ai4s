@@ -71,6 +71,7 @@ cd ../shim && python3 -m unittest discover -s tests    # shim 单测；本机先
 ## Key 限额档（issue #18/#19/#64）
 
 - **模板语义**：限额档模板（apiKeyProfileTemplates：体验档/标准档/高档…）在 key 创建时**拷贝快照而非引用**——模板=新发默认档，改模板不回溯存量 key；存量调档走批量操作（控制台 key 管理页「批量换档」：项目/员工/当前档筛选 → 预览命中 → 逐条执行回报）或 issue #19 提额审批路径（shim alert_poller 同款换档语义）。
+- **换档=profiles 整体替换**：批量换档与提额审批换档都以目标档模板**整体覆盖** key 的 profiles——key 原 profile 上的 channelIDs/modelIDs 等约束会被抹掉（与 shim alert_poller apply_tier 同语义）；带定制约束的 key 换档后需按需重建约束。
 - **「项目≈部门」约定**：部门维度不靠 axonhub 新增实体，一部一项目承载；按部门调档=按项目筛选换档。告警轮询（issue #18 `apiKeyQuotaUsages`）按 key 当前档配额计算，换档后自动按新档生效。
 
 ## PostgreSQL 日备

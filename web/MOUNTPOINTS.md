@@ -9,7 +9,7 @@
 | `src/authenticated-layout.tsx` | 全文重构 | 移除 AppSidebar/侧边栏逻辑，改为 AppHeader + Ai4sTopNavBar 两行固定头部；保留 SidebarProvider（AppHeader 的 useSidebar 依赖） | issue #11 C 结构顶部导航；新组件在 src/ai4s/layout/ | 2026-08-01 |
 | `src/routes/_authenticated/index.tsx` | import 与组件 | Dashboard 换为 `@/ai4s/pages/dashboard/Ai4sDashboard` | issue #11 C 结构高密度看板 + 右侧信息面板；上游 Dashboard 保留于 features/dashboard 未动 | 2026-08-01 |
 | `src/components/layout/app-header.tsx` | 布局左区 | 删除 SidebarTrigger（无侧边栏后的死按钮）及其 import | issue #11 配套清理 | 2026-08-01 |
-| `src/lib/i18n.ts` | 顶部 +1 行 import、zhTranslation merge 参数 +1 | 引入 `src/ai4s/locales/zh-CN/ai4s-patch.json` 补键包（61 个 zh-CN 缺失键：profile/security/common 等） | issue #12 中文补键；补键包本体在隔离区 | 2026-08-02 |
+| `src/lib/i18n.ts` | 顶部 +1 行 import、zhTranslation merge 参数 +1 | 引入 `src/ai4s/locales/zh-CN/ai4s-patch.json` 补键包（现 72 键：初版 61 个上游 zh-CN 缺失键 profile/security/common 等，后角色扩展为 ai4s 功能键载体，如 #64 batchTier.*） | issue #12 中文补键；补键包本体在隔离区 | 2026-08-02 |
 | `src/routes/_authenticated/project/requests/index.tsx` | import 与组件 | 审计日志换 `@/ai4s/pages/requests/Ai4sRequestsPage`（元数据抽屉 + warn 提示条，不展示原文） | issue #13 审计原则 | 2026-08-02 |
 | `src/routes/_authenticated/project/requests/$requestId.tsx` | 全文 | 深链统一 redirect 回 `/project/requests`（上游详情页含原文，禁用） | issue #13 配套 | 2026-08-02 |
 | `src/routes/_authenticated/prompt-protection-rules/index.tsx` | import 与组件 | 脱敏规则换 `@/ai4s/pages/rules/Ai4sRulesPage`（link-ai 式，类型/优先级展示层派生） | issue #13 | 2026-08-02 |
@@ -42,3 +42,6 @@
 | `src/features/apikeys/index.tsx` | import 区 +1 行、Header 右侧按钮区包一层 div 内 +1 行 | 挂载 `<Ai4sBatchTierDialog />` 批量换档入口（筛选→预览→逐条执行回报；组件内部按 write_api_keys 自隐藏）；组件与数据层/纯逻辑在 `src/ai4s/apikeys/` | issue #64 存量 key 批量调档 | 2026-08-18 |
 | `src/sidebar.ts` + `src/features/{users,roles,proejct-users,project-roles}/index.tsx` | sidebar.ts 项目组删「成员」项、管理组「用户与角色」改「人员」（/users）；四页 Ai4sPageTabs 入参 usersRoles/members → people | issue #65 人员域合并：⌘K 归并单域、四页统一 Tab 组（组定义在 `src/ai4s/components/page-tab-groups.ts`） | 2026-08-18 |
 | `src/locales/zh-CN/base.json` / `src/locales/en/base.json` | `sidebar.items.members` 行后各 +3 键 | 新增 `sidebar.items.people`（人员/People）、`projectMembers`（项目成员/Project Members）、`projectRoles`（项目角色/Project Roles） | issue #65 人员域合并新标签；users/roles 复用既有键 | 2026-08-18 |
+| `package.json` | scripts.test:unit | glob 加引号 `node --test "src/**/*.test.mjs"` 交 node 展开（shell 不带 globstar 时 `**` 退化为单层，漏收 `src/features/channels/data/` 等嵌套测试） | issue #64/#65 评审 P2 | 2026-08-18 |
+| `src/locales/zh-CN/base.json` / `src/locales/en/base.json` | 各删 2 键 | 删除死键 `sidebar.items.usersAndRoles`、`sidebar.items.members`（#65 后代码零引用，全仓含 web/tests grep 确认） | issue #64/#65 评审 P2 | 2026-08-18 |
+| `src/sidebar.ts` | 项目组 playground 后 +1 项 + 注释 | 加回「人员」（`sidebar.items.people` → /project/users）：与管理组 /users 同名不同组，靠 filterNavGroups/checkRouteAccess 按各自 scopeLevel 过滤（/users=system 组，/project/users=any 组）；顶栏人员入口同步按 hasSystemScope('read_users') 回落（组件在 `src/ai4s/layout/Ai4sTopNavBar.tsx`，隔离区内不另登记） | issue #64/#65 评审 P2：无系统级 read_users 的用户人员入口可达性 | 2026-08-18 |

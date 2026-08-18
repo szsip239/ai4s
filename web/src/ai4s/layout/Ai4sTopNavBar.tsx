@@ -11,6 +11,7 @@ import {
   IconSettings,
 } from '@tabler/icons-react';
 import { cn } from '@/lib/utils';
+import { usePermissions } from '@/hooks/usePermissions';
 
 /**
  * ai4s 顶部导航（C 结构）
@@ -20,8 +21,10 @@ import { cn } from '@/lib/utils';
  * 观测域的用量统计/追踪/线程、成员域的用户/角色同样经各页 Ai4sPageTabs 可达。
  * issue #55 收尾：「审计日志」统一为「观测」（与 ⌘K 域名一致）；补「成员」入口
  * （/project/users、/project/roles 直达时顶栏有激活项）。
- * issue #65：成员（项目域）+ 用户与角色（全局域）合并为单一「人员」入口（默认落全局用户页），
+ * issue #65：成员（项目域）+ 用户与角色（全局域）合并为单一「人员」入口，
  * 四个人员域页面经统一 people Tab 组互跳；顶栏 10 项 → 9 项。
+ * issue #65 评审 P2：人员入口按权限回落——有系统级 read_users 落全局 /users，
+ * 否则落项目域 /project/users（route-permission：/users 属 system 组，/project/users 属 any 组）。
  */
 
 const NAV_ITEMS = [
@@ -38,11 +41,15 @@ const NAV_ITEMS = [
 
 export function Ai4sTopNavBar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const { hasSystemScope } = usePermissions();
+  const peopleHref = hasSystemScope('read_users') ? '/users' : '/project/users';
+  // NAV_ITEMS 中仅「人员」href 为 /users，按权限解析实际落点
+  const navItems = NAV_ITEMS.map((item) => (item.href === '/users' ? { ...item, href: peopleHref } : item));
 
   return (
     <div className='bg-background/95 supports-[backdrop-filter]:bg-background/60 fixed top-14 z-40 w-full border-b backdrop-blur'>
       <nav className='flex h-11 items-center gap-1 overflow-x-auto px-4'>
-        {NAV_ITEMS.map(({ title, href, match, icon: Icon }) => {
+        {navItems.map(({ title, href, match, icon: Icon }) => {
           const active =
             href === '/'
               ? pathname === '/'
