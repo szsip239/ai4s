@@ -46,6 +46,7 @@ cd ../shim && python3 -m unittest discover -s tests    # shim 单测；本机先
   - SSO 规范名已收敛到 ts.net：`axonhub/config.yml` 的 public_url/redirect_url=…:8445、issuer_url=…:8444，`casdoor/app.conf` origin=…:8444（issuer 与 origin 必须一致）。
   - **前置依赖（飞书后台手工项）**：飞书开放平台应用（cli_xxxxxxxxxxxxxxxx）→ 安全设置 → 重定向 URL 须含 `https://<host>.<tailnet>.ts.net:8444/callback`，否则 SSO 最后一步报错误码 20029。
   - Casdoor 应用的 `redirect_uris` 追加项（含 :8445 回调）是运行时 DB 配置，`casdoor_data` volume 重建后需经 `/api/update-application` 重设（同上方 display_name 的恢复套路）。
+  - **issuer 变更需迁移身份链接**：axonhub `oidc_identities` 按 (issuer, subject) 匹配既有用户；issuer 换名后旧链接失配，JIT 会撞邮箱唯一约束（`user_email_deleted_at` 23505）。恢复套路：`UPDATE oidc_identities SET issuer='<新 issuer>' WHERE subject='<sub>';`（2026-08-18 已对唯一 SSO 用户执行过一次）。
 - **Casdoor 展示名（issue #58/#59）**：组织/应用的 `display_name`（当前均为 `Ai-4S-infra`）是运行时 DB 配置，`casdoor_data` volume 重建后会回退初始值，需手工重设：
 
   ```bash
