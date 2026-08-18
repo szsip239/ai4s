@@ -39,3 +39,4 @@
 | `public/favicon.ico` | 替换 | 从 logo.svg 经 rsvg-convert+PIL 重渲打包 16/32/48 三层，与 index.html `sizes="16x16 32x32 48x48"` 声明一致（#58 初版漏 48 层，issue #59 补齐） | issue #58 favicon 回退；issue #59 补 48 层+补登记 | 2026-08-18 |
 | `vite.config.ts` | server.proxy `/admin`、`/oauth`、`/v1` 三处 target 默认值 | dev 代理默认 `http://localhost:8090`→`http://localhost:3000` | issue #60 宿主调试口收拢：宿主侧默认一律走 :3000 网关反代 | 2026-08-18 |
 | `playwright.config.ts` | AXONHUB_API_URL 默认值 + webServer.env.VITE_API_URL 兜底 | 默认 `http://localhost:8099`→`http://localhost:3000` | 同上（issue #60） | 2026-08-18 |
+| `src/features/apikeys/index.tsx` | import 区 +1 行、Header 右侧按钮区包一层 div 内 +1 行 | 挂载 `<Ai4sBatchTierDialog />` 批量换档入口（筛选→预览→逐条执行回报；组件内部按 write_api_keys 自隐藏）；组件与数据层/纯逻辑在 `src/ai4s/apikeys/` | issue #64 存量 key 批量调档 | 2026-08-18 |

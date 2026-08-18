@@ -57,5 +57,26 @@
   "response.output_item.added": "输出项新增",
   "response.output_text.delta": "输出文本增量",
   "response.reasoning_summary_text.delta": "推理摘要增量",
-  "response.function_call_arguments.delta": "函数调用参数增量"
+  "response.function_call_arguments.delta": "函数调用参数增量",
+
+  "ai4s.batchTier.button": "批量换档",
+  "ai4s.batchTier.title": "批量配额换档",
+  "ai4s.batchTier.description": "按项目/员工/当前档筛选目标 Key，预览命中列表后统一换挂到目标限额档。",
+  "ai4s.batchTier.filterProject": "项目",
+  "ai4s.batchTier.filterUser": "员工",
+  "ai4s.batchTier.filterTier": "当前档",
+  "ai4s.batchTier.currentProject": "当前项目",
+  "ai4s.batchTier.all": "全部",
+  "ai4s.batchTier.noProfile": "（未设档）",
+  "ai4s.batchTier.preview": "命中 {{count}} 个 Key",
+  "ai4s.batchTier.previewEmpty": "当前筛选无命中 Key",
+  "ai4s.batchTier.colName": "名称",
+  "ai4s.batchTier.colUser": "员工",
+  "ai4s.batchTier.colTier": "当前档",
+  "ai4s.batchTier.targetTier": "目标档",
+  "ai4s.batchTier.targetPlaceholder": "选择限额档模板",
+  "ai4s.batchTier.confirm": "确认换档（{{count}} 个）",
+  "ai4s.batchTier.resultSummary": "执行完成：成功 {{success}} 个，失败 {{fail}} 个",
+  "ai4s.batchTier.resultOk": "成功",
+  "ai4s.batchTier.resultFail": "失败：{{reason}}"
 }

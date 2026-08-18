@@ -8,6 +8,7 @@ import { type DateTimeRangeValue } from '@/utils/date-range';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
+import { Ai4sBatchTierDialog } from '@/ai4s/apikeys/Ai4sBatchTierDialog';
 import { createColumns } from './components/apikeys-columns';
 import { ApiKeysDialogs } from './components/apikeys-dialogs';
 import { ApiKeysPrimaryButtons } from './components/apikeys-primary-buttons';
@@ -258,7 +259,11 @@ export default function ApiKeysManagement() {
             <h2 className='text-xl font-bold tracking-tight'>{t('apikeys.title')}</h2>
             <p className='text-sm text-muted-foreground'>{t('apikeys.description')}</p>
           </div>
-          <ApiKeysPrimaryButtons />
+          {/* ai4s 挂载（issue #64 批量换档入口，内部按 write_api_keys 权限自隐藏）；与既有按钮同组右对齐 */}
+          <div className='flex items-center gap-2'>
+            <ApiKeysPrimaryButtons />
+            <Ai4sBatchTierDialog />
+          </div>
         </div>
       </Header>
 

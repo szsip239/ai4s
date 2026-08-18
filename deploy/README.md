@@ -68,6 +68,11 @@ cd ../shim && python3 -m unittest discover -s tests    # shim 单测；本机先
 
 也可在管理面手工配置：Channels → New Channel → 选 codex/claudecode → 走页面 OAuth 流程（`/admin/codex/oauth/start` 同款）。
 
+## Key 限额档（issue #18/#19/#64）
+
+- **模板语义**：限额档模板（apiKeyProfileTemplates：体验档/标准档/高档…）在 key 创建时**拷贝快照而非引用**——模板=新发默认档，改模板不回溯存量 key；存量调档走批量操作（控制台 key 管理页「批量换档」：项目/员工/当前档筛选 → 预览命中 → 逐条执行回报）或 issue #19 提额审批路径（shim alert_poller 同款换档语义）。
+- **「项目≈部门」约定**：部门维度不靠 axonhub 新增实体，一部一项目承载；按部门调档=按项目筛选换档。告警轮询（issue #18 `apiKeyQuotaUsages`）按 key 当前档配额计算，换档后自动按新档生效。
+
 ## PostgreSQL 日备
 
 ```bash
