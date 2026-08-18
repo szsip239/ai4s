@@ -110,7 +110,7 @@ export default function RolesPage() {
       </Header>
 
       <Main fixed>
-        <Ai4sPageTabs tabs={pageTabGroups.members(t)} />
+        <Ai4sPageTabs tabs={pageTabGroups.people(t)} />
         <RolesContent />
       </Main>
       <RolesDialogs />

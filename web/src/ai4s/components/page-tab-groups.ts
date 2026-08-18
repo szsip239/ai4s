@@ -18,10 +18,13 @@ export const pageTabGroups = {
     { label: t('sidebar.items.channels'), url: '/channels' },
     { label: t('sidebar.items.models'), url: '/models' },
   ],
-  /** 用户与角色（管理组）：用户 | 角色 */
-  usersRoles: (t: (key: string) => string): PageTab[] => [
+  /** 人员（issue #65 合并全局/项目两域，取代旧 usersRoles/members 两组）：
+      用户（全局）| 项目成员 | 角色（系统）| 项目角色 */
+  people: (t: (key: string) => string): PageTab[] => [
     { label: t('sidebar.items.users'), url: '/users' },
+    { label: t('sidebar.items.projectMembers'), url: '/project/users' },
     { label: t('sidebar.items.roles'), url: '/roles' },
+    { label: t('sidebar.items.projectRoles'), url: '/project/roles' },
   ],
   /** 观测（项目组）：请求 | 用量统计 | 追踪 | 线程 */
   observability: (t: (key: string) => string): PageTab[] => [
@@ -29,10 +32,5 @@ export const pageTabGroups = {
     { label: t('sidebar.items.usageStats'), url: '/project/usage-stats' },
     { label: t('sidebar.items.traces'), url: '/project/traces' },
     { label: t('sidebar.items.threads'), url: '/project/threads' },
-  ],
-  /** 成员（项目组）：用户 | 角色 */
-  members: (t: (key: string) => string): PageTab[] => [
-    { label: t('sidebar.items.users'), url: '/project/users' },
-    { label: t('sidebar.items.roles'), url: '/project/roles' },
   ],
 };

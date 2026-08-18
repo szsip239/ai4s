@@ -61,7 +61,9 @@ export function useSidebarData(): SidebarData {
 
   // 原始导航组配置（issue #54 侧栏归并 17→11：同域页面合并为入口+页内 Tab，
   // 被合并路由（/models、/roles、/project/usage-stats、/project/traces、/project/threads、
-  // /project/roles）保持可达，经各页 PageTabs 切换）
+  // /project/roles）保持可达，经各页 PageTabs 切换；
+  // issue #65 人员域再归并：项目「成员」并入管理组「人员」（/users 入口），
+  // /project/users、/project/roles 经 people Tab 组可达）
   const rawNavGroups: NavGroup[] = [
     {
       title: t('sidebar.groups.admin'),
@@ -87,7 +89,7 @@ export function useSidebarData(): SidebarData {
           icon: IconPackages,
         } as NavLink,
         {
-          title: t('sidebar.items.usersAndRoles'),
+          title: t('sidebar.items.people'),
           url: '/users',
           icon: IconUsers,
         } as NavLink,
@@ -125,11 +127,6 @@ export function useSidebarData(): SidebarData {
           title: t('sidebar.items.playground'),
           url: '/project/playground',
           icon: IconRobot,
-        } as NavLink,
-        {
-          title: t('sidebar.items.members'),
-          url: '/project/users',
-          icon: IconUsers,
         } as NavLink,
         // {
         //   title: t('sidebar.items.usageLogs'),

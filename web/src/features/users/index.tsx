@@ -117,7 +117,7 @@ export default function UsersManagement() {
       </Header>
 
       <Main fixed>
-        <Ai4sPageTabs tabs={pageTabGroups.usersRoles(t)} />
+        <Ai4sPageTabs tabs={pageTabGroups.people(t)} />
         <UsersContent />
       </Main>
       <UsersDialogs />
