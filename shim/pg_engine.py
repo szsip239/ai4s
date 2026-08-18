@@ -86,7 +86,8 @@ if __name__ == "__main__":
         if not line:
             continue
         try:
-            text = json.loads(line).get("text", "")
+            # 与生产路径（shim/app.py 检测调用点）对齐：先截 4000 字符再打分，长样本口径不分叉
+            text = json.loads(line).get("text", "")[:4000]
             print(json.dumps({"malicious": score(text)}), flush=True)
         except Exception as e:
             print(json.dumps({"error": f"{type(e).__name__}: {str(e)[:200]}"}), flush=True)

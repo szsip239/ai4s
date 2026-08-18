@@ -41,7 +41,7 @@ class TestNormalizeForScoring(unittest.TestCase):
     def test_base64_binary_not_replaced(self):
         """解码为二进制（可打印率 <0.9，如 PNG 头）→ 不替换，防误伤正常 base64 讨论。"""
         png_b64 = base64.b64encode(bytes.fromhex("89504e470d0a1a0a0000000d49484452")).decode()
-        s = f"这段 base64 是 PNG 吗:{png_b64}"  # 全角冒号会被 NFKC 转半角，断言用半角基准
+        s = f"这段 base64 是 PNG 吗:{png_b64}"  # 半角冒号：串内无可归一化字符，断言原样返回
         self.assertEqual(normalize_for_scoring(s), s)
 
     def test_short_token_not_touched(self):
