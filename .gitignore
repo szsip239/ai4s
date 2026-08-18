@@ -5,3 +5,4 @@ prototype/console/dist/
 # DLP admin 写入产物（issue #32+）
 *.bak
 __pycache__/
+.venv/

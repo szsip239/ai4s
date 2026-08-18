@@ -143,9 +143,11 @@ services:
       EDM_ENABLED: ${EDM_ENABLED:-0}
       EDM_MIN_HITS: ${EDM_MIN_HITS:-2}
       # issue #30 PromptGuard 2 注入检测 shadow（检出记日志不阻断）；开关/阈值同上走 settings.json
+      # issue #67：promptguard 服务并入 shim 进程内推理（pg_engine），PG_URL 退役；
+      # 模型经下方卷挂载 + HF_HUB_OFFLINE 离线加载（原 promptguard 容器同款）
       PG_ENABLED: ${PG_ENABLED:-0}
-      PG_URL: http://promptguard:8092/guard
       PG_THRESHOLD: ${PG_THRESHOLD:-0.7}
+      HF_HUB_OFFLINE: "1"
       # issue #44 打分前置归一化（base64 内联解码/零宽清除/全角转半角，只改打分输入）：
       # settings.json 现网显式 true（实测检出 9→11/27、零误报抬升），env 回退层默认 1 对齐现网；
       # shim 代码内置默认 false 保升级安全（settings > env > 内置默认 三级取值语义不变）
@@ -171,25 +173,12 @@ services:
       - ./edm:/edm:rw # EDM 指纹库（issue #29），issue #31 起 rw
       - ./agentgateway:/agentgateway:rw # L1 规则渲染写回（issue #33 用，#31 预挂）
       - ./.local/alert-state:/state # 告警防抖状态（issue #56 平移自 alert-poller，gitignored）
+      - ./.local/promptguard-model:/models/promptguard:ro # PromptGuard 2 模型（issue #67 平移自 promptguard 服务，gitignored）
     networks:
       - ai4s
     depends_on:
       - presidio
       - axonhub
-    restart: unless-stopped
-
-  # PromptGuard 2 注入检测实测（issue #30）：profile=promptguard，不进默认栈
-  promptguard:
-    build: ../promptguard
-    container_name: ai4s-promptguard
-    environment:
-      HF_HUB_OFFLINE: "1"
-    ports:
-      - "127.0.0.1:18092:8092" # 仅本地：评估脚本直测
-    volumes:
-      - ./.local/promptguard-model:/models/promptguard:ro
-    networks:
-      - ai4s
     restart: unless-stopped
 
   # 占位/mock 上游：仅在拿不到 OAuth 订阅凭据时验证链路可达用。

@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
-"""PromptGuard 2 注入/越狱检测服务（issue #30 实测）。
+"""PromptGuard 2 注入/越狱检测引擎（issue #67：promptguard 服务并入 shim 进程内）。
 
-POST /guard {"text": "..."} → {"malicious": 0.87}
-POST /guard {"text": "...", "normalize": true} → 打分前先归一化（issue #44，默认关=现网行为）
-score = MALICIOUS 概率（meta-llama/Llama-Prompt-Guard-2-86M，int8 ONNX，CPU，低内存）。
-本地目录离线加载（/models/promptguard）。
+平移自原 promptguard/app.py（issue #30 实测 + issue #44 归一化），打分语义不变：
+score(text) → MALICIOUS 概率（meta-llama/Llama-Prompt-Guard-2-86M，int8 ONNX，CPU，低内存）。
+模型本地目录离线加载（PG_MODEL_DIR，默认 /models/promptguard，compose 挂卷 + HF_HUB_OFFLINE=1）。
+
+issue #49 纪律：onnxruntime/transformers/numpy 全部函数级懒加载——
+pg.enabled=false 时 shim 不 import 本模块，检测路径零额外依赖/零启动开销；
+模型首次打分时懒加载（shim 启动时间不因 PG 开关变化）。
+
+__main__ 为 jsonl REPL（评估/调试直测用，injection-eval 经 `docker exec -i ai4s-shim
+python3 pg_engine.py` 调用）：stdin 每行 {"text": ...} → stdout 每行 {"malicious": 0.87}。
 """
 import base64
 import json
 import os
 import re
 import unicodedata
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 MODEL_DIR = os.environ.get("PG_MODEL_DIR", "/models/promptguard")
 _sess = None
@@ -20,7 +25,7 @@ _mal_idx = 1
 
 # 归一化（issue #44）：零宽字符清除 + NFKC（全角→半角）+ base64 形 token 可解码为
 # 可打印文本时内联替换（append 变体被 512 token 截断稀释，实测 inline 才翻盘）。
-# 只改打分输入——本服务只见打分文本，转发原文天然不受影响。
+# 只改打分输入——引擎只见打分文本，转发原文天然不受影响。
 _ZERO_WIDTH = re.compile("[\u200b\u200c\u200d\ufeff]")  # 显式转义写法，抗格式化工具吞不可见字符
 _B64_TOKEN = re.compile(r"[A-Za-z0-9+/]{16,}={0,2}")
 
@@ -43,7 +48,8 @@ def normalize_for_scoring(text: str) -> str:
     return text
 
 
-def get_model():
+def _get_model():
+    """模型懒加载（函数级 import 重依赖）：首次打分加载，进程内单例。"""
     global _sess, _tok, _mal_idx
     if _sess is None:
         import onnxruntime as ort
@@ -59,48 +65,28 @@ def get_model():
     return _sess, _tok, _mal_idx
 
 
-def guard(text: str) -> float:
+def score(text: str) -> float:
+    """MALICIOUS 概率（0-1，round 4 位对齐原 /guard 响应语义）。
+    加载/推理异常抛给调用方（shim pg_guard fail-open 兜底）。"""
     import numpy as np
-    sess, tok, mi = get_model()
+    sess, tok, mi = _get_model()
     enc = tok(text, truncation=True, max_length=512, return_tensors="np")
     accepted = {i.name for i in sess.get_inputs()}
     inputs = {k: v for k, v in enc.items() if k in accepted}
     logits = sess.run(None, inputs)[0][0]
     exp = np.exp(logits - logits.max())
-    return float(exp[mi] / exp.sum())
-
-
-class Handler(BaseHTTPRequestHandler):
-    def log_message(self, *args):
-        pass
-
-    def _json(self, code, obj):
-        body = json.dumps(obj, ensure_ascii=False).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-
-    def do_GET(self):
-        self._json(200 if self.path == "/healthz" else 404, {"ok": self.path == "/healthz"})
-
-    def do_POST(self):
-        if self.path != "/guard":
-            self._json(404, {})
-            return
-        try:
-            length = min(int(self.headers.get("Content-Length") or 0), 256 * 1024)
-            payload = json.loads(self.rfile.read(length) or b"{}")
-            text = payload.get("text", "")[:4000]
-            if payload.get("normalize") is True:  # issue #44：请求级开关，默认关=现网行为
-                text = normalize_for_scoring(text)
-            self._json(200, {"malicious": round(guard(text), 4)})
-        except Exception as e:
-            self._json(500, {"error": str(e)[:200]})
+    return round(float(exp[mi] / exp.sum()), 4)
 
 
 if __name__ == "__main__":
-    get_model()
-    print("promptguard service ready", flush=True)
-    ThreadingHTTPServer(("0.0.0.0", 8092), Handler).serve_forever()
+    import sys
+
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            text = json.loads(line).get("text", "")
+            print(json.dumps({"malicious": score(text)}), flush=True)
+        except Exception as e:
+            print(json.dumps({"error": f"{type(e).__name__}: {str(e)[:200]}"}), flush=True)

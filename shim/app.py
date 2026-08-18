@@ -350,27 +350,34 @@ def is_simple_token(s: str) -> bool:
 
 
 # PromptGuard 2 注入检测 shadow（issue #30）：检出记日志不阻断，fail-open。
-# 开关/阈值走统一 settings（issue #35）；服务地址仍走 env。
-PG_URL = os.environ.get("PG_URL", "http://promptguard:8092/guard")
+# 开关/阈值走统一 settings（issue #35）；issue #67：promptguard 服务并入——
+# HTTP POST $PG_URL 改进程内 pg_engine.score（PG_URL env 退役）。
 
 
 def pg_guard(text: str):
     """PromptGuard 2 MALICIOUS 概率；异常/未启用返回 None（fail-open）。
-    pg.normalize（issue #44）：true 时请求 PG 打分前置归一化（base64 内联解码/零宽清除/
-    全角转半角）——只改打分输入，转发原文不动；默认 false 保持现网行为。"""
+    pg.normalize（issue #44）：true 时打分前置归一化（base64 内联解码/零宽清除/
+    全角转半角，pg_engine.normalize_for_scoring 进程内单点）——只改打分输入，
+    转发原文不动；默认 false 保持现网行为。
+    issue #67 进程内化：import pg_engine 在 enabled 判定之后（issue #49 纪律——
+    pg.enabled=false 时 import 都不发生，检测路径零 PG 开销）。推理同步阻塞
+    （原 HTTP 同为同步；实测 p50≈50ms/p95≈136ms，4000 字符截断 + 512 token 截断封顶，
+    无超时概念）；异常=放行+记日志（与原 HTTP 错误同语义，只记异常类型不含文本）。"""
     if not text:
         return None
     settings = load_settings()
     if not setting_value(settings, "pg", "enabled", "PG_ENABLED", False):
         return None
     normalize = setting_value(settings, "pg", "normalize", "PG_NORMALIZE", False)
-    body = json.dumps({"text": text[:4000], "normalize": normalize is True}).encode()
-    req = urllib.request.Request(PG_URL, data=body, headers={"Content-Type": "application/json"})
     try:
-        with urllib.request.urlopen(req, timeout=3) as r:
-            d = json.load(r)
-        return float(d.get("malicious", 0))
-    except Exception:
+        import pg_engine
+
+        t = text[:4000]
+        if normalize is True:
+            t = pg_engine.normalize_for_scoring(t)
+        return pg_engine.score(t)
+    except Exception as e:
+        print(f"[injection.shadow] fail-open: {type(e).__name__}", flush=True)
         return None
 
 
