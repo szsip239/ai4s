@@ -1,11 +1,21 @@
 #!/usr/bin/env bash
-# ai4s JIT 用户默认项目分配（幂等，issue #14）。
+# ai4s JIT 用户默认项目分配（幂等，issue #14；issue #68 起附带项目级能力下发）。
 # 背景：axonhub v1.0.0-beta6 的 OIDC JIT 不支持"默认项目"（internal/server/biz/oidc.go resolveUser
 # 只做建号+角色映射，不触碰 UserProject），飞书 SSO 首登用户 projects 为空、前端 "No Project Selected"。
-# 本脚本把所有 activated 且不在 Default 项目的非 owner 用户补进 Default 项目（最低档，isOwner=false，不带额外 scopes）。
+# 本脚本把所有 activated 且不在 Default 项目的非 owner 用户补进 Default 项目（isOwner=false），
+# 并按 SCOPES 变量下发项目级能力（issue #68：系统档已收窄为空，能力一律走 user_projects.scopes）。
+#
+# 能力集说明（issue #68 实测结论，上游 ent privacy 语义）：
+#   - read_requests/write_requests：观测页 + playground 写请求，项目内安全（按成员身份过滤）。
+#   - read_api_keys/write_api_keys **刻意不发**：上游项目级 read_api_keys 可见项目内全部
+#     非 personal key 明文（无属主过滤），write_api_keys 可改任意 key profiles/模板（自助提额
+#     绕过飞书审批），二者与"我的 Key 自助"是同一闸门、无法兼得，故员工 key 改为管理员签发。
+#   若日后要恢复员工自助建 key，把两 scope 加进 SCOPES 即回退（同时重新暴露上述 P1，慎翻）。
 # 用法：SSO 用户首次登录后运行；或加入 cron 定时兜底。重复运行安全（已 members 跳过）。
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+SCOPES='["read_requests","write_requests"]'
 
 AXONHUB_BASE="${AXONHUB_BASE:-http://localhost:3000}"
 STATE_DIR=".local"
@@ -66,9 +76,9 @@ fi
 
 echo "$PENDING" | while read -r UID_; do
   [ -z "$UID_" ] && continue
-  echo "==> 将 $UID_ 加入 Default 项目（最低档）"
+  echo "==> 将 $UID_ 加入 Default 项目（项目级能力: ${SCOPES}）"
   RESP=$(gql 'mutation AddUserToProject($input: AddUserToProjectInput!) { addUserToProject(input: $input) { id userID projectID isOwner scopes } }' \
-    "{\"input\":{\"projectId\":\"$PROJECT_ID\",\"userId\":\"$UID_\",\"isOwner\":false}}")
+    "{\"input\":{\"projectId\":\"$PROJECT_ID\",\"userId\":\"$UID_\",\"isOwner\":false,\"scopes\":${SCOPES}}}")
   echo "$RESP"
 done
 echo "==> 完成"

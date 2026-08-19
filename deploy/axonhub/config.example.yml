@@ -21,7 +21,12 @@ oidc:
       redirect_url: http://localhost:3000/oauth/oidc/callback
       oidc_login_only: false
       group_claims: [groups]
-      # JIT 兜底姿态（未匹配部门映射时）：员工基础档——能 playground、能自建/管理自己的 Key。
+      # JIT 兜底姿态（未匹配部门映射时）：系统档为空——最小权限（issue #68 权限根修）。
+      # QA 实测（docs/tests/2026-08-20-full-qa-report.md）：axonhub v1.0.0-beta6 ent privacy 对系统档
+      # 直接全局 Allow 且无属主约束，read_users/read_api_keys/write_api_keys 曾致员工可枚举全员邮箱、
+      # 横读全项目 key 明文、自助提额。key/request 能力一律改经项目级 user_projects.scopes 下发
+      # （deploy/scripts/assign-default-project.sh，首登后补 Default 项目成员时附带），不在系统档出现。
+      # 注意 sync_role_strategy=create_only：本项只影响新 JIT 用户，存量用户须另行收窄（见 issue #68 SQL）。
       # 部门映射（role_mappings）待飞书侧补 contact/部门 scope 后再配。
-      default_scopes: [read_api_keys, read_requests, read_users, write_requests, write_api_keys]
+      default_scopes: []
       sync_role_strategy: create_only

@@ -120,6 +120,17 @@ routes:
           hostOverride: axonhub:8090
 
   # /admin、/oidc、/oauth：axonhub 管理 API、SSO/OIDC 回调、OAuth 流程（契约 docs/contracts/ingress-proxy.md）
+  # 例外（issue #68 P2-D）：/admin/requests/:id/content 在上游 v1.0.0-beta6 零 scope 校验、只比对自填
+  # X-Project-ID 项目头。内容存储当前未启用（admin 也 404），网关侧整体 403 先行关闭，零功能损失；
+  # 待上游补 scope 校验或启用内容存储时须先修上游再移除此规则。/preview 为 playground 实时流，不在此列。
+  # 匹配段用 .+ 而非 [^/]+：请求 id 可能是含斜杠的 raw gid（gid://axonhub/Request/1）。
+  - gateways: [default, mtls]
+    matches:
+      - path:
+          regex: '^/admin/requests/.+/content$'
+    policies:
+      directResponse:
+        status: 403
   - gateways: [default, mtls]
     matches:
       - path:
