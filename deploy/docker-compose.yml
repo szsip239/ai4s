@@ -166,6 +166,11 @@ services:
       FEISHU_APP_ID: ${FEISHU_APP_ID:-}
       FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
       APPROVAL_QUOTA_CODE: ${APPROVAL_QUOTA_CODE:-}
+      # issue #72：新建 Key 审批定义（与提额审批并存，approval_sync 泛化轮询）
+      APPROVAL_KEY_CODE: ${APPROVAL_KEY_CODE:-}
+      # issue #72：createAPIKey 无 userID 入参（v1.0.0-beta6 实证），key 归申请人靠建后 SQL 直改；
+      # 仅该步骤使用（函数级懒加载 psycopg），置空则归属步骤跳过、回执提示人工核对
+      AXONHUB_DB_DSN: postgres://axonhub:${DB_PASSWORD:?DB_PASSWORD is required}@postgres:5432/axonhub?sslmode=disable
       POLL_INTERVAL: "30"
     volumes:
       - ./dlp:/dlp:rw # 词表/format-rules/settings.json 挂载（issue #31 起 rw：admin API 写回）；shim 每请求重读热更新

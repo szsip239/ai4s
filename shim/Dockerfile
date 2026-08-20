@@ -12,6 +12,9 @@ RUN pip install --no-cache-dir PyMuPDF==1.28.2 python-docx==1.2.0 openpyxl==3.1.
 # PromptGuard 2 进程内推理依赖（issue #67：promptguard 服务并入；版本 pin 自原 promptguard
 # 容器实测 pip show）。pg_engine 函数级懒加载（issue #49）：pg.enabled=false 时这些库不被 import。
 RUN pip install --no-cache-dir onnxruntime==1.28.0 transformers==4.57.6 numpy==2.5.2
+# 新建 key 审批归属步骤（issue #72）：createAPIKey 无 userID 入参，建后 SQL 直改 api_keys.user_id。
+# alert_poller 函数级懒加载（同 issue #49 纪律），未配置 AXONHUB_DB_DSN 时不 import。
+RUN pip install --no-cache-dir "psycopg[binary]==3.2.12"
 COPY app.py admin_api.py edm_lib.py doc_extract.py alert_poller.py pg_engine.py feishu_lib.py ./
 EXPOSE 8080
 CMD ["python3", "app.py"]

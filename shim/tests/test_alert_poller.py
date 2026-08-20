@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """alert_poller 巡检判定核心分支测试（issue #56：随 alert-poller 并入 shim 补齐——原独立容器无测试）。
 
-seam 纪律：判定逻辑抽纯函数（quota_dims/classify_quota/flip_actions/parse_tier/approval_action）
-直接测；check_cycle/approval_sync 只在线路边界 mock（http_get / Axonhub.gql / feishu_get /
-send_feishu / apply_tier），不 mock 模块内部判定函数。
+seam 纪律：判定逻辑抽纯函数（quota_dims/classify_quota/flip_actions/parse_tier/approval_action/
+parse_purpose/make_key_name）直接测；check_cycle/approval_sync/create_emp_key 只在线路边界
+mock（http_get / Axonhub.gql / feishu_get / send_feishu / apply_tier / create_emp_key /
+assign_key_owner / feishu_dm），不 mock 模块内部判定函数。
 issue #57 增补：POLL_INTERVAL 非法值 import 安全（P1）、save_state 原子写与纯文件名边角（P2-2）。
+issue #72 增补：审批同步泛化（提额/新建并存）、新建执行体各分支、归属 SQL 形状（psycopg 假模块注入）。
 """
 import json
 import os
@@ -211,6 +213,299 @@ class TestApprovalSync(unittest.TestCase):
         self.assertEqual(len(state["approval_done"]), 200)
         self.assertEqual(state["approval_done"][-1], "new1")
         self.assertNotIn("old0", state["approval_done"])
+
+
+class TestParsePurpose(unittest.TestCase):
+    """issue #72：新建审批表单 widget_purpose 解析。"""
+
+    def test_by_custom_id(self):
+        form = [{"custom_id": "widget_guide", "value": "说明"},
+                {"custom_id": "widget_purpose", "value": "  项目联调用  "}]
+        self.assertEqual(ap.parse_purpose(form), "项目联调用")
+
+    def test_by_id_fallback_and_str_form(self):
+        form = json.dumps([{"id": "widget_purpose", "value": "写报告"}])
+        self.assertEqual(ap.parse_purpose(form), "写报告")
+
+    def test_missing_or_empty(self):
+        self.assertEqual(ap.parse_purpose([]), "")
+        self.assertEqual(ap.parse_purpose("not-json"), "")
+        self.assertEqual(ap.parse_purpose([{"custom_id": "widget_purpose"}]), "")
+
+
+class TestMakeKeyName(unittest.TestCase):
+    """issue #72 命名规范：emp-<oid8>-<yyyymmdd>-<用途摘要≤12>-<实例码尾4>。"""
+
+    def test_format_and_charset(self):
+        name = ap.make_key_name("ou_bc5333f08f1823b88d8bcf0511a2f409", "项目联调!", "20260820",
+                                "C3DC8B3B-335F-4059-BC50-01F601D0F18C")
+        self.assertEqual(name, "emp-ou_bc533-20260820-项目联调-f18c")
+
+    def test_slug_length_cap_and_empty_purpose(self):
+        name = ap.make_key_name("ou_x", "这是一个非常非常非常长的用途说明超过十二字", "20260820", "ic-abcd")
+        self.assertEqual(name, "emp-ou_x-20260820-这是一个非常非常非常长的-abcd")  # 摘要截 12 字
+        self.assertEqual(ap.make_key_name("ou_x", "", "20260820", "ic1"), "emp-ou_x-20260820-key-ic1")
+
+    def test_deterministic(self):
+        a = ap.make_key_name("ou_abc", "用途", "20260820", "ic-99")
+        b = ap.make_key_name("ou_abc", "用途", "20260820", "ic-99")
+        self.assertEqual(a, b)
+
+
+class TestAssignKeyOwner(unittest.TestCase):
+    """issue #72 归属步骤：GID 解析 + SQL 形状（psycopg 以假模块注入，不落真库）。"""
+
+    def test_dsn_missing_raises(self):
+        with mock.patch.object(ap, "AXONHUB_DB_DSN", ""):
+            with self.assertRaises(RuntimeError):
+                ap.assign_key_owner("gid://axonhub/APIKey/9", "gid://axonhub/User/7")
+
+    def test_sql_params(self):
+        executed = []
+
+        class FakeCursor:
+            rowcount = 1
+
+        class FakeConn:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def execute(self, sql, params):
+                executed.append((sql, params))
+                return FakeCursor()
+            def commit(self): pass
+            def rollback(self): pass
+
+        fake_connect = mock.Mock(return_value=FakeConn())
+        fake_psycopg = mock.Mock(connect=fake_connect)
+        with mock.patch.object(ap, "AXONHUB_DB_DSN", "postgres://x"), \
+             mock.patch.dict("sys.modules", {"psycopg": fake_psycopg}):
+            ap.assign_key_owner("gid://axonhub/APIKey/9", "gid://axonhub/User/7")
+        self.assertEqual(len(executed), 1)
+        sql, params = executed[0]
+        self.assertIn("UPDATE api_keys SET user_id", sql)
+        self.assertEqual(params, (7, 9))
+        fake_connect.assert_called_once()
+
+    def test_rowcount_zero_raises(self):
+        # UPDATE 命中 0 行（key 不存在/已软删）必须抛错让上层重试，不静默成功（评审 P2）
+        class FakeCursor:
+            rowcount = 0
+
+        class FakeConn:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def execute(self, sql, params): return FakeCursor()
+            def commit(self): pass
+            def rollback(self): pass
+
+        fake_psycopg = mock.Mock(connect=lambda *a, **k: FakeConn())
+        with mock.patch.object(ap, "AXONHUB_DB_DSN", "postgres://x"), \
+             mock.patch.dict("sys.modules", {"psycopg": fake_psycopg}):
+            with self.assertRaises(RuntimeError):
+                ap.assign_key_owner("gid://axonhub/APIKey/9", "gid://axonhub/User/7")
+
+
+class TestCreateEmpKey(unittest.TestCase):
+    """issue #72 新建执行体：用户检查/建 key/归属/挂体验档/私信交付/幂等恢复（线路边界全 mock）。"""
+
+    def _run(self, gql_handler, assign_side_effect=None, dm_ok=True):
+        ax = mock.Mock()
+        gql_calls = []
+
+        def fake_gql(query, variables=None):
+            gql_calls.append((query, variables or {}))
+            return gql_handler(query, variables or {})
+
+        ax.gql = fake_gql
+        with mock.patch.object(ap, "assign_key_owner",
+                               side_effect=assign_side_effect or (lambda k, u: None)) as assign, \
+             mock.patch.object(ap, "feishu_dm", return_value=dm_ok) as dm:
+            result = ap.create_emp_key(ax, "ou_abc12345", "项目联调", "20260820", "ic-0000abcd")
+        return result, gql_calls, assign, dm
+
+    def _handler(self, user=True, existing_key=None):
+        tpl = {"name": "体验档", "profile": {"quota": {"requests": None, "totalTokens": 4300000,
+               "cost": 3, "period": {"type": "calendar_duration", "calendarDuration": {"unit": "month"}}}}}
+
+        def handler(query, variables):
+            if "users(" in query:
+                node = {"id": "gid://axonhub/User/7", "email": variables["email"], "status": "activated"}
+                return {"users": {"edges": [{"node": node}] if user else []}}
+            if "apiKeys(" in query:
+                node = existing_key
+                return {"apiKeys": {"edges": [{"node": node}] if node else []}}
+            if "createAPIKey" in query:
+                return {"createAPIKey": {"id": "gid://axonhub/APIKey/9", "name": variables["input"]["name"],
+                                         "key": "ah-plaintext-probe"}}
+            if "apiKeyProfileTemplates" in query:
+                return {"apiKeyProfileTemplates": {"edges": [{"node": tpl}]}}
+            if "updateAPIKeyProfiles" in query:
+                return {"updateAPIKeyProfiles": {"id": variables["id"]}}
+            raise AssertionError(f"unexpected gql: {query[:60]}")
+
+        return handler
+
+    def test_happy_path(self):
+        result, calls, assign, dm = self._run(self._handler())
+        self.assertIn("emp-ou_abc12-20260820-项目联调-abcd", result)
+        self.assertIn("明文已私信", result)
+        self.assertNotIn("ah-plaintext-probe", result)  # 群回执摘要绝不含明文
+        assign.assert_called_once_with("gid://axonhub/APIKey/9", "gid://axonhub/User/7")
+        dm_text = dm.call_args[0][1]
+        self.assertEqual(dm.call_args[0][0], "ou_abc12345")
+        self.assertIn("ah-plaintext-probe", dm_text)  # 私信含明文
+        # 建 key 入参：默认项目 + type 不传（user 默认，scopes 由 schema 给安全默认）
+        create_vars = next(v for q, v in calls if "createAPIKey" in q)
+        self.assertEqual(create_vars["input"]["projectID"], ap.KEY_PROJECT_ID)
+        self.assertNotIn("scopes", create_vars["input"])
+        # 挂体验档
+        prof_vars = next(v for q, v in calls if "updateAPIKeyProfiles" in q)
+        self.assertEqual(prof_vars["input"]["activeProfile"], "体验档")
+
+    def test_user_missing_no_create(self):
+        result, calls, assign, dm = self._run(self._handler(user=False))
+        self.assertIn("未首登", result)
+        self.assertFalse(any("createAPIKey" in q for q, _ in calls))
+        assign.assert_not_called()
+        dm.assert_not_called()
+
+    def test_dm_failure_fallback_tail_only(self):
+        result, _, _, _ = self._run(self._handler(), dm_ok=False)
+        self.assertIn("私信未送达", result)
+        self.assertIn("…robe", result)  # 尾号 4 位
+        self.assertNotIn("ah-plaintext-probe", result)
+
+    def test_assign_failure_still_delivers(self):
+        result, _, _, dm = self._run(self._handler(), assign_side_effect=RuntimeError("db down"))
+        self.assertIn("归属调整失败", result)
+        dm.assert_called_once()
+
+    def test_idempotent_recover_existing_key(self):
+        existing = {"id": "gid://axonhub/APIKey/9", "name": "emp-ou_abc12-20260820-项目联调-abcd",
+                    "key": "ah-recovered"}
+        result, calls, _, dm = self._run(self._handler(existing_key=existing))
+        self.assertFalse(any("createAPIKey" in q for q, _ in calls))  # 不重复建
+        self.assertIn("ah-recovered", dm.call_args[0][1])  # 明文按名找回续交付
+        self.assertTrue(any("updateAPIKeyProfiles" in q for q, _ in calls))
+
+    def test_key_lookup_scoped_to_project(self):
+        # 评审 P2-1：找回查询必须带 projectID 过滤——全局按名查跨项目同名会取回别人 key 明文
+        _, calls, _, _ = self._run(self._handler())
+        lookup_vars = next(v for q, v in calls if "apiKeys(" in q)
+        self.assertEqual(lookup_vars.get("projectID"), ap.KEY_PROJECT_ID)
+
+    def test_template_missing_raises_for_retry(self):
+        def handler(query, variables):
+            h = self._handler()
+            if "apiKeyProfileTemplates" in query:
+                return {"apiKeyProfileTemplates": {"edges": []}}
+            return h(query, variables)
+        with self.assertRaises(RuntimeError):
+            self._run(handler)
+
+
+class TestApprovalSyncKeyKind(unittest.TestCase):
+    """issue #72：approval_sync 泛化——新建审批定义与提额并存，分支/标记语义对齐。"""
+
+    def _run(self, instances_by_code, state=None, create_side_effect=None,
+             quota_code="", key_code="KEYCODE"):
+        state = state if state is not None else {}
+        sends, creates = [], []
+
+        def fake_feishu_get(path):
+            if path.startswith("/approval/v4/instances/"):
+                ic = path.rsplit("/", 1)[1]
+                for insts in instances_by_code.values():
+                    if ic in insts:
+                        return insts[ic]
+                raise AssertionError(f"unknown instance {ic}")
+            code = next(p.split("&")[0] for p in [path.split("approval_code=")[1]])
+            return {"instance_code_list": list(instances_by_code.get(code, {}))}
+
+        def fake_send(text):
+            sends.append(text)
+            return True
+
+        def fake_create(ax, open_id, purpose, day, ic):
+            creates.append((open_id, purpose, ic))
+            if create_side_effect:
+                raise create_side_effect
+            return "已建 Key emp-x（体验档），明文已私信申请人"
+
+        with mock.patch.multiple(
+            ap, feishu_get=fake_feishu_get, send_feishu=fake_send, create_emp_key=fake_create,
+            APPROVAL_QUOTA_CODE=quota_code, APPROVAL_KEY_CODE=key_code,
+            FEISHU_APP_ID="id", FEISHU_APP_SECRET="secret",
+        ):
+            ap.approval_sync(mock.Mock(), state)
+        return state, sends, creates
+
+    def test_approved_creates_and_marks(self):
+        inst = {"status": "APPROVED", "open_id": "ou_abc", "start_time": "1787184000000",
+                "form": '[{"custom_id": "widget_purpose", "value": "项目联调"}]'}
+        state, sends, creates = self._run({"KEYCODE": {"ic1": inst}})
+        self.assertEqual(creates, [("ou_abc", "项目联调", "ic1")])
+        self.assertEqual(state["approval_done"], ["ic1"])
+        self.assertEqual(len(sends), 1)
+        self.assertIn("新建 Key", sends[0])
+        self.assertIn("审批通过", sends[0])
+
+    def test_create_failure_not_marked(self):
+        inst = {"status": "APPROVED", "open_id": "ou_abc", "form": "[]"}
+        state, sends, _ = self._run({"KEYCODE": {"ic1": inst}},
+                                    create_side_effect=RuntimeError("gql down"))
+        self.assertEqual(state.get("approval_done"), [])
+        self.assertEqual(sends, [])
+
+    def test_rejected_receipt(self):
+        state, sends, _ = self._run({"KEYCODE": {"ic1": {"status": "REJECTED", "open_id": "ou_x"}}})
+        self.assertEqual(state["approval_done"], ["ic1"])
+        self.assertIn("新建 Key", sends[0])
+        self.assertIn("未创建任何 Key", sends[0])
+
+    def test_pending_skipped(self):
+        state, sends, creates = self._run({"KEYCODE": {"ic1": {"status": "PENDING"}}})
+        self.assertEqual(state.get("approval_done"), [])
+        self.assertEqual(sends, [])
+
+    def test_both_kinds_coexist(self):
+        quota_inst = {"status": "APPROVED", "open_id": "ou_q",
+                      "form": '[{"custom_id": "widget_tier", "value": "高档"}]'}
+        key_inst = {"status": "APPROVED", "open_id": "ou_k",
+                    "form": '[{"custom_id": "widget_purpose", "value": "联调"}]'}
+        with mock.patch.object(ap, "apply_tier", return_value="已将 1 个 Key 换挂") as at:
+            state, sends, creates = self._run(
+                {"QCODE": {"icq": quota_inst}, "KEYCODE": {"ick": key_inst}},
+                quota_code="QCODE", key_code="KEYCODE")
+        at.assert_called_once()
+        self.assertEqual(len(creates), 1)
+        self.assertEqual(sorted(state["approval_done"]), ["ick", "icq"])
+        self.assertEqual(len(sends), 2)
+
+    def test_quota_kind_failure_isolates_key_kind(self):
+        # 评审 P2-2 跨类异常隔离：quota 类拉取抛异常，key 类实例仍被正常处理标记
+        key_inst = {"status": "APPROVED", "open_id": "ou_k",
+                    "form": '[{"custom_id": "widget_purpose", "value": "联调"}]'}
+        state, sends, creates = {}, [], []
+
+        def fake_feishu_get(path):
+            if path.startswith("/approval/v4/instances/"):
+                return key_inst
+            if "approval_code=QCODE" in path:
+                raise RuntimeError("quota 列表接口挂了")
+            return {"instance_code_list": ["ick"]}
+
+        with mock.patch.multiple(
+            ap, feishu_get=fake_feishu_get,
+            send_feishu=lambda t: sends.append(t) or True,
+            create_emp_key=lambda ax, o, p, d, ic: creates.append(ic) or "已建 Key",
+            APPROVAL_QUOTA_CODE="QCODE", APPROVAL_KEY_CODE="KEYCODE",
+            FEISHU_APP_ID="id", FEISHU_APP_SECRET="secret",
+        ):
+            ap.approval_sync(mock.Mock(), state)
+        self.assertEqual(creates, ["ick"])
+        self.assertEqual(state["approval_done"], ["ick"])
+        self.assertEqual(len(sends), 1)
 
 
 class TestCheckCycleDebounce(unittest.TestCase):

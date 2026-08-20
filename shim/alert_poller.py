@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""ai4s 告警巡检（issue #17）+ 提额审批同步（issue #19），issue #56 起并入 shim 后台线程。
+"""ai4s 告警巡检（issue #17）+ 审批同步（issue #19 提额 / issue #72 新建），issue #56 起并入 shim 后台线程。
 
 axonhub 无事件源的事务靠主动轮询补齐。巡检项（状态翻转才发飞书，恢复也通知，状态存 /state 防抖）：
   1. DLP fail-open 探活：shim /healthz、presidio /health 任一不可达 → 告警
@@ -8,15 +8,21 @@ axonhub 无事件源的事务靠主动轮询补齐。巡检项（状态翻转才
   2. 上游渠道额度：queryChannels → providerQuotaStatus ∈ {warning, exhausted} → 告警
   3. 员工 API key 额度：apiKeys → apiKeyQuotaUsages，usage 达到 quota → 告警；≥80% → 预警（issue #18）
 
-提额审批同步（issue #19）：
-  轮询飞书审批实例（APPROVAL_QUOTA_CODE 定义），APPROVED 且未处理过的：
-  申请人 open_id → axonhub 用户（email = ou_*@casdoor.oidc）→ 其 enabled Key
-  → 按表单"目标档位"换挂对应 Profile 模板 → 群里回执。拒绝/撤回只标记已处理。
-  FEISHU_APP_ID/FEISHU_APP_SECRET/APPROVAL_QUOTA_CODE 任一缺失即整体跳过（与独立容器时代一致）。
+审批同步（issue #19 提额 + issue #72 新建，approval_sync 泛化为多定义并存）：
+  轮询飞书审批实例（APPROVAL_QUOTA_CODE / APPROVAL_KEY_CODE 两个定义各自轮询）：
+  - 提额：APPROVED → 申请人 open_id → axonhub 用户（email = ou_*@casdoor.oidc）→ 其 enabled Key
+    → 按表单"目标档位"换挂对应 Profile 模板 → 群里回执。拒绝/撤回只回执/标记。
+  - 新建：APPROVED → open_id → axonhub 用户（无用户=未首登，回执提示先登录再重新申请）
+    → createAPIKey（体验档写死，命名 emp-<oid8>-<yyyymmdd>-<用途摘要>-<ic尾4>）
+    → 归属申请人（createAPIKey 无 userID 入参，v1.0.0-beta6 实证；建后 SQL 直改 user_id 并
+      bump updated_at，axonhub 30s 增量刷新自动跟进缓存；归申请人是提额流按 userID 找 key 的前提）
+    → 挂体验档 profile → 机器人私信申请人交付明文（im:message，2026-08 实证可用）；
+    私信失败兜底=群回执只发尾号 4 位 + 找管理员领取。群回执只发摘要，绝不含明文。
+  FEISHU_APP_ID/FEISHU_APP_SECRET 缺失或两个 code 都空即整体跳过（与独立容器时代一致）。
 
 发送：飞书群机器人签名校验（与 shim /feishu-alert 同算法）；axonhub 实时事件
 （channel.auto_disabled）走 shim /feishu-alert 适配器，本模块不重复。
-依赖仅标准库。secret 不进日志。
+除归属步骤的 psycopg（函数级懒加载）外依赖仅标准库。secret 不进日志。
 
 隔离纪律（issue #56）：本模块只被 app.py __main__ 以 daemon 线程启动（import app 不起线程，
 单测环境安全）；轮询循环体整体 try/except，单轮异常只记日志不杀线程、绝不影响检测路径。
@@ -58,6 +64,11 @@ STATE_PATH = os.environ.get("STATE_PATH", "/state/alert-state.json")
 FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "")
 FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "")
 APPROVAL_QUOTA_CODE = os.environ.get("APPROVAL_QUOTA_CODE", "")
+# issue #72：新建 key 审批定义 code + 归属直改所需 DSN（createAPIKey 无 userID 入参，实证）
+APPROVAL_KEY_CODE = os.environ.get("APPROVAL_KEY_CODE", "")
+AXONHUB_DB_DSN = os.environ.get("AXONHUB_DB_DSN", "")
+# 新建 key 落在的项目（axonhub 默认项目；GID 格式与 users 查询返回一致，2026-08-20 实证）
+KEY_PROJECT_ID = os.environ.get("APPROVAL_KEY_PROJECT_ID", "gid://axonhub/Project/1")
 
 # issue #70 #6：enabled Key 列表查询单份（原 apply_tier / check_cycle 各写一遍同样的查询）。
 # 约束：first:100 硬上限——查询无 projectID 过滤，全局 enabled Key 超 100 即漏判；当前规模（十余个）远不及，
@@ -180,41 +191,58 @@ def parse_tier(text: str):
     return None
 
 
-def apply_tier(ax: Axonhub, open_id: str, tier_name: str):
-    """申请人 open_id → axonhub 用户 → 其 enabled Key 全部换挂目标档。返回结果文本。"""
-    tpls = ax.gql(
-        "query { apiKeyProfileTemplates(first: 50) { edges { node { id name "
-        "profile { name quota { requests totalTokens cost period { type calendarDuration { unit } } } } } } } }"
-    )["apiKeyProfileTemplates"]["edges"]
+# issue #72：apply_tier / create_emp_key 共用查询（原 apply_tier 内联字符串，抽常量复用）
+USER_BY_EMAIL_QUERY = (
+    "query($email: String!) { users(first: 1, where: {email: $email}) { edges { node { id email status } } } }"
+)
+PROFILE_TEMPLATES_QUERY = (
+    "query { apiKeyProfileTemplates(first: 50) { edges { node { id name "
+    "profile { name quota { requests totalTokens cost period { type calendarDuration { unit } } } } } } } }"
+)
+UPDATE_PROFILES_MUTATION = (
+    "mutation($id: ID!, $input: UpdateAPIKeyProfilesInput!) { updateAPIKeyProfiles(id: $id, input: $input) { id } }"
+)
+
+
+def find_user_by_email(ax: Axonhub, email: str):
+    """SSO 用户精确查（issue #70 #6：where email 等值，不受用户总数影响）。无用户返回 None。"""
+    users = ax.gql(USER_BY_EMAIL_QUERY, {"email": email})["users"]["edges"]
+    return users[0]["node"] if users else None
+
+
+def load_tier_profile(ax: Axonhub, tier_name: str):
+    """Profile 模板 → updateAPIKeyProfiles 输入形状；模板不存在返回 None。"""
+    tpls = ax.gql(PROFILE_TEMPLATES_QUERY)["apiKeyProfileTemplates"]["edges"]
     tpl = next((e["node"] for e in tpls if e["node"]["name"] == tier_name), None)
     if not tpl:
-        return f"找不到 {tier_name} Profile 模板"
-    email = f"{open_id}@casdoor.oidc"
-    # issue #70 #6：users(first:200) 硬上限（总数超 200 即漏人）改 where email 精确查
-    # （上游 UserWhereInput 支持 email 等值，2026-08-20 实测），不再受用户总数影响
-    users = ax.gql(
-        "query($email: String!) { users(first: 1, where: {email: $email}) { edges { node { id email status } } } }",
-        {"email": email},
-    )["users"]["edges"]
-    user = users[0]["node"] if users else None
-    if not user:
-        return f"axonhub 中无 {email} 用户（未完成过 SSO 首登？）"
-    keys = ax.gql(ENABLED_API_KEYS_QUERY)["apiKeys"]["edges"]
-    own = [e["node"] for e in keys if e["node"]["userID"] == user["id"]]
-    if not own:
-        return f"{email} 名下无 enabled Key"
+        return None
     quota = (tpl["profile"] or {}).get("quota") or {}
     period = quota.get("period") or {}
-    prof = {"name": tier_name, "quota": {
+    return {"name": tier_name, "quota": {
         "requests": quota.get("requests"),
         "totalTokens": quota.get("totalTokens"),
         "cost": str(quota["cost"]) if quota.get("cost") is not None else None,
         "period": {"type": period.get("type", "calendar_duration"),
                    "calendarDuration": period.get("calendarDuration") or {"unit": "month"}},
     }}
+
+
+def apply_tier(ax: Axonhub, open_id: str, tier_name: str):
+    """申请人 open_id → axonhub 用户 → 其 enabled Key 全部换挂目标档。返回结果文本。"""
+    prof = load_tier_profile(ax, tier_name)
+    if not prof:
+        return f"找不到 {tier_name} Profile 模板"
+    email = f"{open_id}@casdoor.oidc"
+    user = find_user_by_email(ax, email)
+    if not user:
+        return f"axonhub 中无 {email} 用户（未完成过 SSO 首登？）"
+    keys = ax.gql(ENABLED_API_KEYS_QUERY)["apiKeys"]["edges"]
+    own = [e["node"] for e in keys if e["node"]["userID"] == user["id"]]
+    if not own:
+        return f"{email} 名下无 enabled Key"
     for k in own:
         ax.gql(
-            "mutation($id: ID!, $input: UpdateAPIKeyProfilesInput!) { updateAPIKeyProfiles(id: $id, input: $input) { id } }",
+            UPDATE_PROFILES_MUTATION,
             {"id": k["id"], "input": {"activeProfile": tier_name, "profiles": [prof]}},
         )
     return f"已将 {len(own)} 个 Key 换挂 {tier_name}（{', '.join(k['name'] for k in own)}）"
@@ -222,7 +250,7 @@ def apply_tier(ax: Axonhub, open_id: str, tier_name: str):
 
 def approval_action(status: str) -> str:
     """审批实例状态 → 处理分支（issue #56 抽纯函数，行为与独立容器时代一致）：
-    process=APPROVED 执行提额并回执；receipt=REJECTED 只回执；skip=PENDING 下轮再看；
+    process=APPROVED 执行并回执；receipt=REJECTED 只回执；skip=PENDING 下轮再看；
     mark=CANCELED/DELETED 及其余终态只标记已处理。"""
     if status == "PENDING":
         return "skip"
@@ -233,22 +261,183 @@ def approval_action(status: str) -> str:
     return "mark"
 
 
-def approval_sync(ax: Axonhub, state: dict):
-    """轮询提额审批单，处理 APPROVED 实例（issue #19）。拒绝/撤回标记跳过，异常不标记下轮重试。
-    凭据（APPROVAL_QUOTA_CODE/FEISHU_APP_ID/FEISHU_APP_SECRET）任一缺失整体跳过——只巡检不审批。"""
-    if not (APPROVAL_QUOTA_CODE and FEISHU_APP_ID and FEISHU_APP_SECRET):
-        return
+# ---- 新建 key 审批（issue #72）----
+
+CREATE_API_KEY_MUTATION = (
+    "mutation($input: CreateAPIKeyInput!) { createAPIKey(input: $input) { id name key } }"
+)
+# 重试幂等恢复用：按名+项目查回已建 key（apiKeys 查询 key 字段返回完整明文，2026-08-20 实证；
+# projectID 过滤必须带——全局按名查跨项目同名会取回别人的 key 明文，评审 P2-1 安全洞）
+KEY_BY_NAME_QUERY = (
+    "query($name: String!, $projectID: ID!) { apiKeys(first: 1, where: {name: $name, projectID: $projectID})"
+    " { edges { node { id name key } } } }"
+)
+# 新建审批初始档写死体验档（issue 拍板：最小权限，要更高档走既有提额审批）
+KEY_INIT_TIER = "体验档"
+
+
+def parse_purpose(form) -> str:
+    """表单控件 widget_purpose 的用途说明（去空白）。无控件/空值返回 ""。"""
+    if isinstance(form, str):
+        try:
+            form = json.loads(form or "[]")
+        except Exception:
+            form = []
+    for w in form or []:
+        if (w.get("custom_id") or w.get("id")) == "widget_purpose":
+            return (w.get("value") or "").strip()
+    return ""
+
+
+def make_key_name(open_id: str, purpose: str, day: str, ic: str) -> str:
+    """key 命名：emp-<open_id前8>-<yyyymmdd>-<用途摘要≤12>-<实例码尾4>。
+    摘要去非文字字符（保留中英文数字）；实例码尾 4 位保证同日同人重复申请不重名
+    （axonhub 项目级名称唯一是应用层约束，撞名 createAPIKey 直接报错）。"""
+    oid8 = "".join(c for c in (open_id or "") if c.isalnum() or c == "_")[:8] or "unknown"
+    slug = "".join(c for c in (purpose or "") if c.isalnum())[:12] or "key"
+    tail = "".join(c for c in (ic or "") if c.isalnum())[-4:].lower() or "0000"
+    return f"emp-{oid8}-{day}-{slug}-{tail}"
+
+
+def assign_key_owner(key_gid: str, user_gid: str):
+    """把 key 归属改为申请人（createAPIKey 无 userID 入参，v1.0.0-beta6 实证：CreateAPIKeyInput /
+    UpdateAPIKeyInput / UpdateUserInput 均无，REST 亦无端点——SQL 直改是唯一路径）。
+    bump updated_at 让 axonhub 30s 增量缓存刷新自动跟进；请求路径不认 user_id（仅归属/报表用），
+    无认证语义变化。AXONHUB_DB_DSN 未配置直接抛，调用方降级为回执提示人工核对。"""
+    if not AXONHUB_DB_DSN:
+        raise RuntimeError("AXONHUB_DB_DSN 未配置")
+    import psycopg  # 函数级懒加载（issue #49 纪律）：单测/未配置路径不 import
+    key_id = int(key_gid.rsplit("/", 1)[1])
+    user_id = int(user_gid.rsplit("/", 1)[1])
+    with psycopg.connect(AXONHUB_DB_DSN, connect_timeout=5) as conn:
+        cur = conn.execute(
+            "UPDATE api_keys SET user_id=%s, updated_at=now() WHERE id=%s AND deleted_at=0",
+            (user_id, key_id),
+        )
+        if cur.rowcount != 1:
+            # 命中 0 行（key 不存在/已软删）当失败处理：抛错让上层重试，不静默成功
+            conn.rollback()
+            raise RuntimeError(f"api_keys id={key_id} UPDATE 命中 {cur.rowcount} 行")
+        conn.commit()
+
+
+def feishu_dm(open_id: str, text: str) -> bool:
+    """机器人私信申请人（im:message 权限，2026-08-20 实证 code=0 送达）。异常/非零 code → False 走兜底。"""
+    try:
+        body = {"receive_id": open_id, "msg_type": "text",
+                "content": json.dumps({"text": text}, ensure_ascii=False)}
+        req = urllib.request.Request(
+            "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id",
+            data=json.dumps(body, ensure_ascii=False).encode(),
+            headers={"Authorization": f"Bearer {feishu_tenant_token()}", "Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=10) as r:
+            d = json.load(r)
+        if d.get("code") == 0:
+            return True
+        print(f"[alert] 私信发送非零: code={d.get('code')}", flush=True)
+    except Exception as e:
+        print(f"[alert] 私信发送失败: {type(e).__name__}", flush=True)
+    return False
+
+
+def key_by_name(ax: Axonhub, name: str):
+    """按名+本项目查 key（幂等恢复用）；不存在返回 None。"""
+    edges = ax.gql(KEY_BY_NAME_QUERY, {"name": name, "projectID": KEY_PROJECT_ID})["apiKeys"]["edges"]
+    return edges[0]["node"] if edges else None
+
+
+def create_emp_key(ax: Axonhub, open_id: str, purpose: str, day: str, ic: str) -> str:
+    """新建审批 APPROVED 执行体：建 key → 归申请人 → 挂体验档 → 私信交付明文。
+    返回群回执用的结果摘要（绝不含明文）；抛异常=本轮失败，approval_sync 不标记、下轮重试。
+    幂等：上轮半途失败留下同名 key 时按名找回明文续走（不重复建 key）。"""
+    email = f"{open_id}@casdoor.oidc"
+    user = find_user_by_email(ax, email)
+    if not user:
+        # 未首登无用户：不建 key、不算失败，回执引导后标记已处理（重新申请会生成新实例）
+        return f"axonhub 无用户 {email}（申请人未首登平台），未建 Key；请先登录平台一次再重新申请"
+    name = make_key_name(open_id, purpose, day, ic)
+    node = key_by_name(ax, name)
+    if not node:
+        node = ax.gql(CREATE_API_KEY_MUTATION,
+                      {"input": {"name": name, "projectID": KEY_PROJECT_ID}})["createAPIKey"]
+    plain = node["key"]
+    owner_note = ""
+    try:
+        assign_key_owner(node["id"], user["id"])
+    except Exception as e:
+        owner_note = "；归属调整失败，请管理员人工核对"
+        print(f"[alert] key 归属调整失败 {name}: {type(e).__name__}: {e}", flush=True)
+    prof = load_tier_profile(ax, KEY_INIT_TIER)
+    if not prof:
+        raise RuntimeError(f"找不到 {KEY_INIT_TIER} Profile 模板")
+    ax.gql(UPDATE_PROFILES_MUTATION,
+           {"id": node["id"], "input": {"activeProfile": KEY_INIT_TIER, "profiles": [prof]}})
+    dm_ok = feishu_dm(open_id, (
+        f"[ai4s] 你的 API Key 已创建（审批 {ic}）\n"
+        f"Key 名称: {name}\n档位: {KEY_INIT_TIER}（要更高档请另提「额度提升」审批）\n"
+        f"明文（仅此一条消息，请立即复制保存）:\n{plain}\n"
+        "保管提醒: 明文只出现这一次，勿转发勿提交到代码仓库；丢失不补办，重新提交「ai4s API Key 申请」审批即可。"
+    ))
+    if dm_ok:
+        return f"已建 Key {name}（{KEY_INIT_TIER}）{owner_note}，明文已私信申请人"
+    return f"已建 Key {name}（{KEY_INIT_TIER}）{owner_note}；私信未送达，Key 尾号 …{plain[-4:]}，请申请人联系管理员领取"
+
+
+def _approval_day(inst: dict) -> str:
+    """实例发起时间 → yyyymmdd（命名用实例时间而非处理时间：跨天重试名字不变，幂等）。"""
+    try:
+        ms = int(inst.get("start_time") or 0)
+        return time.strftime("%Y%m%d", time.gmtime(ms / 1000)) if ms else time.strftime("%Y%m%d", time.gmtime())
+    except Exception:
+        return time.strftime("%Y%m%d", time.gmtime())
+
+
+def _process_approved(ax: Axonhub, kind: str, ic: str, inst: dict) -> bool:
+    """APPROVED 实例按类型执行 + 群回执。True=处理完可标记（含回执失败，与原实现一致）；
+    False=执行抛错不标记，下轮重试。"""
+    try:
+        form = json.loads(inst.get("form") or "[]")
+    except Exception:
+        form = []
+    open_id = inst.get("open_id") or inst.get("user_id") or ""
+    if kind == "key":
+        purpose = parse_purpose(form)
+        try:
+            result = create_emp_key(ax, open_id, purpose, _approval_day(inst), ic)
+        except Exception as e:
+            print(f"[alert] 新建 key 执行失败 {ic}: {type(e).__name__}: {e}", flush=True)
+            return False
+        text = f"[ai4s 新建 Key] 审批通过\n申请人: {open_id}\n用途: {purpose}\n结果: {result}\n实例: {ic}"
+    else:
+        tier_text = next((w.get("value", "") for w in form if (w.get("custom_id") or w.get("id")) == "widget_tier"), "")
+        tier_name = parse_tier(tier_text)
+        if not tier_name:
+            result = f"无法识别目标档位（{tier_text!r}），请填 标准档 或 高档"
+        else:
+            try:
+                result = apply_tier(ax, open_id, tier_name)
+            except Exception as e:
+                print(f"[alert] 提额执行失败 {ic}: {type(e).__name__}: {e}", flush=True)
+                return False
+        text = f"[ai4s 提额] 审批通过\n申请人: {open_id}\n目标档: {tier_text}\n结果: {result}\n实例: {ic}"
+    if send_feishu(text):
+        print(f"[alert] {kind} 审批已处理: {ic}", flush=True)
+    return True
+
+
+def _sync_kind(ax: Axonhub, done: list, kind: str, code: str):
+    """单审批定义一轮：拉实例列表 → 逐实例按状态分支处理 → 标记 done（就地追加）。"""
     now_ms = int(time.time() * 1000)
     start_ms = now_ms - 7 * 24 * 3600 * 1000
     try:
         data = feishu_get(
-            f"/approval/v4/instances?approval_code={APPROVAL_QUOTA_CODE}&start_time={start_ms}&end_time={now_ms}"
+            f"/approval/v4/instances?approval_code={code}&start_time={start_ms}&end_time={now_ms}"
         )
     except Exception as e:
-        print(f"[alert] 审批实例列表失败: {type(e).__name__}: {e}", flush=True)
+        print(f"[alert] 审批实例列表失败({kind}): {type(e).__name__}: {e}", flush=True)
         return
     ids = data.get("instance_code_list") or data.get("instances") or []
-    done = state.setdefault("approval_done", [])
     for ic in ids:
         if ic in done:
             continue
@@ -261,29 +450,35 @@ def approval_sync(ax: Axonhub, state: dict):
         if action == "skip":
             continue
         if action == "process":
-            try:
-                form = json.loads(inst.get("form") or "[]")
-            except Exception:
-                form = []
-            tier_text = next((w.get("value", "") for w in form if (w.get("custom_id") or w.get("id")) == "widget_tier"), "")
-            open_id = inst.get("open_id") or inst.get("user_id") or ""
-            tier_name = parse_tier(tier_text)
-            if not tier_name:
-                result = f"无法识别目标档位（{tier_text!r}），请填 标准档 或 高档"
-            else:
-                try:
-                    result = apply_tier(ax, open_id, tier_name)
-                except Exception as e:
-                    print(f"[alert] 提额执行失败 {ic}: {type(e).__name__}: {e}", flush=True)
-                    continue  # 不标记，下轮重试
-            if send_feishu(f"[ai4s 提额] 审批通过\n申请人: {open_id}\n目标档: {tier_text}\n结果: {result}\n实例: {ic}"):
-                print(f"[alert] 提额已处理: {ic} -> {tier_text}", flush=True)
+            if not _process_approved(ax, kind, ic, inst):
+                continue  # 不标记，下轮重试
         elif action == "receipt":
             open_id = inst.get("open_id") or inst.get("user_id") or ""
-            if send_feishu(f"[ai4s 提额] 审批未通过\n申请人: {open_id}\n额度维持现状，未做变更\n实例: {ic}"):
-                print(f"[alert] 提额拒绝回执: {ic}", flush=True)
+            if kind == "key":
+                text = f"[ai4s 新建 Key] 审批未通过\n申请人: {open_id}\n未创建任何 Key\n实例: {ic}"
+            else:
+                text = f"[ai4s 提额] 审批未通过\n申请人: {open_id}\n额度维持现状，未做变更\n实例: {ic}"
+            if send_feishu(text):
+                print(f"[alert] {kind} 拒绝回执: {ic}", flush=True)
         # mark（CANCELED / DELETED / 其余终态）：只标记
         done.append(ic)
+
+
+def approval_sync(ax: Axonhub, state: dict):
+    """轮询审批单（issue #19 提额 + issue #72 新建并存，共享 done 列表——实例 code 全局唯一）。
+    拒绝/撤回回执后标记；执行异常不标记下轮重试。
+    FEISHU_APP_ID/FEISHU_APP_SECRET 缺失或两个 code 都未配置即整体跳过——只巡检不审批。"""
+    if not (FEISHU_APP_ID and FEISHU_APP_SECRET and (APPROVAL_QUOTA_CODE or APPROVAL_KEY_CODE)):
+        return
+    done = state.setdefault("approval_done", [])
+    for kind, code in (("quota", APPROVAL_QUOTA_CODE), ("key", APPROVAL_KEY_CODE)):
+        if not code:
+            continue
+        try:
+            _sync_kind(ax, done, kind, code)
+        except Exception as e:
+            # 单类异常不影响另一类（隔离纪律与单轮异常同款）
+            print(f"[alert] 审批同步异常({kind}): {type(e).__name__}: {e}", flush=True)
     state["approval_done"] = done[-200:]
 
 

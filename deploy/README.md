@@ -10,7 +10,7 @@
 | axonhub | `looplj/axonhub:v1.0.0-beta6`（digest `sha256:d41f3ca1…`） | pin 定 beta，不跟 latest/unstable |
 | PostgreSQL | `postgres:16-alpine`（digest `sha256:57c72fd2…`，实为 16.14） | axonhub 官方 compose 同款主版本 |
 | casdoor | `casbin/casdoor:3.133.0` | SSO 枢纽（issue #14）：飞书 OAuth → 标准 OIDC |
-| shim | 本地构建 `../shim`（python:3.12-slim + apt tesseract-ocr/chi-sim/eng（issue #50 OCR，apt 层 +109MB）；pip pin PyMuPDF/python-docx/openpyxl/python-pptx/pytesseract/Pillow + onnxruntime/transformers/numpy（issue #67 PG 进程内推理，版本 pin 自原 promptguard 容器实测；镜像总 900MB，2026-08-19 实测）） | DLP 词表/PII 适配 + PromptGuard 2 注入检测引擎 `pg_engine`（issue #67 并入进程内，原 promptguard 容器退役；函数级懒加载，pg.enabled=false 时零加载零开销；模型卷 `./.local/promptguard-model:/models/promptguard:ro` + `HF_HUB_OFFLINE=1`）+ 飞书告警适配 `/feishu-alert`（issue #17）+ 统一配置 admin 平面 `/dlp-admin/*`（issue #31–#36）+ 告警巡检 daemon 线程（issue #56 并入原 alert-poller：fail-open 探活/渠道与 key 额度轮询/提额审批同步，30s，与检测路径隔离） |
+| shim | 本地构建 `../shim`（python:3.12-slim + apt tesseract-ocr/chi-sim/eng（issue #50 OCR，apt 层 +109MB）；pip pin PyMuPDF/python-docx/openpyxl/python-pptx/pytesseract/Pillow + onnxruntime/transformers/numpy（issue #67 PG 进程内推理，版本 pin 自原 promptguard 容器实测；镜像总 900MB，2026-08-19 实测）+ psycopg（issue #72 key 归属 SQL 直改，函数级懒加载）） | DLP 词表/PII 适配 + PromptGuard 2 注入检测引擎 `pg_engine`（issue #67 并入进程内，原 promptguard 容器退役；函数级懒加载，pg.enabled=false 时零加载零开销；模型卷 `./.local/promptguard-model:/models/promptguard:ro` + `HF_HUB_OFFLINE=1`）+ 飞书告警适配 `/feishu-alert`（issue #17）+ 统一配置 admin 平面 `/dlp-admin/*`（issue #31–#36）+ 告警巡检 daemon 线程（issue #56 并入原 alert-poller：fail-open 探活/渠道与 key 额度轮询/审批同步 30s，与检测路径隔离；issue #19 提额 + issue #72 新建 Key 审批并存，新建通过→自动建 key 归申请人→挂体验档→私信交付明文） |
 | mock-upstream（可选） | `python:3.12-alpine` | 仅无 OAuth 凭据时验证链路用 |
 
 ## 快速开始
