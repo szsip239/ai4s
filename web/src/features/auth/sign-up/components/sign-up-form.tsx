@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils';
 import { authApi } from '@/lib/api-client';
 import { useAuthStore } from '@/stores/authStore';
 import { useProjectStore } from '@/stores/projectStore';
+import { resolveLandingPath } from '@/config/route-permission';
 import { Button } from '@/components/ui/button';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
@@ -69,7 +70,16 @@ export function SignUpForm({ className, ...props }: SignUpFormProps) {
       setUser(response.user);
       setSelectedProjectId(response.user.projects[0]?.projectID ?? null);
       toast.success(t('users.messages.invitationRegistrationSuccess'));
-      router.navigate({ to: '/project/playground' });
+      // issue #70（#69 遗留）：注册落点与登录同源走 resolveLandingPath，不再写死 /project/playground；
+      // 注册响应带 projects/scopes（刚接受的邀请项目即 projects[0]，上面已同步 setSelectedProjectId），
+      // 若响应无 projects/scopes 则按空 scopes 兜底（resolveLandingPath 落到无门槛的 /settings/profile）
+      router.navigate({
+        to: resolveLandingPath({
+          isOwner: response.user.isOwner,
+          systemScopes: response.user.scopes,
+          projectScopes: response.user.projects?.[0]?.scopes,
+        }),
+      });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('common.errors.internalServerError'));
     }

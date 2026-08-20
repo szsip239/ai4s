@@ -21,9 +21,6 @@ axonhub 无事件源的事务靠主动轮询补齐。巡检项（状态翻转才
 隔离纪律（issue #56）：本模块只被 app.py __main__ 以 daemon 线程启动（import app 不起线程，
 单测环境安全）；轮询循环体整体 try/except，单轮异常只记日志不杀线程、绝不影响检测路径。
 """
-import base64
-import hashlib
-import hmac
 import json
 import os
 import threading
@@ -31,6 +28,7 @@ import time
 import urllib.request
 
 import admin_api  # 原子写复用（issue #57 P2-2）：唯一 tmp + .bak 滚动 + finally 清理
+import feishu_lib  # 飞书签名共享实现（issue #70）：app.py 同一份
 
 AXONHUB_BASE = os.environ.get("AXONHUB_BASE", "http://axonhub:8090")
 ADMIN_EMAIL = os.environ.get("AXONHUB_ADMIN_EMAIL", "")
@@ -61,9 +59,12 @@ FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "")
 FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "")
 APPROVAL_QUOTA_CODE = os.environ.get("APPROVAL_QUOTA_CODE", "")
 
-
-def feishu_sign(ts: str, secret: str) -> str:
-    return base64.b64encode(hmac.new(f"{ts}\n{secret}".encode(), b"", hashlib.sha256).digest()).decode()
+# issue #70 #6：enabled Key 列表查询单份（原 apply_tier / check_cycle 各写一遍同样的查询）。
+# 约束：first:100 硬上限——查询无 projectID 过滤，全局 enabled Key 超 100 即漏判；当前规模（十余个）远不及，
+# 超规模时需改 after 分页（users 侧同类上限已改 where 精确查，见 apply_tier）。
+ENABLED_API_KEYS_QUERY = (
+    "query { apiKeys(first: 100, where: {statusIn: [enabled]}) { edges { node { id name userID } } } }"
+)
 
 
 def send_feishu(text: str) -> bool:
@@ -76,7 +77,7 @@ def send_feishu(text: str) -> bool:
             if FEISHU_SECRET:
                 ts = str(int(time.time()))
                 body["timestamp"] = ts
-                body["sign"] = feishu_sign(ts, FEISHU_SECRET)
+                body["sign"] = feishu_lib.feishu_sign(ts, FEISHU_SECRET)
             req = urllib.request.Request(
                 FEISHU_WEBHOOK,
                 data=json.dumps(body, ensure_ascii=False).encode(),
@@ -189,11 +190,16 @@ def apply_tier(ax: Axonhub, open_id: str, tier_name: str):
     if not tpl:
         return f"找不到 {tier_name} Profile 模板"
     email = f"{open_id}@casdoor.oidc"
-    users = ax.gql("query { users(first: 200) { edges { node { id email status } } } }")["users"]["edges"]
-    user = next((e["node"] for e in users if e["node"]["email"] == email), None)
+    # issue #70 #6：users(first:200) 硬上限（总数超 200 即漏人）改 where email 精确查
+    # （上游 UserWhereInput 支持 email 等值，2026-08-20 实测），不再受用户总数影响
+    users = ax.gql(
+        "query($email: String!) { users(first: 1, where: {email: $email}) { edges { node { id email status } } } }",
+        {"email": email},
+    )["users"]["edges"]
+    user = users[0]["node"] if users else None
     if not user:
         return f"axonhub 中无 {email} 用户（未完成过 SSO 首登？）"
-    keys = ax.gql("query { apiKeys(first: 100, where: {statusIn: [enabled]}) { edges { node { id name userID } } } }")["apiKeys"]["edges"]
+    keys = ax.gql(ENABLED_API_KEYS_QUERY)["apiKeys"]["edges"]
     own = [e["node"] for e in keys if e["node"]["userID"] == user["id"]]
     if not own:
         return f"{email} 名下无 enabled Key"
@@ -379,7 +385,7 @@ def check_cycle(ax: Axonhub, state: dict) -> dict:
 
     # 3) 员工 API key 额度
     try:
-        data = ax.gql("query { apiKeys(first: 100, where: {statusIn: [enabled]}) { edges { node { id name } } } }")
+        data = ax.gql(ENABLED_API_KEYS_QUERY)
         for e in data["apiKeys"]["edges"]:
             key = e["node"]
             try:

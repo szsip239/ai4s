@@ -50,5 +50,5 @@ _Avoid_: 额度单位、积分
 飞书 SSO 首登时 axonhub 自动创建的账号，email 形如 `ou_<open_id>@casdoor.oidc`；open_id 是其与飞书通讯录的唯一关联键。
 
 **员工能力档（Employee Posture）**:
-issue #68（2026-08-20）定稿：JIT 系统档为空，能力一律走项目级 `user_projects.scopes`，员工仅持 `read_requests, write_requests`（观测 + playground/请求写入 + 自己的 settings）。员工**不自助建/管 Key**——上游项目级 `read_api_keys`/`write_api_keys` 无属主过滤（明文横读、自助提额同源同闸），Key 由管理员签发、提额走飞书审批。
+issue #68（2026-08-20）定稿：JIT 系统档为空，能力一律走项目级 `user_projects.scopes`，员工仅持 `read_requests, write_requests`（观测 + playground/请求写入 + 自己的 settings）。员工**不自助建/管 Key**——上游项目级 `read_api_keys`/`write_api_keys` 无属主过滤（明文横读、自助提额同源同闸），Key 由管理员签发、提额走飞书审批。issue #70（2026-08-20）：项目级种子角色 Developer/Viewer 删除（含 read_users/read_api_keys/write_api_keys，授予即绕开 #68；实证重启不复活）；playground 渠道/模型选择器保持为空——项目级 `read_channels` 上游 resolver 不认（仍 403），系统级放开面超员工最小集。
 _Avoid_: 员工基础档（旧口径，已废止）

@@ -110,6 +110,13 @@ export interface EdmSettings {
 export interface PgSettings {
   enabled: boolean;
   threshold: number;
+  normalize: boolean; // issue #44 打分前置归一化开关；后端 PUT 必填（shim _SETTINGS_PG_KEYS）
+}
+/** pg 段读侧缺键补默认（issue #70）：旧 settings.json（issue #44 前写入）可能缺 normalize，
+ * 不补则面板整体 PUT 时后端必填校验 400；缺省值与 shim setting_value 缺省对齐
+ * （enabled/normalize 默认 false、threshold 默认 0.7） */
+export function normalizePg(pg: Partial<PgSettings> | undefined): PgSettings {
+  return { enabled: pg?.enabled ?? false, threshold: pg?.threshold ?? 0.7, normalize: pg?.normalize ?? false };
 }
 /** 分层总开关（issue #40）：单键段；旧 settings.json 可能缺段（shim 侧缺段默认 true），
  * 故读侧按可选处理、展示缺省回退 true 与服务端语义对齐 */
@@ -207,9 +214,18 @@ export function useEdmCorpus() {
   return useQuery({ queryKey: QK.edmCorpus, queryFn: () => get<EdmDocSummary[]>('/edm/corpus') });
 }
 
+// select 提升模块级：内联匿名函数每次渲染新建引用会让 TanStack Query 的 select 记忆化失效（issue #70 评审 P2）
+const selectSettings = (d: DlpSettings): DlpSettings => ({ ...d, pg: normalizePg(d.pg) });
+
 export function useSettings() {
   // retry: false——settings.json 缺失回 404（env 兜底态，合法），交由面板即时展示而非重试
-  return useQuery({ queryKey: QK.settings, queryFn: () => get<DlpSettings>('/settings'), retry: false });
+  // select：pg 段缺键补默认（issue #70），保存面板整体 PUT 不因缺 normalize 被后端 400
+  return useQuery({
+    queryKey: QK.settings,
+    queryFn: () => get<DlpSettings>('/settings'),
+    retry: false,
+    select: selectSettings,
+  });
 }
 
 // ---- 写操作（全部写后 invalidate 重取，与"shim 每请求重读热生效"语义对齐）----

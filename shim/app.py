@@ -13,9 +13,6 @@
 本模块（检测路径）依赖仅标准库；镜像 python:3.12-slim（issue #48 起含 doc_extract 文档解析依赖，
 检测路径不 import 第三方库，纪律不变）。
 """
-import base64
-import hashlib
-import hmac
 import json
 import os
 import re
@@ -25,6 +22,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import admin_api  # DLP 统一配置 admin 平面（issue #31）：/dlp-admin/*，与检测路径隔离
 import edm_lib    # EDM 指纹算法共享库（issue #34）：入库/检测同法（契约铁律）
+import feishu_lib  # 飞书签名共享实现（issue #70）：alert_poller 同一份
 import alert_poller  # 告警巡检+提额审批（issue #56 并入）：import 不起线程，仅 __main__ start_daemon
 
 PRESIDIO_URL = os.environ.get("PRESIDIO_URL", "http://presidio:3000")
@@ -235,11 +233,6 @@ def judge_text(text: str):
         return None
 
 
-def feishu_sign(ts: str, secret: str) -> str:
-    digest = hmac.new(f"{ts}\n{secret}".encode(), b"", hashlib.sha256).digest()
-    return base64.b64encode(digest).decode()
-
-
 def send_feishu_text(text: str) -> bool:
     """签名发送飞书群机器人文本；成功返回 True。secret/URL 不进日志。"""
     if not FEISHU_WEBHOOK:
@@ -250,7 +243,7 @@ def send_feishu_text(text: str) -> bool:
             if FEISHU_SECRET:
                 ts = str(int(time.time()))
                 body["timestamp"] = ts
-                body["sign"] = feishu_sign(ts, FEISHU_SECRET)
+                body["sign"] = feishu_lib.feishu_sign(ts, FEISHU_SECRET)
             req = urllib.request.Request(
                 FEISHU_WEBHOOK,
                 data=json.dumps(body, ensure_ascii=False).encode(),

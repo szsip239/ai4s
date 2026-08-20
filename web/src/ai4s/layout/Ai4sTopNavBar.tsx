@@ -1,4 +1,5 @@
 import { Link, useRouterState } from '@tanstack/react-router';
+import { useTranslation } from 'react-i18next';
 import {
   IconDashboard,
   IconKey,
@@ -28,22 +29,25 @@ import { useRoutePermissions } from '@/hooks/useRoutePermissions';
  * 否则落项目域 /project/users（route-permission：/users 属 system 组，/project/users 属 any 组）。
  * issue #69 P3：入口按 routeConfigs mode:'hidden' 语义做权限过滤（与侧栏/⌘K 的 filterNavItems 一致），
  * 无权限且 mode=hidden 的入口不再渲染（此前员工可见 9 个入口、其中 7 个点进去 Access Denied）。
+ * issue #70：label 走 i18n（与 ⌘K 同源复用 sidebar.items.*；zh 文案与 ⌘K 不同的四项——
+ * 仪表盘/我的 Key/脱敏规则/系统设置——用 ai4s.topnav.* 键，zh 保持顶栏既有文案不回退）。
  */
 
 const NAV_ITEMS = [
-  { title: '仪表盘', href: '/', match: ['/'], icon: IconDashboard },
-  { title: '我的 Key', href: '/project/api-keys', match: ['/project/api-keys'], icon: IconKey },
-  { title: '接入管理', href: '/channels', match: ['/channels', '/models'], icon: IconRoute },
-  { title: '脱敏规则', href: '/prompt-protection-rules', match: ['/prompt-protection-rules'], icon: IconShield },
-  { title: '观测', href: '/project/requests', match: ['/project/requests', '/project/usage-stats', '/project/traces', '/project/threads'], icon: IconFileText },
-  { title: '项目', href: '/projects', match: ['/projects'], icon: IconFolders },
-  { title: '人员', href: '/users', match: ['/users', '/roles', '/project/users', '/project/roles'], icon: IconUsersGroup },
-  { title: '数据存储', href: '/data-storages', match: ['/data-storages'], icon: IconDatabase },
-  { title: '系统设置', href: '/system', match: ['/system'], icon: IconSettings },
+  { labelKey: 'ai4s.topnav.dashboard', href: '/', match: ['/'], icon: IconDashboard },
+  { labelKey: 'ai4s.topnav.myKeys', href: '/project/api-keys', match: ['/project/api-keys'], icon: IconKey },
+  { labelKey: 'sidebar.items.accessManagement', href: '/channels', match: ['/channels', '/models'], icon: IconRoute },
+  { labelKey: 'ai4s.topnav.promptProtectionRules', href: '/prompt-protection-rules', match: ['/prompt-protection-rules'], icon: IconShield },
+  { labelKey: 'sidebar.items.observability', href: '/project/requests', match: ['/project/requests', '/project/usage-stats', '/project/traces', '/project/threads'], icon: IconFileText },
+  { labelKey: 'sidebar.items.projects', href: '/projects', match: ['/projects'], icon: IconFolders },
+  { labelKey: 'sidebar.items.people', href: '/users', match: ['/users', '/roles', '/project/users', '/project/roles'], icon: IconUsersGroup },
+  { labelKey: 'sidebar.items.dataStorages', href: '/data-storages', match: ['/data-storages'], icon: IconDatabase },
+  { labelKey: 'ai4s.topnav.system', href: '/system', match: ['/system'], icon: IconSettings },
 ] as const;
 
 export function Ai4sTopNavBar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
+  const { t } = useTranslation();
   const { hasSystemScope } = usePermissions();
   const { checkRouteAccess } = useRoutePermissions();
   const peopleHref = hasSystemScope('read_users') ? '/users' : '/project/users';
@@ -60,7 +64,7 @@ export function Ai4sTopNavBar() {
   return (
     <div className='bg-background/95 supports-[backdrop-filter]:bg-background/60 fixed top-14 z-40 w-full border-b backdrop-blur'>
       <nav className='flex h-11 items-center gap-1 overflow-x-auto px-4'>
-        {navItems.map(({ title, href, match, icon: Icon }) => {
+        {navItems.map(({ labelKey, href, match, icon: Icon }) => {
           const active =
             href === '/'
               ? pathname === '/'
@@ -75,7 +79,7 @@ export function Ai4sTopNavBar() {
               )}
             >
               <Icon className='size-4' />
-              {title}
+              {t(labelKey)}
             </Link>
           );
         })}

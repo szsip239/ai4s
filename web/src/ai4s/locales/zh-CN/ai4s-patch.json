@@ -78,5 +78,10 @@
   "ai4s.batchTier.confirm": "确认换档（{{count}} 个）",
   "ai4s.batchTier.resultSummary": "执行完成：成功 {{success}} 个，失败 {{fail}} 个",
   "ai4s.batchTier.resultOk": "成功",
-  "ai4s.batchTier.resultFail": "失败：{{reason}}"
+  "ai4s.batchTier.resultFail": "失败：{{reason}}",
+
+  "ai4s.topnav.dashboard": "仪表盘",
+  "ai4s.topnav.myKeys": "我的 Key",
+  "ai4s.topnav.promptProtectionRules": "脱敏规则",
+  "ai4s.topnav.system": "系统设置"
 }

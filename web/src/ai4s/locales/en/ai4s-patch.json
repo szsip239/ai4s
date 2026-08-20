@@ -76,5 +76,10 @@
   "ai4s.batchTier.confirm": "Confirm Change ({{count}})",
   "ai4s.batchTier.resultSummary": "Done: {{success}} succeeded, {{fail}} failed",
   "ai4s.batchTier.resultOk": "Success",
-  "ai4s.batchTier.resultFail": "Failed: {{reason}}"
+  "ai4s.batchTier.resultFail": "Failed: {{reason}}",
+
+  "ai4s.topnav.dashboard": "Dashboard",
+  "ai4s.topnav.myKeys": "My Keys",
+  "ai4s.topnav.promptProtectionRules": "Prompt Protection",
+  "ai4s.topnav.system": "System Settings"
 }

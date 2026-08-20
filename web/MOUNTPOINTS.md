@@ -57,4 +57,5 @@
 | `src/features/auth/data/auth.ts` | 顶部 import +2 行与 resolvePostSignInPath 函数、useSignIn/useOIDCExchange onSuccess 落点各 1 处 | 登录成功落点由 `isOwner ? '/' : '/project/playground'` 改为 resolveLandingPath 按权限解析第一个可用页（员工已选项目时落 /project/requests 观测；首登未选项目落兜底 /settings/profile） | issue #69 P2-E | 2026-08-20 |
 | `src/components/route-guard.tsx` | ForbiddenPage onGoBack 目标计算 | Go Back 目标：fallbackPath 有权限照旧，无权限改落 getLandingPath()（修复员工 403 页返回死路） | issue #69 P2-E | 2026-08-20 |
 | `src/routes/_authenticated/chats/index.tsx` | 删除文件 | /chats 下架：路由无 guard、不在 routeConfigs、侧栏/顶栏/⌘K 均无入口的空壳页；routeTree.gen.ts 由 router 插件自动重生成 | issue #69 P3 | 2026-08-20 |
+| `src/features/auth/sign-up/components/sign-up-form.tsx` | import +1 行、onSubmit 落点 1 处 | 注册成功落点由写死 `/project/playground` 改 `resolveLandingPath`（注册响应带 projects/scopes，projects[0] 即邀请项目；无则按空 scopes 兜底落 /settings/profile） | issue #70（#69 遗留） | 2026-08-20 |
 | `src/ai4s/pages/{dashboard/Ai4sDashboard,requests/Ai4sRequestsPage,requests/Ai4sRequestMetaDrawer}.tsx` | 删除文件 | 死组件清理：上文 2026-08-01/08-02 两行登记的挂载早已被后续恢复行（恢复上游 dashboard/审计日志）撤销，文件零引用（grep 全仓确认），上文两行指向的文件自此不存在 | issue #69 P3 | 2026-08-20 |
