@@ -7,9 +7,9 @@
  * 管线节点与左导航徽标显示 settings 真实开关态（关闭显示「已关闭」）。
  * 纵深层规则（只读）为普通导航选中项（#38：不再常驻页底）；管线点击与左导航选中联动同一 state；
  * 左导航只给已关闭的层显示「已关闭」徽标（#39：启用态与顶部管线重复不再展示；纵深层保留「只读」徽标）；
- * 离开有未保存修改的面板时 confirm 提示（dirty 标记由面板上报）。
+ * 离开有未保存修改的面板时 confirm 提示（dirty 按上报方分 key 记账，见 dirty-registry.ts，issue #69 P2-C）。
  */
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
@@ -22,6 +22,7 @@ import {
   useWordlist,
 } from './api';
 import { EXTRA_NAV, LAYER_LABEL, PIPELINE_LAYERS, type PanelKey, type StatusBadge } from './layers';
+import { createDirtyRegistry } from './dirty-registry';
 import { Ai4sNodeBadges, Ai4sPipelineBar, type Ai4sPipelineNodeView } from './PipelineBar';
 import { Ai4sDeepLayerRules } from './panels/DeepLayerRules';
 import { Ai4sEdmCorpusPanel } from './panels/EdmCorpusPanel';
@@ -64,11 +65,9 @@ function Ai4sResponseSideCard() {
 
 export default function Ai4sRulesPage() {
   const [selected, setSelected] = useState<PanelKey>('l2');
-  // 当前面板的 dirty 标记（一次只渲染一个面板，面板经 onDirtyChange 上报；卸载时自动复位）
-  const dirtyRef = useRef(false);
-  const setDirty = useCallback((d: boolean) => {
-    dirtyRef.current = d;
-  }, []);
+  // dirty 按上报方分 key 记账（issue #69 P2-C）：同层多面板/对话框（如 L2 词表+PII）共用单个 boolean 会互相覆盖，
+  // 词表弄脏后开关一次 PII 对话框即丢 dirty；注册表互不复位，面板卸载时自行上报 false 注销
+  const dirtyRegistry = useMemo(createDirtyRegistry, []);
 
   // 管线/导航状态与规模摘要所需的全量查询（与面板共享 React Query 缓存，不额外发请求）
   const settings = useSettings();
@@ -147,12 +146,12 @@ export default function Ai4sRulesPage() {
     settingsDoc,
   ]);
 
-  /** 切换选中层（管线点击与左导航联动同一 state）；有未保存修改先 confirm */
+  /** 切换选中层（管线点击与左导航联动同一 state）；任一上报方有未保存修改先 confirm */
   const handleSelect = (key: PanelKey) => {
-    if (key !== selected && dirtyRef.current) {
+    if (key !== selected && dirtyRegistry.any()) {
       if (!window.confirm('当前面板有未保存的修改，离开将丢弃。确定离开？')) return;
     }
-    dirtyRef.current = false;
+    dirtyRegistry.clear();
     setSelected(key);
   };
 
@@ -209,17 +208,17 @@ export default function Ai4sRulesPage() {
             </nav>
           </aside>
           <div className='min-w-0 flex-1'>
-            {selected === 'l1' && <Ai4sFormatRulesPanel onDirtyChange={setDirty} />}
+            {selected === 'l1' && <Ai4sFormatRulesPanel onDirtyChange={dirtyRegistry.reporter('l1')} />}
             {selected === 'l2' && (
               <div className='space-y-6'>
-                <Ai4sWordlistPanel onDirtyChange={setDirty} />
-                <Ai4sRecognizersPanel onDirtyChange={setDirty} />
+                <Ai4sWordlistPanel onDirtyChange={dirtyRegistry.reporter('l2.wordlist')} />
+                <Ai4sRecognizersPanel onDirtyChange={dirtyRegistry.reporter('l2.recognizers')} />
               </div>
             )}
-            {selected === 'l3' && <Ai4sEdmCorpusPanel onDirtyChange={setDirty} />}
-            {selected === 'judge' && <Ai4sJudgePanel onDirtyChange={setDirty} />}
-            {selected === 'pg' && <Ai4sPgPanel onDirtyChange={setDirty} />}
-            {selected === 'toggles' && <Ai4sSettingsPanel onDirtyChange={setDirty} />}
+            {selected === 'l3' && <Ai4sEdmCorpusPanel onDirtyChange={dirtyRegistry.reporter('l3')} />}
+            {selected === 'judge' && <Ai4sJudgePanel onDirtyChange={dirtyRegistry.reporter('judge')} />}
+            {selected === 'pg' && <Ai4sPgPanel onDirtyChange={dirtyRegistry.reporter('pg')} />}
+            {selected === 'toggles' && <Ai4sSettingsPanel onDirtyChange={dirtyRegistry.reporter('toggles')} />}
             {selected === 'response' && <Ai4sResponseSideCard />}
             {selected === 'deep' && <Ai4sDeepLayerRules />}
           </div>

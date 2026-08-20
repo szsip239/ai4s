@@ -18,7 +18,7 @@ interface RouteGuardProps {
 
 export function RouteGuard({ children, requiredScopes = [], scopeLevel, fallbackPath = '/', showForbidden = true, requireProjectOwner = false }: RouteGuardProps) {
   const router = useRouter();
-  const { userScopes, systemScopes, projectScopes, isOwner, isProjectOwner } = useRoutePermissions();
+  const { userScopes, systemScopes, projectScopes, isOwner, isProjectOwner, checkRouteAccess, getLandingPath } = useRoutePermissions();
 
   let hasAccess = true;
   if (requireProjectOwner && !isProjectOwner) {
@@ -43,7 +43,9 @@ export function RouteGuard({ children, requiredScopes = [], scopeLevel, fallback
 
   if (!hasAccess) {
     if (showForbidden) {
-      return <ForbiddenPage onGoBack={() => router.navigate({ to: fallbackPath })} />;
+      // issue #69 P2-E：fallbackPath 本身也无权限时（如员工回 / 仍 403），改落第一个可用页，避免往返死路
+      const goBackTarget = checkRouteAccess(fallbackPath).hasAccess ? fallbackPath : getLandingPath();
+      return <ForbiddenPage onGoBack={() => router.navigate({ to: goBackTarget })} />;
     }
     return null; // 重定向中，不显示任何内容
   }

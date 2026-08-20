@@ -9,7 +9,8 @@
 | `src/authenticated-layout.tsx` | 全文重构 | 移除 AppSidebar/侧边栏逻辑，改为 AppHeader + Ai4sTopNavBar 两行固定头部；保留 SidebarProvider（AppHeader 的 useSidebar 依赖） | issue #11 C 结构顶部导航；新组件在 src/ai4s/layout/ | 2026-08-01 |
 | `src/routes/_authenticated/index.tsx` | import 与组件 | Dashboard 换为 `@/ai4s/pages/dashboard/Ai4sDashboard` | issue #11 C 结构高密度看板 + 右侧信息面板；上游 Dashboard 保留于 features/dashboard 未动 | 2026-08-01 |
 | `src/components/layout/app-header.tsx` | 布局左区 | 删除 SidebarTrigger（无侧边栏后的死按钮）及其 import | issue #11 配套清理 | 2026-08-01 |
-| `src/lib/i18n.ts` | 顶部 +1 行 import、zhTranslation merge 参数 +1 | 引入 `src/ai4s/locales/zh-CN/ai4s-patch.json` 补键包（现 72 键：初版 61 个上游 zh-CN 缺失键 profile/security/common 等，后角色扩展为 ai4s 功能键载体，如 #64 batchTier.*） | issue #12 中文补键；补键包本体在隔离区 | 2026-08-02 |
+| `src/lib/i18n.ts` | 顶部 +1 行 import、zhTranslation merge 参数 +1 | 引入 `src/ai4s/locales/zh-CN/ai4s-patch.json` 补键包（初版 61 个上游 zh-CN 缺失键 profile/security/common 等，后角色扩展为 ai4s 功能键载体，现 72 键含 #64 batchTier.*） | issue #12 中文补键；补键包本体在隔离区 | 2026-08-02 |
+| `src/lib/i18n.ts` | 顶部 import +1 行、enTranslation merge 参数 +1 | 并入同构 en 补键包 `src/ai4s/locales/en/ai4s-patch.json`（71 键，仅补上游 en 同样缺失的键，0 覆盖既有 en 值，与 zh 键集同构） | issue #69 P1-C EN 裸键修复 | 2026-08-20 |
 | `src/routes/_authenticated/project/requests/index.tsx` | import 与组件 | 审计日志换 `@/ai4s/pages/requests/Ai4sRequestsPage`（元数据抽屉 + warn 提示条，不展示原文） | issue #13 审计原则 | 2026-08-02 |
 | `src/routes/_authenticated/project/requests/$requestId.tsx` | 全文 | 深链统一 redirect 回 `/project/requests`（上游详情页含原文，禁用） | issue #13 配套 | 2026-08-02 |
 | `src/routes/_authenticated/prompt-protection-rules/index.tsx` | import 与组件 | 脱敏规则换 `@/ai4s/pages/rules/Ai4sRulesPage`（link-ai 式，类型/优先级展示层派生） | issue #13 | 2026-08-02 |
@@ -48,3 +49,12 @@
 | `src/features/apikeys/index.tsx` | 文件顶部 +4 行开关常量、Tabs 块包条件渲染 | `SHOW_TYPE_TABS = false` 使类型 Tab 条（全部/项目级/个人/服务账号）整体不渲染，默认停 'all'；activeTab 状态与 whereClause 过滤逻辑保留，表格「类型」列不动；恢复时开关改回 true | issue #66 去 Tab 化（列表行内类型列承载分类） | 2026-08-18 |
 | `src/features/proejct-users/index.tsx` / `src/features/roles/index.tsx` | import 区各 -2 行、`<Main>` 内各 -1 行（+1 注释） | 摘除 #54/#65 挂载的 `<Ai4sPageTabs tabs={pageTabGroups.people(t)} />`，两页恢复无 Tab 裸页直访；/users、/project/roles 保持挂 people 组（组定义缩为两项，在 `src/ai4s/components/page-tab-groups.ts`，隔离区） | issue #66 人员 Tab 组四→二 | 2026-08-18 |
 | `src/locales/zh-CN/base.json` / `src/locales/en/base.json` | 各删 2 键 | 删 `sidebar.items.projectMembers`、`sidebar.items.projectRoles`（#65 新增、#66 四→二后零引用，grep 全仓确认；`projectRoles.*` 页面键与 `sidebar.items.people` 仍在用不动） | issue #66 配套清死键 | 2026-08-18 |
+| `src/features/settings/appearance/appearance-form.tsx` | 登记回改（上文 2026-08-02 行作废） | QA 实测坐实 colorScheme 选择器仍在代码中（`colorSchemes` 常量与表字段均存在），原「移除 colorScheme 选择器」登记失实，该文件当前无在效改动 | issue #69 P3：登记与代码现状对齐 | 2026-08-20 |
+| `src/config/route-permission.ts` | RouteGroup +key 字段与三组 key 值、`/project/playground` 条目、文件末尾新增函数 | 三组补稳定 key（admin/project/settings，filterNavGroups 匹配用）；playground 补 `requiredScopes: ['write_requests','read_channels']` + mode hidden（与该路由实际 RouteGuard 对齐）；新增 `resolveLandingPath`（登录落点/403 返回兜底，按候选顺序取第一个有权限页） | issue #69 P2-E 登录落点即 403 修复 + P3 组匹配修复 | 2026-08-20 |
+| `src/hooks/useRoutePermissions.ts` | filterNavGroups 重写、return 加 getLandingPath | 组匹配改按稳定 key（原按翻译后标题匹配英文配置字面量，zh 永不命中致空壳组头）；过滤后无可见项的组整组隐藏；新增 getLandingPath 包装 resolveLandingPath | issue #69 P2-E/P3 | 2026-08-20 |
+| `src/components/layout/types.ts` | NavGroup +key 可选字段 | 侧栏组数据携带稳定 key，供 filterNavGroups 匹配 | issue #69 P3 | 2026-08-20 |
+| `src/sidebar.ts` | rawNavGroups 三组各 +1 行 key | 三组加 key（admin/project/settings），与 routeConfigs 组 key 对应 | issue #69 P3 | 2026-08-20 |
+| `src/features/auth/data/auth.ts` | 顶部 import +2 行与 resolvePostSignInPath 函数、useSignIn/useOIDCExchange onSuccess 落点各 1 处 | 登录成功落点由 `isOwner ? '/' : '/project/playground'` 改为 resolveLandingPath 按权限解析第一个可用页（员工已选项目时落 /project/requests 观测；首登未选项目落兜底 /settings/profile） | issue #69 P2-E | 2026-08-20 |
+| `src/components/route-guard.tsx` | ForbiddenPage onGoBack 目标计算 | Go Back 目标：fallbackPath 有权限照旧，无权限改落 getLandingPath()（修复员工 403 页返回死路） | issue #69 P2-E | 2026-08-20 |
+| `src/routes/_authenticated/chats/index.tsx` | 删除文件 | /chats 下架：路由无 guard、不在 routeConfigs、侧栏/顶栏/⌘K 均无入口的空壳页；routeTree.gen.ts 由 router 插件自动重生成 | issue #69 P3 | 2026-08-20 |
+| `src/ai4s/pages/{dashboard/Ai4sDashboard,requests/Ai4sRequestsPage,requests/Ai4sRequestMetaDrawer}.tsx` | 删除文件 | 死组件清理：上文 2026-08-01/08-02 两行登记的挂载早已被后续恢复行（恢复上游 dashboard/审计日志）撤销，文件零引用（grep 全仓确认），上文两行指向的文件自此不存在 | issue #69 P3 | 2026-08-20 |

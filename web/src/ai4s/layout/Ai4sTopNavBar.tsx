@@ -12,6 +12,7 @@ import {
 } from '@tabler/icons-react';
 import { cn } from '@/lib/utils';
 import { usePermissions } from '@/hooks/usePermissions';
+import { useRoutePermissions } from '@/hooks/useRoutePermissions';
 
 /**
  * ai4s 顶部导航（C 结构）
@@ -25,6 +26,8 @@ import { usePermissions } from '@/hooks/usePermissions';
  * 四个人员域页面经统一 people Tab 组互跳；顶栏 10 项 → 9 项。
  * issue #65 评审 P2：人员入口按权限回落——有系统级 read_users 落全局 /users，
  * 否则落项目域 /project/users（route-permission：/users 属 system 组，/project/users 属 any 组）。
+ * issue #69 P3：入口按 routeConfigs mode:'hidden' 语义做权限过滤（与侧栏/⌘K 的 filterNavItems 一致），
+ * 无权限且 mode=hidden 的入口不再渲染（此前员工可见 9 个入口、其中 7 个点进去 Access Denied）。
  */
 
 const NAV_ITEMS = [
@@ -42,9 +45,17 @@ const NAV_ITEMS = [
 export function Ai4sTopNavBar() {
   const pathname = useRouterState({ select: (s) => s.location.pathname });
   const { hasSystemScope } = usePermissions();
+  const { checkRouteAccess } = useRoutePermissions();
   const peopleHref = hasSystemScope('read_users') ? '/users' : '/project/users';
   // NAV_ITEMS 中仅「人员」href 为 /users，按权限解析实际落点
-  const navItems = NAV_ITEMS.map((item) => (item.href === '/users' ? { ...item, href: peopleHref } : item));
+  // issue #69 P3：按 routeConfigs mode:'hidden' 语义过滤无权限入口（判定落在解析后的实际 href 上，
+  // scopeLevel 由路由所属组决定——/users 走系统级、/project/users 走 any 级，与 RouteGuard 一致）
+  const navItems = NAV_ITEMS.map((item) => (item.href === '/users' ? { ...item, href: peopleHref } : item)).filter(
+    (item) => {
+      const access = checkRouteAccess(item.href);
+      return access.hasAccess || access.mode !== 'hidden';
+    }
+  );
 
   return (
     <div className='bg-background/95 supports-[backdrop-filter]:bg-background/60 fixed top-14 z-40 w-full border-b backdrop-blur'>

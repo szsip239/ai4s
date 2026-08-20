@@ -34,6 +34,7 @@ type NavItem = NavCollapsible | NavLink;
 
 interface NavGroup {
   title: string;
+  key?: string; // 稳定匹配键，与 routeConfigs 组的 key 对应（issue #69 P3：不按翻译后标题匹配）
   items: NavItem[];
 }
 

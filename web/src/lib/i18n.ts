@@ -18,11 +18,12 @@ function getModuleDefaultExport(module: unknown): Record<string, unknown> {
 }
 
 import ai4sPatchZhCN from '../ai4s/locales/zh-CN/ai4s-patch.json'; // 挂载点 M6：ai4s zh-CN 补键包（issue #12）
+import ai4sPatchEn from '../ai4s/locales/en/ai4s-patch.json'; // issue #69 P1-C：en 补键包（上游 en 同样缺失的键，英文文案；zh 侧不受影响）
 
 const enModules = import.meta.glob('../locales/en/*.json', { eager: true }) as Record<string, unknown>;
 const zhCNModules = import.meta.glob('../locales/zh-CN/*.json', { eager: true }) as Record<string, unknown>;
 
-const enTranslation = mergeTranslations(...Object.values(enModules).map(getModuleDefaultExport));
+const enTranslation = mergeTranslations(...Object.values(enModules).map(getModuleDefaultExport), ai4sPatchEn);
 const zhTranslation = mergeTranslations(...Object.values(zhCNModules).map(getModuleDefaultExport), ai4sPatchZhCN);
 
 const resources = {

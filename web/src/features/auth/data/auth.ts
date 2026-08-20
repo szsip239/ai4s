@@ -6,6 +6,8 @@ import { ME_QUERY } from '@/gql/users';
 import { toast } from 'sonner';
 import { useAuthStore, setTokenToStorage, removeTokenFromStorage } from '@/stores/authStore';
 import { AuthUser } from '@/stores/authStore';
+import { useProjectStore } from '@/stores/projectStore';
+import { resolveLandingPath } from '@/config/route-permission';
 import { authApi } from '@/lib/api-client';
 import i18n from '@/lib/i18n';
 
@@ -16,6 +18,22 @@ export interface SignInInput {
 
 interface MeResponse {
   me: AuthUser;
+}
+
+/**
+ * issue #69 P2-E：登录落点按权限解析第一个可用页（owner → /；员工已选项目时 → /project/requests 观测），
+ * 不再写死 /project/playground（无 write_requests/read_channels 的用户落上去即 403）。
+ * 注意：项目 scopes 读 localStorage 的 selectedProjectId——首登（未选项目）时 projectScopes 为空，
+ * 项目级候选全部不可见，落兜底 /settings/profile（无 guard 的安全页）；回访用户才落观测。
+ */
+function resolvePostSignInPath(user: AuthUser): string {
+  const selectedProjectId = useProjectStore.getState().selectedProjectId;
+  const project = user.projects?.find((p) => p.projectID === selectedProjectId);
+  return resolveLandingPath({
+    isOwner: user.isOwner,
+    systemScopes: user.scopes,
+    projectScopes: project?.scopes,
+  });
 }
 
 export function useMe(enabled = true) {
@@ -74,9 +92,8 @@ export function useSignIn() {
       toast.success(i18n.t('common.success.signedIn'));
 
       // Redirect based on user role
-      // Owner users go to dashboard, non-owner users go to requests page
-      const redirectPath = data.user.isOwner ? '/' : '/project/playground';
-      router.navigate({ to: redirectPath });
+      // Owner users go to dashboard, non-owner users land on their first accessible page
+      router.navigate({ to: resolvePostSignInPath(data.user) });
     },
     onError: (error: any) => {
       const errorMessage = error.message || 'Failed to sign in';
@@ -162,9 +179,8 @@ export function useOIDCExchange() {
 
       toast.success(i18n.t('common.success.signedIn'));
 
-      // Redirect based on user role
-      const redirectPath = data.user.isOwner ? '/' : '/project/playground';
-      router.navigate({ to: redirectPath });
+      // Redirect based on user role（issue #69 P2-E：非 owner 按权限落第一个可用页）
+      router.navigate({ to: resolvePostSignInPath(data.user) });
     },
     onError: (error: unknown) => {
       const errorMessage = error instanceof Error ? error.message : 'SSO login failed';

@@ -69,6 +69,7 @@ export function useSidebarData(): SidebarData {
   const rawNavGroups: NavGroup[] = [
     {
       title: t('sidebar.groups.admin'),
+      key: 'admin',
       items: [
         {
           title: t('sidebar.items.dashboard'),
@@ -109,6 +110,7 @@ export function useSidebarData(): SidebarData {
     },
     {
       title: t('sidebar.groups.project'),
+      key: 'project',
       items: [
         {
           title: t('sidebar.items.apiKeys'),
@@ -144,6 +146,7 @@ export function useSidebarData(): SidebarData {
     },
     {
       title: t('sidebar.groups.settings'),
+      key: 'settings',
       items: [
         {
           title: t('sidebar.items.system'),

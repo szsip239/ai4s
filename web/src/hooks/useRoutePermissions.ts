@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { routeConfigs, type RouteConfig, type RouteGroup, type ScopeLevel } from '@/config/route-permission';
+import { routeConfigs, resolveLandingPath, type RouteConfig, type RouteGroup, type ScopeLevel } from '@/config/route-permission';
 import { useAuthStore } from '@/stores/authStore';
 import { useSelectedProjectId } from '@/stores/projectStore';
 import { type NavGroup, type NavItem } from '@/components/layout/types';
@@ -140,22 +140,32 @@ export function useRoutePermissions() {
   const filterNavGroups = useMemo(() => {
     return (groups: NavGroup[]): NavGroup[] => {
       return groups
+        .map((group) => ({
+          ...group,
+          items: filterNavItems(group.items),
+        }))
         .filter((group) => {
-          // 找到对应的路由组配置
-          const routeGroup = routeConfigs.find((rg) => rg.title === group.title);
+          // 过滤后无可见项的组整组隐藏，不留空壳组头（issue #69 P3）
+          if (group.items.length === 0) {
+            return false;
+          }
+          // 找到对应的路由组配置：按稳定 key 匹配（group.title 是翻译后文案，
+          // zh 下与配置里的英文标题字面量永不命中，issue #69 P3）
+          const routeGroup = routeConfigs.find((rg) => (group.key ? rg.key === group.key : rg.title === group.title));
           if (!routeGroup) {
             return true; // 如果没有配置，默认显示
           }
 
           // 检查组是否有可访问的路由
           return checkGroupAccess(routeGroup);
-        })
-        .map((group) => ({
-          ...group,
-          items: filterNavItems(group.items),
-        }));
+        });
     };
   }, [checkGroupAccess, filterNavItems]);
+
+  // issue #69 P2-E：登录落点 / 403 页「返回」兜底——按权限解析第一个可用页
+  const getLandingPath = useMemo(() => {
+    return () => resolveLandingPath({ isOwner, systemScopes, projectScopes });
+  }, [systemScopes, projectScopes, isOwner]);
 
   return {
     userScopes: [...systemScopes, ...projectScopes],
@@ -167,6 +177,7 @@ export function useRoutePermissions() {
     checkGroupAccess,
     filterNavItems,
     filterNavGroups,
+    getLandingPath,
   };
 }
 
