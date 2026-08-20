@@ -1,5 +1,5 @@
 {
-  "apikeys.title": "API Keys",
+  "apikeys.title": "Key Management",
   "apikeys.description": "Create and manage access keys for API authentication.",
   "apikeys.createApiKey": "Create API Key",
   "apikeys.columns.key": "API Key",
