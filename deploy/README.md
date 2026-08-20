@@ -21,7 +21,7 @@ docker compose up -d
 ./scripts/bootstrap.sh     # 初始化管理账号 + 渠道 + 测试 API key（幂等）
 ./scripts/smoke-test.sh    # curl 经 agentgateway 完成一次 chat completion
 python3 scripts/apply-pricing.py  # credit 价格表落库（pricing.json：官方原价×渠道倍率，issue #18）
-./scripts/assign-default-project.sh  # JIT 新员工补进 Default 项目（幂等，可加 cron）
+./scripts/assign-default-project.sh  # JIT 新员工补进 Default 项目（幂等；issue #73 起常规路径已由 shim 巡检自动覆盖，本脚本为手工兜底）
 python3 scripts/dlp-regression.py    # DLP 对抗回归（issue #20）：改词表/规则后必跑（含 EDM 段与 admin API 段）
 python3 scripts/dlp-capability.py    # DLP 能力水位（issue #42）：词表/规则调优后与回归一起跑；gap 不 fail，负例误伤/开关矩阵失败才非零（公共部分在 dlp_testkit.py）
 python3 scripts/edm-add.py <文件>    # EDM 商密文档指纹入库（issue #34 起为 admin API 薄壳，凭据见下）
@@ -38,7 +38,7 @@ cd ../shim && python3 -m venv .venv && .venv/bin/pip install -r requirements-dev
 
 - 管理面：http://localhost:3000 （经 agentgateway 反代；宿主不再单独暴露 axonhub 调试口，issue #60），用 `.env` 中的 `AXONHUB_ADMIN_EMAIL` / `AXONHUB_ADMIN_PASSWORD` 登录（本地账号；阶段 1 切 飞书 OAuth→Casdoor→OIDC）。
 - 员工入口：`http://localhost:3000/v1`（OpenAI 兼容），唯一对员工的端口。
-- SSO（issue #14 已上线）：员工在 http://localhost:3000/sign-in 点"Casdoor SSO（飞书）"登录，JIT 自动建号。axonhub 无 JIT 默认项目机制，首登后运行 `./scripts/assign-default-project.sh`（幂等，可加 cron）把新员工补进 Default 项目。
+- SSO（issue #14 已上线）：员工在 http://localhost:3000/sign-in 点"Casdoor SSO（飞书）"登录，JIT 自动建号。axonhub 无 JIT 默认项目机制；**issue #73 起 shim 巡检线程 30s 级自动把新员工补进 Default 项目**（`auto_assign_project`，入项发飞书群通知），手工兜底 `./scripts/assign-default-project.sh`（幂等）。
 - **Tailnet 内网访问（issue #63）**：宿主经 tailscale serve 暴露两条 tailnet-only HTTPS 入口，其他 tailnet 设备直接可用：
   - console+API：`https://<host>.<tailnet>.ts.net:8445`（→ 127.0.0.1:3000；本机 localhost:3000 入口不受影响）
   - Casdoor：`https://<host>.<tailnet>.ts.net:8444`（→ 127.0.0.1:8000）

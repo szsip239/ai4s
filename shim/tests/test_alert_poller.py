@@ -7,6 +7,8 @@ mock（http_get / Axonhub.gql / feishu_get / send_feishu / apply_tier / create_e
 assign_key_owner / feishu_dm），不 mock 模块内部判定函数。
 issue #57 增补：POLL_INTERVAL 非法值 import 安全（P1）、save_state 原子写与纯文件名边角（P2-2）。
 issue #72 增补：审批同步泛化（提额/新建并存）、新建执行体各分支、归属 SQL 形状（psycopg 假模块注入）。
+issue #73 增补：新用户自动入 Default 项目（pending_default_project_users 纯函数筛选、
+auto_assign_project 幂等/单用户失败不阻塞/入项群通知）。
 """
 import json
 import os
@@ -506,6 +508,94 @@ class TestApprovalSyncKeyKind(unittest.TestCase):
         self.assertEqual(creates, ["ick"])
         self.assertEqual(state["approval_done"], ["ick"])
         self.assertEqual(len(sends), 1)
+
+
+class TestPendingDefaultProjectUsers(unittest.TestCase):
+    """issue #73 筛选纯函数：activated、非 owner、不在 Default 项目。"""
+
+    PID = "gid://axonhub/Project/1"
+
+    def _node(self, uid, email, owner=False, status="activated", projects=("gid://axonhub/Project/1",)):
+        return {"node": {"id": f"gid://axonhub/User/{uid}", "email": email, "isOwner": owner,
+                         "status": status,
+                         "projects": {"edges": [{"node": {"id": p}} for p in projects]}}}
+
+    def test_filters(self):
+        edges = [
+            self._node(1, "admin@x", owner=True, projects=()),          # owner 跳过
+            self._node(2, "emp@x"),                                      # 已成员跳过
+            self._node(3, "new@x", projects=()),                         # 待入项
+            self._node(4, "disabled@x", status="disabled", projects=()), # 非 activated 跳过
+            self._node(5, "other@x", projects=("gid://axonhub/Project/9",)),  # 在别的项目 → 待入项
+        ]
+        out = ap.pending_default_project_users(edges, self.PID)
+        self.assertEqual([n["email"] for n in out], ["new@x", "other@x"])
+
+    def test_empty_and_no_projects_edge(self):
+        self.assertEqual(ap.pending_default_project_users([], self.PID), [])
+        n = {"node": {"id": "u1", "email": "a@x", "isOwner": False, "status": "activated", "projects": None}}
+        self.assertEqual([x["email"] for x in ap.pending_default_project_users([n], self.PID)], ["a@x"])
+
+
+class TestAutoAssignProject(unittest.TestCase):
+    """issue #73 执行体：入项 mutation 入参/幂等跳过/单用户失败不阻塞/入项后群通知（边界全 mock）。"""
+
+    def _run(self, users_edges, my_projects=None, fail_on_uid=None):
+        ax = mock.Mock()
+        sends, adds = [], []
+
+        def fake_gql(query, variables=None):
+            if "myProjects" in query:
+                return {"myProjects": my_projects if my_projects is not None
+                        else [{"id": "gid://axonhub/Project/1", "name": "Default"}]}
+            if "users(" in query:
+                return {"users": {"edges": users_edges}}
+            if "addUserToProject" in query:
+                uid = variables["input"]["userId"]
+                if fail_on_uid and uid == fail_on_uid:
+                    raise RuntimeError("gql down")
+                adds.append(variables["input"])
+                return {"addUserToProject": {"id": "x"}}
+            raise AssertionError(f"unexpected gql: {query[:50]}")
+
+        ax.gql = fake_gql
+        with mock.patch.object(ap, "send_feishu", side_effect=lambda t: sends.append(t) or True):
+            ap.auto_assign_project(ax)
+        return sends, adds
+
+    def _user(self, uid, email, projects=()):
+        return {"node": {"id": f"gid://axonhub/User/{uid}", "email": email, "isOwner": False,
+                         "status": "activated",
+                         "projects": {"edges": [{"node": {"id": p}} for p in projects]}}}
+
+    def test_pending_assigned_and_notified(self):
+        sends, adds = self._run([self._user(9, "new@x")])
+        self.assertEqual(len(adds), 1)
+        self.assertEqual(adds[0], {"projectId": "gid://axonhub/Project/1", "userId": "gid://axonhub/User/9",
+                                   "isOwner": False, "scopes": ["read_requests", "write_requests"]})
+        self.assertEqual(len(sends), 1)
+        self.assertIn("new@x", sends[0])
+        self.assertIn("自动加入 Default 项目", sends[0])
+
+    def test_member_skipped_idempotent(self):
+        # 已入项成员不重复处理（幂等验证点：零 mutation 零通知）
+        sends, adds = self._run([self._user(7, "existing-member@x", projects=("gid://axonhub/Project/1",))])
+        self.assertEqual(adds, [])
+        self.assertEqual(sends, [])
+
+    def test_single_failure_not_blocking(self):
+        # 用户 A 入项失败记日志下轮重试（天然幂等，无需状态位）；用户 B 不受影响照常入项+通知
+        sends, adds = self._run(
+            [self._user(9, "a@x"), self._user(10, "b@x")], fail_on_uid="gid://axonhub/User/9")
+        self.assertEqual(len(adds), 1)
+        self.assertEqual(adds[0]["userId"], "gid://axonhub/User/10")
+        self.assertEqual(len(sends), 1)
+        self.assertIn("b@x", sends[0])
+
+    def test_no_default_project_noop(self):
+        sends, adds = self._run([self._user(9, "new@x")], my_projects=[])
+        self.assertEqual(adds, [])
+        self.assertEqual(sends, [])
 
 
 class TestCheckCycleDebounce(unittest.TestCase):

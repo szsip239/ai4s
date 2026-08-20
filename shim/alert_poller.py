@@ -20,6 +20,11 @@ axonhub 无事件源的事务靠主动轮询补齐。巡检项（状态翻转才
     私信失败兜底=群回执只发尾号 4 位 + 找管理员领取。群回执只发摘要，绝不含明文。
   FEISHU_APP_ID/FEISHU_APP_SECRET 缺失或两个 code 都空即整体跳过（与独立容器时代一致）。
 
+新用户自动入 Default 项目（issue #73，移植 assign-default-project.sh 筛选+入项逻辑）：
+  axonhub 无 JIT 默认项目钩子、无用户创建事件（上游实证），靠轮询补齐——users 扫描筛
+  activated/非 owner/不在 Default 项目 → addUserToProject（scopes 与脚本 SCOPES 一致）；
+  幂等天然成立（已成员被筛除），单用户失败记日志下轮重试，入项成功发群通知让管理员感知。
+
 发送：飞书群机器人签名校验（与 shim /feishu-alert 同算法）；axonhub 实时事件
 （channel.auto_disabled）走 shim /feishu-alert 适配器，本模块不重复。
 除归属步骤的 psycopg（函数级懒加载）外依赖仅标准库。secret 不进日志。
@@ -482,6 +487,66 @@ def approval_sync(ax: Axonhub, state: dict):
     state["approval_done"] = done[-200:]
 
 
+# ---- 新用户自动入 Default 项目（issue #73）----
+
+# users 全量扫描（axonhub 无"不在某项目"的服务端过滤，只能客户端筛）。
+# 约束：first:200 硬上限（ENABLED_API_KEYS_QUERY 同款）——用户总数超 200 即漏扫，
+# 超规模时需改 after 分页；projects(first:50) 同理（单用户项目数上限）。
+USERS_WITH_PROJECTS_QUERY = (
+    "query { users(first: 200) { edges { node { id email isOwner status "
+    "projects(first: 50) { edges { node { id } } } } } } }"
+)
+MY_PROJECTS_QUERY = "query { myProjects { id name } }"
+ADD_USER_TO_PROJECT_MUTATION = (
+    "mutation($input: AddUserToProjectInput!) { addUserToProject(input: $input) { id userID projectID } }"
+)
+# 项目级能力（issue #68 定案，与 assign-default-project.sh SCOPES 一致）：
+# read_api_keys/write_api_keys 刻意不发（项目级无属主过滤，下发即重开明文凭读与自助提额）
+PROJECT_MEMBER_SCOPES = ["read_requests", "write_requests"]
+
+
+def pending_default_project_users(users_edges: list, project_gid: str) -> list:
+    """筛待入项用户（纯函数）：activated、非 owner、尚不在 Default 项目。返回 [node]。"""
+    out = []
+    for e in users_edges:
+        n = e["node"]
+        if n.get("isOwner") or n.get("status") != "activated":
+            continue
+        member = {p["node"]["id"] for p in ((n.get("projects") or {}).get("edges") or [])}
+        if project_gid not in member:
+            out.append(n)
+    return out
+
+
+def auto_assign_project(ax: Axonhub):
+    """一轮自动入项（issue #73）：axonhub 无 JIT 默认项目机制/用户事件推送，轮询补齐。
+    幂等天然成立（已成员被筛选跳过，无需状态位）；单用户失败记日志跳过、下轮重试；
+    入项成功发群通知（管理员感知通道；best-effort——发送失败不重试，与审批回执同款纪律）。
+    项目头实证：addUserToProject 不需要 X-Project-ID（项目由 input.projectId 决定，
+    2026-08-20 与 assign-default-project.sh 不带头跑通一致），复用 Axonhub.gql 即可。"""
+    projs = ax.gql(MY_PROJECTS_QUERY)["myProjects"] or []
+    pid = next((p["id"] for p in projs if p.get("name") == "Default"),
+               projs[0]["id"] if projs else None)
+    if not pid:
+        print("[alert] 自动入项：myProjects 中未找到 Default 项目，本轮跳过", flush=True)
+        return
+    users = ax.gql(USERS_WITH_PROJECTS_QUERY)["users"]["edges"]
+    for n in pending_default_project_users(users, pid):
+        try:
+            ax.gql(ADD_USER_TO_PROJECT_MUTATION, {"input": {
+                "projectId": pid, "userId": n["id"], "isOwner": False,
+                "scopes": PROJECT_MEMBER_SCOPES,
+            }})
+        except Exception as e:
+            print(f"[alert] 自动入项失败 {n.get('email')}: {type(e).__name__}: {e}", flush=True)
+            continue
+        print(f"[alert] 新用户自动入项: {n.get('email')}", flush=True)
+        send_feishu(
+            f"[ai4s 通知] 新用户已自动加入 Default 项目\n"
+            f"用户: {n.get('email')}\n项目级能力: {'/'.join(PROJECT_MEMBER_SCOPES)}"
+        )
+
+
 def load_state() -> dict:
     try:
         with open(STATE_PATH, encoding="utf-8") as f:
@@ -625,6 +690,11 @@ def _poll_loop():
         try:
             state = check_cycle(ax, state)
             approval_sync(ax, state)
+            try:
+                auto_assign_project(ax)
+            except Exception as e:
+                # 同款隔离（issue #73）：入项整体失败只记日志，不阻塞巡检/审批、不杀线程
+                print(f"[alert] 自动入项本轮异常: {type(e).__name__}: {e}", flush=True)
             save_state(state)
         except Exception as e:
             # 单轮异常只记日志：不杀线程、绝不影响 shim 检测路径（issue #56 隔离纪律）

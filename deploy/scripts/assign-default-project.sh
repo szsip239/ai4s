@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # ai4s JIT 用户默认项目分配（幂等，issue #14；issue #68 起附带项目级能力下发）。
+# **常规路径已由 shim 巡检线程自动覆盖（issue #73，alert_poller.auto_assign_project，30s 级）**；
+# 本脚本保留作手工兜底（巡检异常/要立即生效时手工跑）。
 # 背景：axonhub v1.0.0-beta6 的 OIDC JIT 不支持"默认项目"（internal/server/biz/oidc.go resolveUser
 # 只做建号+角色映射，不触碰 UserProject），飞书 SSO 首登用户 projects 为空、前端 "No Project Selected"。
 # 本脚本把所有 activated 且不在 Default 项目的非 owner 用户补进 Default 项目（isOwner=false），
