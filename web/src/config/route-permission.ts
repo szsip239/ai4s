@@ -86,6 +86,11 @@ export const routeConfigs: RouteGroup[] = [
     scopeLevel: 'any', // Project 路由组可以通过 system-level 或 project-level 权限访问
     routes: [
       {
+        path: '/project/my-keys',
+        // 我的 Key（issue #74）：所有登录用户可见（员工 users.scopes=[] 是 #68 后常态），
+        // 数据面由 shim /self/keys 服务端按本人过滤，页面本身无 scope 门槛
+      },
+      {
         path: '/project/api-keys',
         requiredScopes: ['read_api_keys'],
         mode: 'hidden',
@@ -203,6 +208,9 @@ export function hasGroupAccess(userScopes: string[], group: RouteGroup): boolean
 // issue #69 P2-E：登录落点 / 403 页「返回」的兜底路径——按候选顺序取第一个当前用户可用的页面，
 // 不再写死 /project/playground（无 write_requests/read_channels 的用户落上去即 403，Go Back 回 / 又 403 成死路）。
 // 前提：候选路径均不带 requireProjectOwner 标记（当前候选无一需要）；日后加入带该标记的候选须先扩展本函数判定维度。
+// issue #74 评审 P2：/project/my-keys 排在候选末位（/settings/profile 兜底之前）——
+// 排序语义=首个可达候选胜出：管理员 '/'（read_dashboard）先命中不受影响；
+// 零 scope 员工前面候选全不达，落「我的 Key」（无 requiredScopes）而非个人资料页。
 const LANDING_CANDIDATE_PATHS = [
   '/',
   '/project/api-keys',
@@ -210,6 +218,7 @@ const LANDING_CANDIDATE_PATHS = [
   '/project/prompts',
   '/project/users',
   '/project/playground',
+  '/project/my-keys',
 ];
 
 export function resolveLandingPath({

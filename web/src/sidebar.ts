@@ -113,6 +113,12 @@ export function useSidebarData(): SidebarData {
       key: 'project',
       items: [
         {
+          // 我的 Key（issue #74）：员工自助入口，放项目组首位；无 scope 门槛（routeConfigs 同名条目）
+          title: t('sidebar.items.myKeys'),
+          url: '/project/my-keys',
+          icon: IconKey,
+        } as NavLink,
+        {
           title: t('sidebar.items.apiKeys'),
           url: '/project/api-keys',
           icon: IconKey,

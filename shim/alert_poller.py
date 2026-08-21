@@ -380,7 +380,7 @@ def create_emp_key(ax: Axonhub, open_id: str, purpose: str, day: str, ic: str) -
            {"id": node["id"], "input": {"activeProfile": KEY_INIT_TIER, "profiles": [prof]}})
     dm_ok = feishu_dm(open_id, (
         f"[ai4s] 你的 API Key 已创建（审批 {ic}）\n"
-        f"Key 名称: {name}\n档位: {KEY_INIT_TIER}（要更高档请另提「额度提升」审批）\n"
+        f"Key 名称: {name}\n档位: {KEY_INIT_TIER}（要更高档请另提「ai4s 额度提额申请」审批）\n"
         f"明文（仅此一条消息，请立即复制保存）:\n{plain}\n"
         "保管提醒: 明文只出现这一次，勿转发勿提交到代码仓库；丢失不补办，重新提交「ai4s API Key 申请」审批即可。"
     ))

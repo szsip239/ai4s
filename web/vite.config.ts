@@ -50,6 +50,11 @@ export default defineConfig({
         target: process.env.VITE_API_URL || 'http://localhost:3000',
         changeOrigin: true,
       },
+      // 员工自助平面（issue #74 评审 P2）：经本地网关到 shim /self/*
+      '/self': {
+        target: process.env.VITE_API_URL || 'http://localhost:3000',
+        changeOrigin: true,
+      },
     },
   },
 });

@@ -21,6 +21,7 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import admin_api  # DLP 统一配置 admin 平面（issue #31）：/dlp-admin/*，与检测路径隔离
+import self_api   # 员工自助平面（issue #74）：/self/*（本人 key 列表，无明文）
 import edm_lib    # EDM 指纹算法共享库（issue #34）：入库/检测同法（契约铁律）
 import feishu_lib  # 飞书签名共享实现（issue #70）：alert_poller 同一份
 import alert_poller  # 告警巡检+提额审批（issue #56 并入）：import 不起线程，仅 __main__ start_daemon
@@ -655,10 +656,14 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if admin_api.handle(self, "GET"):  # admin 平面（issue #31）：/dlp-admin/* 优先分流
             return
+        if self_api.handle(self, "GET"):  # 员工自助平面（issue #74）：/self/*
+            return
         self._json(200 if self.path == "/healthz" else 404, {"ok": self.path == "/healthz"})
 
     def do_POST(self):
         if admin_api.handle(self, "POST"):  # admin 平面（issue #31）：/dlp-admin/* 优先分流
+            return
+        if self_api.handle(self, "POST"):  # 员工自助平面（issue #74 评审 P2）：已鉴权 POST → 显式 404
             return
         if self.path == "/feishu-alert":
             # axonhub webhook → 飞书适配（issue #17）
@@ -814,11 +819,15 @@ class Handler(BaseHTTPRequestHandler):
         # 对外统一"未知写操作路径 404"，不暴露服务未实现 PUT 的内部细节。
         if admin_api.handle(self, "PUT"):  # admin 平面（issue #32）：/dlp-admin/* 写端点
             return
+        if self_api.handle(self, "PUT"):  # 员工自助平面（issue #74 评审 P2）：已鉴权 PUT → 显式 404
+            return
         self._json(404, {})
 
     def do_DELETE(self):
         # 同 do_PUT：非 admin 路径有意回 404（非 501）。
         if admin_api.handle(self, "DELETE"):  # admin 平面（issue #32）
+            return
+        if self_api.handle(self, "DELETE"):  # 员工自助平面（issue #74 评审 P2）：已鉴权 DELETE → 显式 404
             return
         self._json(404, {})
 

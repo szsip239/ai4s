@@ -163,6 +163,14 @@ routes:
     backends:
       - host: shim:8080
 
+  # 员工自助端点（issue #74）：/self/keys 本人 key 列表（shim 内省鉴权，无明文）；仅 default 网关
+  - gateways: [default]
+    matches:
+      - path:
+          pathPrefix: /self
+    backends:
+      - host: shim:8080
+
   # catch-all：前端静态（web/dist，nginx SPA fallback）
   - gateways: [default, mtls]
     backends:

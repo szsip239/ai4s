@@ -2,6 +2,7 @@ import { Link, useRouterState } from '@tanstack/react-router';
 import { useTranslation } from 'react-i18next';
 import {
   IconDashboard,
+  IconId,
   IconKey,
   IconRoute,
   IconShield,
@@ -31,11 +32,16 @@ import { useRoutePermissions } from '@/hooks/useRoutePermissions';
  * 无权限且 mode=hidden 的入口不再渲染（此前员工可见 9 个入口、其中 7 个点进去 Access Denied）。
  * issue #70：label 走 i18n（与 ⌘K 同源复用 sidebar.items.*；zh 文案与 ⌘K 不同的四项——
  * 仪表盘/我的 Key/脱敏规则/系统设置——用 ai4s.topnav.* 键，zh 保持顶栏既有文案不回退）。
+ * issue #74：新增员工自助「我的 Key」入口（/project/my-keys，label 复用 sidebar.items.myKeys）——
+ * 无 scope 门槛，零 scope 员工经 routeConfigs 同名条目 + checkRouteAccess 过滤后可见；
+ * 管理员同时看到本项与「Key 管理」（/project/api-keys），语义分别为「我的」与「全量管理」。
+ * issue #74 评审 P2：「我的 Key」图标改用 IconId（身份语义），与「Key 管理」的 IconKey 区分。
  */
 
 const NAV_ITEMS = [
   { labelKey: 'ai4s.topnav.dashboard', href: '/', match: ['/'], icon: IconDashboard },
   { labelKey: 'ai4s.topnav.myKeys', href: '/project/api-keys', match: ['/project/api-keys'], icon: IconKey },
+  { labelKey: 'sidebar.items.myKeys', href: '/project/my-keys', match: ['/project/my-keys'], icon: IconId },
   { labelKey: 'sidebar.items.accessManagement', href: '/channels', match: ['/channels', '/models'], icon: IconRoute },
   { labelKey: 'ai4s.topnav.promptProtectionRules', href: '/prompt-protection-rules', match: ['/prompt-protection-rules'], icon: IconShield },
   { labelKey: 'sidebar.items.observability', href: '/project/requests', match: ['/project/requests', '/project/usage-stats', '/project/traces', '/project/threads'], icon: IconFileText },

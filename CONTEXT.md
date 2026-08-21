@@ -31,6 +31,10 @@ _Avoid_: 配置文件直改、env 调参
 shim 内与检测路径完全隔离的 `/dlp-admin/*` 管理面：Bearer token 经 axonhub me 内省鉴权（读 read_channels / 写 write_channels scope），fail-closed（内省不可达 503），不适用检测链 fail-open 分级。
 _Avoid_: 管理接口、后台 API
 
+**self 平面（Self Plane）**:
+shim 内员工自助面 `/self/*`（issue #74，当前仅 `GET /self/keys` 查本人名下 Key）：与 admin 平面同款内省鉴权但无 scope 门槛（任何有效登录用户），服务端按 `userID=me.id` 过滤，响应白名单塑形绝不含 key 明文。
+_Avoid_: 员工 API、自助接口
+
 **单一源（Single Source of Truth）**:
 每类配置只有一个权威存储（词表/规则/settings JSON、EDM 指纹库），渲染产物（agentgateway config.yaml 标记区块）由它派生；EDM 入库与检测同一算法（`shim/edm_lib.py`）亦属此纪律。
 _Avoid_: 双写、多处维护
