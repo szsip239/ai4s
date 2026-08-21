@@ -14,6 +14,7 @@ UserPersonalAPIKeyReadRule 对 type≠personal 的 key 不做属主隔离，read
 """
 import admin_api  # _introspect/_respond 复用（issue #74 实现约定）
 import alert_poller  # Axonhub gql 客户端复用（login + 401 重登重试）；import 不起线程
+import key_requests  # 控制台申请通道（issue #79）：store/校验/通知；顶层 import 无环（其依赖 admin_api←alert_poller）
 
 # 本人 key 查询：服务端 userID 等值过滤（APIKeyWhereInput.userID 2026-08-21 内省实证支持）。
 # 约束：first:100 硬上限——个人名下 key 数量级为个位数，超限需改 after 分页。
@@ -57,6 +58,44 @@ def _self_keys(handler, me: dict):
     admin_api._respond(handler, 200, {"keys": keys})
 
 
+def _self_key_requests_get(handler, me: dict):
+    """本人申请列表（issue #79）：email 服务端过滤，只见本人申请。
+    fail-closed（评审 P1）：caller 无 email 时 list_requests("") 不过滤=返回全部申请，
+    属主隔离即失效——与 create_request 同语义，直接 502。"""
+    email = me.get("email") or ""
+    if not email:
+        admin_api._respond(handler, 502, {"error": "caller 身份无 email，无法过滤本人申请"})
+        return
+    try:
+        reqs = key_requests.list_requests(email=email)
+    except Exception as e:
+        print(f"[self] 本人申请查询失败: {type(e).__name__}: {e}", flush=True)
+        admin_api._respond(handler, 503, {"error": "request query unavailable"})
+        return
+    admin_api._respond(handler, 200, {"requests": reqs})
+
+
+def _self_key_requests_post(handler, me: dict):
+    """发起申请（issue #79）：落待办 + 推管理员审批卡。校验失败 400；冲突 409；存储失败 503。"""
+    payload = admin_api._read_body(handler)
+    if payload is None:
+        return  # 413/400 已在 _read_body 内回出
+    kind, purpose, tier, err = key_requests.validate_payload(payload)
+    if err:
+        admin_api._respond(handler, 400, {"error": err})
+        return
+    try:
+        req, kerr = key_requests.create_request(me, kind, purpose, tier)
+    except Exception as e:
+        print(f"[self] 申请创建失败: {type(e).__name__}: {e}", flush=True)
+        admin_api._respond(handler, 503, {"error": "request store unavailable"})
+        return
+    if kerr:
+        admin_api._respond(handler, kerr[0], {"error": kerr[1]})
+        return
+    admin_api._respond(handler, 201, {"request": req})
+
+
 def handle(handler, method: str) -> bool:
     """/self/* 分发（与 admin_api.handle 同约定）：命中即处理返回 True，否则 False 交还。
     鉴权=有效登录用户（内省通过即可，无 scope 门槛）。
@@ -74,8 +113,12 @@ def handle(handler, method: str) -> bool:
     if err is not None:
         admin_api._respond(handler, err, {"error": "introspection unavailable" if err == 503 else "unauthorized"})
         return True
-    if method != "GET" or path != "/self/keys":
+    if method == "GET" and path == "/self/keys":
+        _self_keys(handler, me)
+    elif method == "GET" and path == "/self/key-requests":
+        _self_key_requests_get(handler, me)
+    elif method == "POST" and path == "/self/key-requests":
+        _self_key_requests_post(handler, me)
+    else:
         admin_api._respond(handler, 404, {"error": "unknown self endpoint"})
-        return True
-    _self_keys(handler, me)
     return True

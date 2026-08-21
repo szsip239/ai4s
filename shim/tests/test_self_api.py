@@ -142,6 +142,74 @@ class TestSelfKeysQuery(unittest.TestCase):
         self.assertEqual(h.status, 503)
 
 
+class TestSelfKeyRequests(unittest.TestCase):
+    """issue #79：/self/key-requests 鉴权/分流（store/执行细节见 test_key_requests）。"""
+
+    def _handler(self, path="/self/key-requests", auth="Bearer t", body=None):
+        h = _FakeHandler(path=path, auth=auth)
+        if body is not None:
+            raw = json.dumps(body, ensure_ascii=False).encode()
+            h.headers["Content-Length"] = str(len(raw))
+            h.rfile = io.BytesIO(raw)
+        else:
+            h.headers["Content-Length"] = "0"
+            h.rfile = io.BytesIO(b"")
+        return h
+
+    def test_get_own_requests(self):
+        h = self._handler()
+        me = {"id": "u2", "email": "e@x.com"}
+        with mock.patch.object(self_api.admin_api, "_introspect", return_value=(me, None)), \
+             mock.patch.object(self_api.key_requests, "list_requests", return_value=[{"id": "kr-1"}]) as lr:
+            self.assertTrue(self_api.handle(h, "GET"))
+        self.assertEqual(h.status, 200)
+        self.assertEqual(h.body_json(), {"requests": [{"id": "kr-1"}]})
+        lr.assert_called_once_with(email="e@x.com")  # 本人过滤在服务端
+
+    def test_get_no_email_502(self):
+        # 评审 P1 fail-closed：caller email 缺失时若照常调 list_requests("") 不过滤=返回
+        # 全部申请（属主隔离失效）；必须 502 且 list_requests 不被调用
+        h = self._handler()
+        with mock.patch.object(self_api.admin_api, "_introspect", return_value=({"id": "u2"}, None)), \
+             mock.patch.object(self_api.key_requests, "list_requests") as lr:
+            self.assertTrue(self_api.handle(h, "GET"))
+        self.assertEqual(h.status, 502)
+        lr.assert_not_called()
+
+    def test_post_created_201(self):
+        h = self._handler(body={"kind": "new", "purpose": "联调"})
+        me = {"id": "u2", "email": "e@x.com"}
+        with mock.patch.object(self_api.admin_api, "_introspect", return_value=(me, None)), \
+             mock.patch.object(self_api.key_requests, "create_request",
+                               return_value=({"id": "kr-1", "status": "pending"}, None)) as cr:
+            self.assertTrue(self_api.handle(h, "POST"))
+        self.assertEqual(h.status, 201)
+        cr.assert_called_once_with(me, "new", "联调", "")
+
+    def test_post_invalid_400(self):
+        h = self._handler(body={"kind": "bogus"})
+        with mock.patch.object(self_api.admin_api, "_introspect", return_value=({"id": "u2", "email": "e"}, None)):
+            self.assertTrue(self_api.handle(h, "POST"))
+        self.assertEqual(h.status, 400)
+
+    def test_post_conflict_409(self):
+        h = self._handler(body={"kind": "new", "purpose": "x"})
+        with mock.patch.object(self_api.admin_api, "_introspect", return_value=({"id": "u2", "email": "e"}, None)), \
+             mock.patch.object(self_api.key_requests, "create_request",
+                               return_value=(None, (409, "已有待审批的同类申请"))):
+            self.assertTrue(self_api.handle(h, "POST"))
+        self.assertEqual(h.status, 409)
+
+    def test_post_no_token_401(self):
+        # 先鉴权再分流：新端点同样未鉴权 401、内省不被调用
+        h = self._handler(body={"kind": "new", "purpose": "x"})
+        h.headers.pop("Authorization")
+        with mock.patch.object(self_api.admin_api, "_introspect",
+                               side_effect=AssertionError("不应被调用")):
+            self.assertTrue(self_api.handle(h, "POST"))
+        self.assertEqual(h.status, 401)
+
+
 class TestShapeKey(unittest.TestCase):
     """白名单塑形：上游节点即使带 key 明文/多余字段也剥掉（纵深防御——响应永不含明文）。"""
 

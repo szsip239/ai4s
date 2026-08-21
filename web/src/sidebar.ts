@@ -10,6 +10,7 @@ import {
   IconDatabase,
   IconAi,
   IconNote,
+  IconClipboardCheck,
 } from '@tabler/icons-react';
 import { Command } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -80,6 +81,12 @@ export function useSidebarData(): SidebarData {
           title: t('sidebar.items.promptProtectionRules'),
           url: '/prompt-protection-rules',
           icon: IconShield,
+        } as NavLink,
+        {
+          // Key 审批（issue #79）：管理员点批页（员工发起端在项目组「我的 Key」）
+          title: t('sidebar.items.keyRequests'),
+          url: '/key-requests',
+          icon: IconClipboardCheck,
         } as NavLink,
         {
           title: t('sidebar.items.accessManagement'),

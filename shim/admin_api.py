@@ -30,7 +30,7 @@ import edm_lib  # EDM 指纹算法共享库（issue #34）：入库/检测同法
 # axonhub 内省端点（容器内默认同栈服务名；测试经环境变量指向本地假服务）
 AXONHUB_ADMIN_URL = os.environ.get("AXONHUB_ADMIN_URL", "http://axonhub:8090/admin/graphql")
 INTROSPECT_TIMEOUT = 3  # 秒；超时按内省失败处理（fail-closed）
-_ME_QUERY = "query Me { me { id isOwner scopes } }"
+_ME_QUERY = "query Me { me { id email isOwner scopes } }"  # issue #79 加 email：控制台 Key 申请通道登记申请人身份用
 
 # 配置文件路径（与 app.py 相同 env/默认值；测试用临时文件覆写模块属性）
 WORDLIST_PATH = os.environ.get("WORDLIST_PATH", "/dlp/confidential-terms.json")
@@ -824,6 +824,51 @@ def _ping(handler, me):
     })
 
 
+# ---- 控制台 Key 申请审批（issue #79）：列表读级、点批写级；执行/通知在 key_requests ----
+# key_requests 函数级懒加载：其顶层 import alert_poller→admin_api，admin_api 顶层互导会成环
+
+
+def _kr_list(handler, _me):
+    """GET 全部申请（新到旧）。"""
+    import key_requests
+    try:
+        reqs = key_requests.list_requests()
+    except Exception as e:
+        print(f"[admin] key 申请列表失败: {type(e).__name__}: {e}", flush=True)
+        _respond(handler, 503, {"error": "request store unavailable"})
+        return
+    _respond(handler, 200, {"requests": reqs})
+
+
+def _kr_resolve(handler, _me, rid, action):
+    """approve/reject 共用：状态门幂等（非 pending 返回现状）；approve 执行失败 502 保持 pending。"""
+    import key_requests
+    reason = ""
+    if action == "reject":
+        payload = _read_body(handler)
+        if payload is None:
+            return  # 413/400 已回出
+        reason = (payload.get("reason") or "") if isinstance(payload, dict) else ""
+    try:
+        req, err = key_requests.resolve_request(rid, action, reason)
+    except Exception as e:
+        print(f"[admin] key 申请点批异常 {rid}: {type(e).__name__}: {e}", flush=True)
+        _respond(handler, 503, {"error": "request store unavailable"})
+        return
+    if err:
+        _respond(handler, err[0], {"error": err[1]})
+        return
+    _respond(handler, 200, {"request": req})
+
+
+def _kr_approve_item(handler, me, rid):
+    _kr_resolve(handler, me, rid, "approve")
+
+
+def _kr_reject_item(handler, me, rid):
+    _kr_resolve(handler, me, rid, "reject")
+
+
 # 路由表：(方法, 路径) -> (鉴权级别 | None, 端点)
 _ROUTES = {
     ("GET", "/dlp-admin/healthz"): (None, _healthz),
@@ -840,6 +885,7 @@ _ROUTES = {
     ("POST", "/dlp-admin/edm/corpus/upload"): ("write", _edm_corpus_upload_post),
     ("GET", "/dlp-admin/settings"): ("read", _settings_get),
     ("PUT", "/dlp-admin/settings"): ("write", _settings_put),
+    ("GET", "/dlp-admin/key-requests"): ("read", _kr_list),  # issue #79：控制台 Key 申请审批
 }
 
 
@@ -848,6 +894,8 @@ _ITEM_ROUTES = {
     ("PUT", "/dlp-admin/recognizers/"): ("write", _recognizer_put_item),
     ("DELETE", "/dlp-admin/recognizers/"): ("write", _recognizer_delete_item),
     ("DELETE", "/dlp-admin/edm/corpus/"): ("write", _edm_corpus_delete_item),
+    ("POST", "/dlp-admin/key-requests/approve/"): ("write", _kr_approve_item),  # issue #79
+    ("POST", "/dlp-admin/key-requests/reject/"): ("write", _kr_reject_item),  # issue #79
 }
 
 

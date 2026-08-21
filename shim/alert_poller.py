@@ -232,25 +232,31 @@ def load_tier_profile(ax: Axonhub, tier_name: str):
     }}
 
 
-def apply_tier(ax: Axonhub, open_id: str, tier_name: str):
-    """申请人 open_id → axonhub 用户 → 其 enabled Key 全部换挂目标档。返回结果文本。"""
+def apply_tier_to_user(ax: Axonhub, user: dict, tier_name: str):
+    """目标用户 enabled Key 全部换挂目标档（issue #79 抽出：控制台通道按已解析用户直调）。
+    返回结果文本；模板缺失/无 enabled Key 也走文本（调用方回执/落结果），gql 异常上抛。"""
     prof = load_tier_profile(ax, tier_name)
     if not prof:
         return f"找不到 {tier_name} Profile 模板"
-    email = f"{open_id}@casdoor.oidc"
-    user = find_user_by_email(ax, email)
-    if not user:
-        return f"axonhub 中无 {email} 用户（未完成过 SSO 首登？）"
     keys = ax.gql(ENABLED_API_KEYS_QUERY)["apiKeys"]["edges"]
     own = [e["node"] for e in keys if e["node"]["userID"] == user["id"]]
     if not own:
-        return f"{email} 名下无 enabled Key"
+        return f"{user.get('email')} 名下无 enabled Key"
     for k in own:
         ax.gql(
             UPDATE_PROFILES_MUTATION,
             {"id": k["id"], "input": {"activeProfile": tier_name, "profiles": [prof]}},
         )
     return f"已将 {len(own)} 个 Key 换挂 {tier_name}（{', '.join(k['name'] for k in own)}）"
+
+
+def apply_tier(ax: Axonhub, open_id: str, tier_name: str):
+    """申请人 open_id → axonhub 用户 → 换挂目标档（飞书审批定义通道入口，语义不变）。"""
+    email = f"{open_id}@casdoor.oidc"
+    user = find_user_by_email(ax, email)
+    if not user:
+        return f"axonhub 中无 {email} 用户（未完成过 SSO 首登？）"
+    return apply_tier_to_user(ax, user, tier_name)
 
 
 def approval_action(status: str) -> str:
@@ -352,16 +358,11 @@ def key_by_name(ax: Axonhub, name: str):
     return edges[0]["node"] if edges else None
 
 
-def create_emp_key(ax: Axonhub, open_id: str, purpose: str, day: str, ic: str) -> str:
-    """新建审批 APPROVED 执行体：建 key → 归申请人 → 挂体验档 → 私信交付明文。
-    返回群回执用的结果摘要（绝不含明文）；抛异常=本轮失败，approval_sync 不标记、下轮重试。
-    幂等：上轮半途失败留下同名 key 时按名找回明文续走（不重复建 key）。"""
-    email = f"{open_id}@casdoor.oidc"
-    user = find_user_by_email(ax, email)
-    if not user:
-        # 未首登无用户：不建 key、不算失败，回执引导后标记已处理（重新申请会生成新实例）
-        return f"axonhub 无用户 {email}（申请人未首登平台），未建 Key；请先登录平台一次再重新申请"
-    name = make_key_name(open_id, purpose, day, ic)
+def ensure_emp_key(ax: Axonhub, user: dict, seed: str, purpose: str, day: str, tail: str):
+    """建 key 核心（issue #79 抽出，控制台/飞书审批两通道共用）：按名幂等找回或新建 →
+    归 user → 挂体验档。返回 (name, plain, owner_note)；模板缺失/gql 异常上抛（调用方下轮重试）。
+    幂等：半途失败留下同名 key 时按名找回明文续走（不重复建 key）。"""
+    name = make_key_name(seed, purpose, day, tail)
     node = key_by_name(ax, name)
     if not node:
         node = ax.gql(CREATE_API_KEY_MUTATION,
@@ -378,6 +379,18 @@ def create_emp_key(ax: Axonhub, open_id: str, purpose: str, day: str, ic: str) -
         raise RuntimeError(f"找不到 {KEY_INIT_TIER} Profile 模板")
     ax.gql(UPDATE_PROFILES_MUTATION,
            {"id": node["id"], "input": {"activeProfile": KEY_INIT_TIER, "profiles": [prof]}})
+    return name, plain, owner_note
+
+
+def create_emp_key(ax: Axonhub, open_id: str, purpose: str, day: str, ic: str) -> str:
+    """新建审批 APPROVED 执行体（飞书审批定义通道）：找用户 → ensure_emp_key → 私信交付明文。
+    返回群回执用的结果摘要（绝不含明文）；抛异常=本轮失败，approval_sync 不标记、下轮重试。"""
+    email = f"{open_id}@casdoor.oidc"
+    user = find_user_by_email(ax, email)
+    if not user:
+        # 未首登无用户：不建 key、不算失败，回执引导后标记已处理（重新申请会生成新实例）
+        return f"axonhub 无用户 {email}（申请人未首登平台），未建 Key；请先登录平台一次再重新申请"
+    name, plain, owner_note = ensure_emp_key(ax, user, open_id, purpose, day, ic)
     dm_ok = feishu_dm(open_id, (
         f"[ai4s] 你的 API Key 已创建（审批 {ic}）\n"
         f"Key 名称: {name}\n档位: {KEY_INIT_TIER}（要更高档请另提「ai4s 额度提额申请」审批）\n"
@@ -695,6 +708,12 @@ def _poll_loop():
             except Exception as e:
                 # 同款隔离（issue #73）：入项整体失败只记日志，不阻塞巡检/审批、不杀线程
                 print(f"[alert] 自动入项本轮异常: {type(e).__name__}: {e}", flush=True)
+            try:
+                import key_requests  # 函数级懒加载（psycopg 同款纪律）：key_requests 顶层 import 本模块，顶层互导成环
+                key_requests.sweep_expired()
+            except Exception as e:
+                # 同款隔离（issue #79）：超时清扫失败只记日志，不阻塞巡检/审批
+                print(f"[alert] key 申请超时清扫异常: {type(e).__name__}: {e}", flush=True)
             save_state(state)
         except Exception as e:
             # 单轮异常只记日志：不杀线程、绝不影响 shim 检测路径（issue #56 隔离纪律）

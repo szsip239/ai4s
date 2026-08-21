@@ -1,32 +1,44 @@
 /**
- * 员工「我的 Key」页（issue #74）。
+ * 员工「我的 Key」页（issue #74 列表 / issue #79 控制台申请通道）。
  * 背景：#68 收掉员工 key 自管权限后员工看不到自己名下的 key，也没有审批入口。
- * 本页列本人名下全部 key（名称/状态/档位/创建时间，无明文——上游本就不可取），
- * 并提供「申请新 Key」「申请提额」两个飞书审批指引对话框（不做一键代提，下一迭代再议）。
- * 权限：所有登录用户可见（routeConfigs 无 requiredScopes；admin 语义即「我的」）。
- * 飞书身份判定：JIT 账号 email 为 ou_*@casdoor.oidc（sso-oidc.md 约定）；否则视为本地账号，
- * 对话框提示联系管理员（本地账号无法走飞书审批身份链）。
+ * 本页列本人名下全部 key（名称/状态/档位/创建时间，无明文——上游本就不可取）。
+ * issue #79：两个按钮从指引对话框升级为真实发起——填用途/目标档提交 → shim 落待办申请并
+ * 推管理员飞书审批卡，管理员在控制台审批页点批后自动执行；「我的申请」区展示本人
+ * 申请的 pending/approved/rejected/expired 状态与结果（30s 轮询，与巡检节奏一致）。
+ * 原飞书审批定义通道并存（飞书里直接提单仍可用，两通道共用执行体）。
+ * 交付分流：飞书身份（email 为 ou_*@casdoor.oidc）→ 批准后明文私信本人；
+ * 非飞书（本地/钉钉/企微账号）→ 明文只给管理员，本页显示「已通过，请联系管理员领取」。
  */
 import { useState } from 'react';
 import { format } from 'date-fns';
 import { useTranslation } from 'react-i18next';
 import { IconKey, IconPlus, IconTrendingUp } from '@tabler/icons-react';
+import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Textarea } from '@/components/ui/textarea';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
 import { useMe } from '@/features/auth/data/auth';
-import { useMyKeys, type MyKey } from './api';
+import { useCreateKeyRequest, useMyKeyRequests, useMyKeys, type KeyRequest, type MyKey } from './api';
 
 type ApplyKind = 'new' | 'upgrade' | null;
 
 function statusVariant(status: string): 'default' | 'secondary' | 'outline' {
   if (status === 'enabled') return 'default';
   if (status === 'disabled') return 'secondary';
+  return 'outline';
+}
+
+function reqStatusVariant(status: string): 'default' | 'secondary' | 'destructive' | 'outline' {
+  if (status === 'approved') return 'default';
+  if (status === 'pending') return 'secondary';
+  if (status === 'rejected') return 'destructive';
   return 'outline';
 }
 
@@ -47,15 +59,59 @@ function KeyRow({ k }: { k: MyKey }) {
   );
 }
 
+function RequestRow({ r }: { r: KeyRequest }) {
+  const { t } = useTranslation();
+  return (
+    <TableRow>
+      <TableCell className='font-medium'>{t(`ai4s.myKeys.requests.kind.${r.kind}`)}</TableCell>
+      <TableCell className='text-muted-foreground'>{r.kind === 'new' ? r.purpose : r.tier}</TableCell>
+      <TableCell>
+        <Badge variant={reqStatusVariant(r.status)}>{t(`ai4s.myKeys.requests.status.${r.status}`, r.status)}</Badge>
+      </TableCell>
+      <TableCell className='text-muted-foreground'>
+        {r.createdAt ? format(new Date(r.createdAt), 'yyyy-MM-dd HH:mm') : '—'}
+      </TableCell>
+      <TableCell className='max-w-64 truncate text-muted-foreground' title={r.result || ''}>
+        {r.result || '—'}
+      </TableCell>
+    </TableRow>
+  );
+}
+
 export default function Ai4sMyKeysPage() {
   const { t } = useTranslation();
   const { data: me } = useMe();
   const myKeys = useMyKeys();
+  const myRequests = useMyKeyRequests();
+  const createRequest = useCreateKeyRequest();
   const [applyKind, setApplyKind] = useState<ApplyKind>(null);
+  const [purpose, setPurpose] = useState('');
+  const [tier, setTier] = useState('');
 
   // JIT/飞书绑定账号 email 形如 ou_*@casdoor.oidc；其余（如 user@example.com）为本地账号
   const isFeishuBound = (me?.email || '').endsWith('@casdoor.oidc');
   const keys = myKeys.data?.keys ?? [];
+  const requests = myRequests.data?.requests ?? [];
+
+  const closeDialog = () => {
+    setApplyKind(null);
+    setPurpose('');
+    setTier('');
+  };
+
+  const submit = () => {
+    if (applyKind === null) return;
+    createRequest.mutate(
+      applyKind === 'new' ? { kind: 'new', purpose } : { kind: 'upgrade', tier },
+      {
+        onSuccess: () => {
+          toast.success(t('ai4s.myKeys.submitOk'));
+          closeDialog();
+        },
+        onError: (e) => toast.error(e.message),
+      }
+    );
+  };
 
   return (
     <>
@@ -118,7 +174,36 @@ export default function Ai4sMyKeysPage() {
           </CardContent>
         </Card>
 
-        <Dialog open={applyKind !== null} onOpenChange={(open) => !open && setApplyKind(null)}>
+        <Card className='mt-4'>
+          <CardHeader>
+            <CardTitle>{t('ai4s.myKeys.requests.title')}</CardTitle>
+            <CardDescription>{t('ai4s.myKeys.requests.description')}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {requests.length === 0 ? (
+              <p className='py-6 text-center text-sm text-muted-foreground'>{t('ai4s.myKeys.requests.empty')}</p>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>{t('ai4s.myKeys.requests.columns.kind')}</TableHead>
+                    <TableHead>{t('ai4s.myKeys.requests.columns.detail')}</TableHead>
+                    <TableHead>{t('ai4s.myKeys.requests.columns.status')}</TableHead>
+                    <TableHead>{t('ai4s.myKeys.requests.columns.createdAt')}</TableHead>
+                    <TableHead>{t('ai4s.myKeys.requests.columns.result')}</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {requests.map((r) => (
+                    <RequestRow key={r.id} r={r} />
+                  ))}
+                </TableBody>
+              </Table>
+            )}
+          </CardContent>
+        </Card>
+
+        <Dialog open={applyKind !== null} onOpenChange={(open) => !open && closeDialog()}>
           <DialogContent>
             <DialogHeader>
               <DialogTitle>
@@ -128,19 +213,45 @@ export default function Ai4sMyKeysPage() {
                 {applyKind === 'new' ? t('ai4s.myKeys.dialog.newDesc') : t('ai4s.myKeys.dialog.upgradeDesc')}
               </DialogDescription>
             </DialogHeader>
-            <div className='space-y-2 text-sm'>
-              {(applyKind === 'new'
-                ? ['ai4s.myKeys.dialog.newStep1', 'ai4s.myKeys.dialog.newStep2', 'ai4s.myKeys.dialog.newStep3']
-                : ['ai4s.myKeys.dialog.upStep1', 'ai4s.myKeys.dialog.upStep2', 'ai4s.myKeys.dialog.upStep3']
-              ).map((key, i) => (
-                <p key={key}>{`${i + 1}. ${t(key)}`}</p>
-              ))}
-              {!isFeishuBound && (
-                <Alert>
-                  <AlertDescription>{t('ai4s.myKeys.dialog.localAccountHint')}</AlertDescription>
-                </Alert>
+            <div className='space-y-3'>
+              {applyKind === 'new' ? (
+                <Textarea
+                  placeholder={t('ai4s.myKeys.dialog.purposePlaceholder')}
+                  value={purpose}
+                  onChange={(e) => setPurpose(e.target.value)}
+                  rows={3}
+                  maxLength={200}
+                />
+              ) : (
+                <Select value={tier} onValueChange={setTier}>
+                  <SelectTrigger>
+                    <SelectValue placeholder={t('ai4s.myKeys.dialog.tierPlaceholder')} />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value='标准档'>{t('ai4s.myKeys.dialog.tierStandard')}</SelectItem>
+                    <SelectItem value='高档'>{t('ai4s.myKeys.dialog.tierPremium')}</SelectItem>
+                  </SelectContent>
+                </Select>
               )}
+              <Alert>
+                <AlertDescription>
+                  {isFeishuBound
+                    ? t('ai4s.myKeys.dialog.deliverFeishu')
+                    : t('ai4s.myKeys.dialog.deliverNonFeishu')}
+                </AlertDescription>
+              </Alert>
             </div>
+            <DialogFooter>
+              <Button variant='outline' onClick={closeDialog}>
+                {t('common.cancel', '取消')}
+              </Button>
+              <Button
+                onClick={submit}
+                disabled={createRequest.isPending || (applyKind === 'new' ? !purpose.trim() : !tier)}
+              >
+                {t('ai4s.myKeys.dialog.submit')}
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </Main>

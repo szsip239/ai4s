@@ -60,6 +60,12 @@ export const routeConfigs: RouteGroup[] = [
         mode: 'hidden',
       },
       {
+        path: '/key-requests',
+        // Key 审批（issue #79）：控制台申请通道的管理员点批页，与词表/规则页同门槛
+        requiredScopes: ['read_channels'],
+        mode: 'hidden',
+      },
+      {
         path: '/data-storages',
         requiredScopes: ['read_data_storages'],
         mode: 'hidden',

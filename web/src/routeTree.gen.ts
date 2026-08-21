@@ -30,6 +30,7 @@ import { Route as AuthenticatedPromptProtectionRulesIndexRouteImport } from './r
 import { Route as AuthenticatedProjectsIndexRouteImport } from './routes/_authenticated/projects/index'
 import { Route as AuthenticatedPermissionDemoIndexRouteImport } from './routes/_authenticated/permission-demo/index'
 import { Route as AuthenticatedModelsIndexRouteImport } from './routes/_authenticated/models/index'
+import { Route as AuthenticatedKeyRequestsIndexRouteImport } from './routes/_authenticated/key-requests/index'
 import { Route as AuthenticatedHelpCenterIndexRouteImport } from './routes/_authenticated/help-center/index'
 import { Route as AuthenticatedDataStoragesIndexRouteImport } from './routes/_authenticated/data-storages/index'
 import { Route as AuthenticatedChannelsIndexRouteImport } from './routes/_authenticated/channels/index'
@@ -165,6 +166,12 @@ const AuthenticatedModelsIndexRoute =
   AuthenticatedModelsIndexRouteImport.update({
     id: '/models/',
     path: '/models/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedKeyRequestsIndexRoute =
+  AuthenticatedKeyRequestsIndexRouteImport.update({
+    id: '/key-requests/',
+    path: '/key-requests/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
 const AuthenticatedHelpCenterIndexRoute =
@@ -342,6 +349,7 @@ export interface FileRoutesByFullPath {
   '/channels/': typeof AuthenticatedChannelsIndexRoute
   '/data-storages/': typeof AuthenticatedDataStoragesIndexRoute
   '/help-center/': typeof AuthenticatedHelpCenterIndexRoute
+  '/key-requests/': typeof AuthenticatedKeyRequestsIndexRoute
   '/models/': typeof AuthenticatedModelsIndexRoute
   '/permission-demo/': typeof AuthenticatedPermissionDemoIndexRoute
   '/projects/': typeof AuthenticatedProjectsIndexRoute
@@ -388,6 +396,7 @@ export interface FileRoutesByTo {
   '/channels': typeof AuthenticatedChannelsIndexRoute
   '/data-storages': typeof AuthenticatedDataStoragesIndexRoute
   '/help-center': typeof AuthenticatedHelpCenterIndexRoute
+  '/key-requests': typeof AuthenticatedKeyRequestsIndexRoute
   '/models': typeof AuthenticatedModelsIndexRoute
   '/permission-demo': typeof AuthenticatedPermissionDemoIndexRoute
   '/projects': typeof AuthenticatedProjectsIndexRoute
@@ -437,6 +446,7 @@ export interface FileRoutesById {
   '/_authenticated/channels/': typeof AuthenticatedChannelsIndexRoute
   '/_authenticated/data-storages/': typeof AuthenticatedDataStoragesIndexRoute
   '/_authenticated/help-center/': typeof AuthenticatedHelpCenterIndexRoute
+  '/_authenticated/key-requests/': typeof AuthenticatedKeyRequestsIndexRoute
   '/_authenticated/models/': typeof AuthenticatedModelsIndexRoute
   '/_authenticated/permission-demo/': typeof AuthenticatedPermissionDemoIndexRoute
   '/_authenticated/projects/': typeof AuthenticatedProjectsIndexRoute
@@ -486,6 +496,7 @@ export interface FileRouteTypes {
     | '/channels/'
     | '/data-storages/'
     | '/help-center/'
+    | '/key-requests/'
     | '/models/'
     | '/permission-demo/'
     | '/projects/'
@@ -532,6 +543,7 @@ export interface FileRouteTypes {
     | '/channels'
     | '/data-storages'
     | '/help-center'
+    | '/key-requests'
     | '/models'
     | '/permission-demo'
     | '/projects'
@@ -580,6 +592,7 @@ export interface FileRouteTypes {
     | '/_authenticated/channels/'
     | '/_authenticated/data-storages/'
     | '/_authenticated/help-center/'
+    | '/_authenticated/key-requests/'
     | '/_authenticated/models/'
     | '/_authenticated/permission-demo/'
     | '/_authenticated/projects/'
@@ -764,6 +777,13 @@ declare module '@tanstack/react-router' {
       path: '/models'
       fullPath: '/models/'
       preLoaderRoute: typeof AuthenticatedModelsIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/key-requests/': {
+      id: '/_authenticated/key-requests/'
+      path: '/key-requests'
+      fullPath: '/key-requests/'
+      preLoaderRoute: typeof AuthenticatedKeyRequestsIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/help-center/': {
@@ -978,6 +998,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedChannelsIndexRoute: typeof AuthenticatedChannelsIndexRoute
   AuthenticatedDataStoragesIndexRoute: typeof AuthenticatedDataStoragesIndexRoute
   AuthenticatedHelpCenterIndexRoute: typeof AuthenticatedHelpCenterIndexRoute
+  AuthenticatedKeyRequestsIndexRoute: typeof AuthenticatedKeyRequestsIndexRoute
   AuthenticatedModelsIndexRoute: typeof AuthenticatedModelsIndexRoute
   AuthenticatedPermissionDemoIndexRoute: typeof AuthenticatedPermissionDemoIndexRoute
   AuthenticatedProjectsIndexRoute: typeof AuthenticatedProjectsIndexRoute
@@ -1012,6 +1033,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedChannelsIndexRoute: AuthenticatedChannelsIndexRoute,
   AuthenticatedDataStoragesIndexRoute: AuthenticatedDataStoragesIndexRoute,
   AuthenticatedHelpCenterIndexRoute: AuthenticatedHelpCenterIndexRoute,
+  AuthenticatedKeyRequestsIndexRoute: AuthenticatedKeyRequestsIndexRoute,
   AuthenticatedModelsIndexRoute: AuthenticatedModelsIndexRoute,
   AuthenticatedPermissionDemoIndexRoute: AuthenticatedPermissionDemoIndexRoute,
   AuthenticatedProjectsIndexRoute: AuthenticatedProjectsIndexRoute,

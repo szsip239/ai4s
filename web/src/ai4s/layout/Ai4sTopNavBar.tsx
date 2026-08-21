@@ -11,6 +11,7 @@ import {
   IconUsersGroup,
   IconDatabase,
   IconSettings,
+  IconClipboardCheck,
 } from '@tabler/icons-react';
 import { cn } from '@/lib/utils';
 import { usePermissions } from '@/hooks/usePermissions';
@@ -36,6 +37,8 @@ import { useRoutePermissions } from '@/hooks/useRoutePermissions';
  * 无 scope 门槛，零 scope 员工经 routeConfigs 同名条目 + checkRouteAccess 过滤后可见；
  * 管理员同时看到本项与「Key 管理」（/project/api-keys），语义分别为「我的」与「全量管理」。
  * issue #74 评审 P2：「我的 Key」图标改用 IconId（身份语义），与「Key 管理」的 IconKey 区分。
+ * issue #79：新增管理组「Key 审批」入口（/key-requests，label 复用 sidebar.items.keyRequests）——
+ * 控制台申请通道的点批页；审批卡 link 按钮落点同此页。
  */
 
 const NAV_ITEMS = [
@@ -44,6 +47,7 @@ const NAV_ITEMS = [
   { labelKey: 'sidebar.items.myKeys', href: '/project/my-keys', match: ['/project/my-keys'], icon: IconId },
   { labelKey: 'sidebar.items.accessManagement', href: '/channels', match: ['/channels', '/models'], icon: IconRoute },
   { labelKey: 'ai4s.topnav.promptProtectionRules', href: '/prompt-protection-rules', match: ['/prompt-protection-rules'], icon: IconShield },
+  { labelKey: 'sidebar.items.keyRequests', href: '/key-requests', match: ['/key-requests'], icon: IconClipboardCheck },
   { labelKey: 'sidebar.items.observability', href: '/project/requests', match: ['/project/requests', '/project/usage-stats', '/project/traces', '/project/threads'], icon: IconFileText },
   { labelKey: 'sidebar.items.projects', href: '/projects', match: ['/projects'], icon: IconFolders },
   { labelKey: 'sidebar.items.people', href: '/users', match: ['/users', '/roles', '/project/users', '/project/roles'], icon: IconUsersGroup },
