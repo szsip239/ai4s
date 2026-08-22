@@ -10,6 +10,11 @@ issue #85 提额方向守卫：申请侧 fail-closed 三拒 400（已是最高�
 （执行侧兜底）；审批侧 upgrade 的 tier_override 白名单收窄为 TIERS（标准/高档，提额语义
 不含体验档），new 仍 ALLOWED_TIERS 全集；执行侧逐 key never-downgrade 守卫见
 alert_poller.apply_tier_to_user（两通道同享）。
+issue #86 按 Key 勾选：upgrade payload 带 keyIds（非空、全部属于本人且 enabled——守卫
+一次查询同时完成归属校验与方向评估）；req 存 keyIds + keyNames 名称快照（审批卡/控制台
+审批页/申请列表显示目标 Key 名称，审批期间改名不影响）；执行按子集换挂（审批期间被归档/
+删除的 Key 跳过并在结果文本列明）；存量无 keyIds 字段的申请回退「全部 enabled Key」语义。
+新建申请不变。
 申请人撤回（issue #80）：POST /self/key-requests/<id>/cancel，仅本人 + 仅 pending，
 置 canceled + 管理员回执（卡片更新/无卡降级群文本），幂等不重复通知。
 
@@ -186,7 +191,17 @@ _STATUS_COLOR = {"pending": "orange", "approved": "green", "rejected": "red", "e
 def _detail_line(req: dict) -> str:
     if req["kind"] == "new":
         return f"**用途**: {req.get('purpose') or '—'}"
-    return f"**目标档**: {req.get('tier') or '—'}（作用于其全部 enabled Key）"
+    # issue #86：提额按所选 Key 列名（名称快照）；fail-open 无快照但有 keyIds 时回退列 id；
+    # 两者皆无（真存量申请）回退原全量语义文案
+    names = req.get("keyNames") or []
+    ids = req.get("keyIds") or []
+    if names:
+        scope = f"，目标 Key: {', '.join(names)}"
+    elif ids:
+        scope = f"，目标 Key: {', '.join(ids)}（名称快照缺失）"
+    else:
+        scope = "（作用于其全部 enabled Key）"
+    return f"**目标档**: {req.get('tier') or '—'}{scope}"
 
 
 def _request_card(req: dict) -> dict:
@@ -287,62 +302,80 @@ def _notify_canceled(req: dict):
 
 
 def validate_payload(payload) -> tuple:
-    """POST body 校验：返回 (kind, purpose, tier, err)。err 非 None 即 400 文案。"""
+    """POST body 校验：返回 (kind, purpose, tier, key_ids, err)。err 非 None 即 400 文案。
+    issue #86：kind=upgrade 必须带 keyIds（非空 Key id 列表，按 Key 勾选的目标子集）。"""
     if not isinstance(payload, dict):
-        return None, None, None, "body 必须是 JSON 对象"
+        return None, None, None, None, "body 必须是 JSON 对象"
     kind = payload.get("kind")
     if kind not in ("new", "upgrade"):
-        return None, None, None, "kind 必须是 new 或 upgrade"
+        return None, None, None, None, "kind 必须是 new 或 upgrade"
     purpose = (payload.get("purpose") or "").strip()
     tier = (payload.get("tier") or "").strip()
     if kind == "new":
         if not purpose:
-            return None, None, None, "新建申请必须填用途 purpose"
+            return None, None, None, None, "新建申请必须填用途 purpose"
         if len(purpose) > MAX_PURPOSE:
-            return None, None, None, f"purpose 超长（>{MAX_PURPOSE} 字符）"
-    else:
-        if tier not in TIERS:
-            return None, None, None, f"tier 必须是 {'/'.join(TIERS)}"
-    return kind, purpose, tier, None
+            return None, None, None, None, f"purpose 超长（>{MAX_PURPOSE} 字符）"
+        return kind, purpose, tier, None, None
+    if tier not in TIERS:
+        return None, None, None, None, f"tier 必须是 {'/'.join(TIERS)}"
+    raw_ids = payload.get("keyIds")
+    if (not isinstance(raw_ids, list) or not raw_ids
+            or not all(isinstance(x, str) and x.strip() for x in raw_ids)):
+        return None, None, None, None, "keyIds 必须是非空 Key id 列表"
+    return kind, purpose, tier, list(dict.fromkeys(x.strip() for x in raw_ids)), None  # 去重保序
 
 
-def _upgrade_direction_guard(me: dict, tier: str):
+def _upgrade_direction_guard(me: dict, tier: str, key_ids: list):
     """issue #85 提额方向守卫（申请侧 fail-closed；执行侧 apply_tier_to_user 逐 key 守卫兜底）。
-    返回 (status, 文案) 或 None（放行）。三拒：名下无 enabled Key（引导先新建）/
-    已是最高档 / 目标档秩 ≤ 当前最高档秩（防降档、防空转）。
-    fail-open：当前档查询异常（axonhub 不可达等）→ 放行 + 记日志。"""
+    issue #86：按所选 Key 子集评估——一次 USER_ENABLED_KEYS_QUERY 同时完成归属/启用校验
+    （keyIds 必须全部命中本人 enabled 集合，否则 400，不区分他人/不存在/未启用以免泄露）
+    与方向评估（所选全部已 ≥ 目标档才拒收，部分低于目标放行）。
+    返回 ((status, 文案) 或 None, 所选 key 列表或 None)——key 列表供 create_request 存名称快照；
+    fail-open（查询异常）时 (None, None)：放行 + 记日志，名称快照缺失时显示侧回退 id。"""
+    if not key_ids:  # validate_payload 已拦；直调防御（fail-closed 同形文案）
+        return (400, "keyIds 必须是非空 Key id 列表"), None
     uid = me.get("id")
     if not uid:
         print("[keyreq] 提额守卫：caller 无 id，无从查档，放行（执行侧兜底）", flush=True)
-        return None
+        return None, None
     try:
         keys = alert_poller.query_user_enabled_keys(_get_ax(), uid)
     except Exception as e:
         print(f"[keyreq] 提额当前档查询异常，fail-open 放行: {type(e).__name__}: {e}", flush=True)
-        return None
+        return None, None
     if not keys:
-        return (400, "名下无启用中的 Key，请先申请新建 Key")
-    cur = alert_poller.highest_tier(keys)
-    if cur is None:
-        return None  # enabled key 均未挂档，秩次无从比较——放行（执行侧逐 key 守卫兜底）
-    if alert_poller.TIER_RANK[tier] <= alert_poller.TIER_RANK[cur]:
-        if cur == "高档":
-            return (400, "已是最高档（高档），无需提额")
-        return (400, f"目标档位须高于当前档位（当前 {cur}，目标 {tier}）")
-    return None
+        return (400, "名下无启用中的 Key，请先申请新建 Key"), None
+    enabled_ids = {k["id"] for k in keys}
+    if any(kid not in enabled_ids for kid in key_ids):
+        return (400, "所选 Key 不存在或未启用，请刷新后重选"), None
+    selected = [k for k in keys if k["id"] in set(key_ids)]
+    target_rank = alert_poller.TIER_RANK[tier]
+    ranks = [alert_poller.TIER_RANK.get(alert_poller.key_tier_name(k)) for k in selected]
+    if all(r is not None and r >= target_rank for r in ranks):  # 未挂档（None）视为可升，放行
+        if all(r == alert_poller.TIER_RANK["高档"] for r in ranks):
+            return (400, "所选 Key 已是最高档（高档），无需提额"), None
+        return (400, f"所选 Key 当前档位均已不低于 {tier}，无需提额（防降档/空转）"), None
+    return None, selected
 
 
-def create_request(me: dict, kind: str, purpose: str, tier: str):
+def create_request(me: dict, kind: str, purpose: str, tier: str, key_ids=None):
     """落一条待办申请 + 通知管理员。返回 (req_public, err)；err 形如 (status, 文案)。
     反 spam：同申请人同 kind 已有 pending → 409。
-    issue #85：kind=upgrade 先过方向守卫（锁外慢查询，不落锁）。"""
+    issue #85：kind=upgrade 先过方向守卫（锁外慢查询，不落锁）。
+    issue #86：upgrade 带 keyIds 目标子集；req 存 keyIds + keyNames 快照（显示用，
+    审批期间改名不影响；fail-open 无快照时显示侧回退 id）。"""
     email = me.get("email") or ""
     if not email:
         return None, (502, "caller 身份无 email，无法登记申请")
+    key_names = None
     if kind == "upgrade":
-        err = _upgrade_direction_guard(me, tier)
+        err, selected = _upgrade_direction_guard(me, tier, key_ids)
         if err:
             return None, err
+        if selected:
+            name_by_id = {k["id"]: k["name"] for k in selected}
+            key_names = [name_by_id.get(kid, kid) for kid in key_ids]
     now = time.time()
     with _lock:
         reqs = _load()
@@ -363,6 +396,8 @@ def create_request(me: dict, kind: str, purpose: str, tier: str):
             "resolvedAt": None,
             "result": "",
             "keyName": None,
+            "keyIds": key_ids,      # issue #86：提额目标 Key 子集（new/存量申请为 None=全部 enabled）
+            "keyNames": key_names,  # 名称快照（显示用；fail-open 无快照为 None）
             "cardMessageId": None,
         }
         reqs.append(req)
@@ -423,7 +458,8 @@ def _execute(req: dict, tier_override: str = ""):
         result, dm_text = _deliver_new_key(req, name, plain, owner_note, tier_name)
         return result, name, dm_text
     result = alert_poller.apply_tier_to_user(
-        _get_ax(), user, tier_override or (req.get("tier") or ""))
+        _get_ax(), user, tier_override or (req.get("tier") or ""),
+        key_ids=req.get("keyIds"))  # issue #86：None（存量申请无字段）回退「全部 enabled Key」语义
     dm = f"[ai4s] 你的提额申请已通过（{req['id']}）\n{result}"
     return result, None, dm
 

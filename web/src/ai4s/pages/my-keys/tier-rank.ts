@@ -15,32 +15,27 @@ export function tierRank(name?: string | null): number {
 
 type KeyLike = { status: string; profiles?: { activeProfile?: string | null } | null };
 
-/** 当前最高档：只数 enabled key 的 activeProfile；无 enabled / 均未挂档（或档名未知）→ null */
-export function currentHighestTier(keys: KeyLike[]): TierName | null {
-  let best: TierName | null = null;
-  for (const k of keys) {
-    if (k.status !== 'enabled') continue;
-    const name = k.profiles?.activeProfile;
-    if (name && tierRank(name) > tierRank(best)) best = name as TierName;
-  }
-  return best;
-}
-
 /**
  * 「申请提额」按钮门态（issue #85）：
  * 'no-enabled-key' = 无 enabled key（含全 disabled），提示先新建；
- * 'maxed' = 已是最高档；null = 可发起提额。
+ * 'maxed' = 全部 enabled key 均已是最高档；null = 可发起提额。
+ * issue #86 评审 P1-1：maxed 从「最高档=高档」收窄为「全部 enabled 均为高档」——
+ * 混档用户（1 把高档+1 把体验档）必须能开弹窗只勾低档 key 提档（#86 核心场景）；
+ * 弹窗内 keysMaxed 空态兜底不变。
  */
 export function upgradeButtonBlock(keys: KeyLike[]): 'no-enabled-key' | 'maxed' | null {
-  if (!keys.some((k) => k.status === 'enabled')) return 'no-enabled-key';
-  if (currentHighestTier(keys) === '高档') return 'maxed';
+  const enabled = keys.filter((k) => k.status === 'enabled');
+  if (enabled.length === 0) return 'no-enabled-key';
+  if (enabled.every((k) => k.profiles?.activeProfile === '高档')) return 'maxed';
   return null;
 }
 
 /**
- * 提额弹窗可选档：秩次 > 当前档。shim 白名单 TIERS 只含标准/高档，体验档恒不在列——
- * 当前档为 null（未挂档/无 key）时列标准+高档；shim 端无 enabled key 会 400 拦，双保险。
+ * 提额弹窗可选档（issue #86）：按所选 Key 的最低档（floor）过滤，只列秩次 > floor 的档。
+ * shim 白名单 TIERS 只含标准/高档，体验档恒不在列——
+ * 所选均未挂档（floor=-1）或空选时列标准+高档；全高档时空列（shim 端同样 400 拦，双保险）。
  */
-export function upgradeOptions(current: TierName | null): TierName[] {
-  return TIER_ORDER.filter((t) => t !== '体验档' && tierRank(t) > tierRank(current));
+export function upgradeOptions(keys: KeyLike[]): TierName[] {
+  const floor = keys.length ? Math.min(...keys.map((k) => tierRank(k.profiles?.activeProfile))) : -1;
+  return TIER_ORDER.filter((t) => t !== '体验档' && tierRank(t) > floor);
 }

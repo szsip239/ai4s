@@ -21,8 +21,12 @@
  * enabled key 禁用，提示走 Tooltip：disabled 按钮 pointer-events-none，原生 title 不可达，
  * 故包 span 作 trigger），弹窗选项只列秩次更高的档；档位秩次/门态/选项过滤抽在
  * tier-rank.ts 纯函数（与 shim alert_poller.TIER_RANK 双向同源），组件只接线。
+ * issue #86：提额按 Key 勾选——弹窗内列 enabled key 复选（默认全选，名称+当前档），
+ * 选项按所选 Key 的最低档过滤，提交带 keyIds；申请列表详情列展示所选 Key
+ * （upgradeDetailLabel：名称快照优先，fail-open 回退 id，存量申请回退目标档）。
+ * 评审 P1-1：按钮门态 maxed 收窄为「全部 enabled key 均高档」（混档可开弹窗只勾低档提档）。
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { format } from 'date-fns';
 import { IconChevronDown, IconEye, IconEyeOff, IconKey, IconPlus, IconTrendingUp } from '@tabler/icons-react';
 import { useTranslation } from 'react-i18next';
@@ -42,6 +46,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
 import { CopyButton } from '@/components/ui/copy-button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Progress } from '@/components/ui/progress';
@@ -53,9 +58,17 @@ import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
 import { useMe } from '@/features/auth/data/auth';
 import { KeyGuide } from './KeyGuide';
-import { useCancelKeyRequest, useCreateKeyRequest, useMyKeyRequests, useMyKeys, type KeyRequest, type MyKey } from './api';
+import {
+  useCancelKeyRequest,
+  useCreateKeyRequest,
+  useMyKeyRequests,
+  useMyKeys,
+  upgradeDetailLabel,
+  type KeyRequest,
+  type MyKey,
+} from './api';
 import { activeUsageEntry, formatCredits, formatTokenCount, quotaProgress, type UsageEntry } from './key-usage';
-import { currentHighestTier, upgradeButtonBlock, upgradeOptions, type TierName } from './tier-rank';
+import { upgradeButtonBlock, upgradeOptions, type TierName } from './tier-rank';
 
 type ApplyKind = 'new' | 'upgrade' | null;
 
@@ -222,7 +235,10 @@ function RequestRow({ r, onCancel }: { r: KeyRequest; onCancel: (r: KeyRequest) 
   return (
     <TableRow>
       <TableCell className='font-medium'>{t(`ai4s.myKeys.requests.kind.${r.kind}`)}</TableCell>
-      <TableCell className='text-muted-foreground'>{r.kind === 'new' ? r.purpose : r.tier}</TableCell>
+      <TableCell className='text-muted-foreground'>
+        {/* issue #86：提额申请显示所选 Key（名称快照优先，fail-open 回退 id）；存量申请回退只显示目标档 */}
+        {r.kind === 'new' ? r.purpose : (upgradeDetailLabel(r) ?? r.tier)}
+      </TableCell>
       <TableCell>
         <Badge variant={reqStatusVariant(r.status)}>{t(`ai4s.myKeys.requests.status.${r.status}`, r.status)}</Badge>
       </TableCell>
@@ -252,6 +268,8 @@ export default function Ai4sMyKeysPage() {
   const [cancelTarget, setCancelTarget] = useState<KeyRequest | null>(null);
   const [purpose, setPurpose] = useState('');
   const [tier, setTier] = useState('');
+  // issue #86：提额按 Key 勾选——弹窗打开时默认全选 enabled key
+  const [selectedKeyIds, setSelectedKeyIds] = useState<string[]>([]);
 
   // JIT/飞书绑定账号 email 形如 ou_*@casdoor.oidc；其余（如 user@example.com）为本地账号
   const isFeishuBound = (me?.email || '').endsWith('@casdoor.oidc');
@@ -263,7 +281,10 @@ export default function Ai4sMyKeysPage() {
   // 禁用时包 span 作 TooltipTrigger）；数据未加载完成时不挡（门态只看实证数据；
   // shim 申请侧方向守卫兜底，API 直调绕不过）
   const upgradeBlock = myKeys.isSuccess ? upgradeButtonBlock(keys) : null;
-  const currentTier = currentHighestTier(keys);
+  // issue #86：所选 Key 对象列表（保持 keys 顺序）；选项按所选最低档过滤。
+  // 评审 P2-1：useMemo 稳定引用，避免每渲染新数组导致下方校正 effect 空跑
+  const selectedKeys = useMemo(() => keys.filter((k) => selectedKeyIds.includes(k.id)), [keys, selectedKeyIds]);
+  const options = useMemo(() => upgradeOptions(selectedKeys), [selectedKeys]);
   const upgradeHint =
     upgradeBlock === 'maxed'
       ? t('ai4s.myKeys.upgradeBlockedMaxed')
@@ -271,21 +292,33 @@ export default function Ai4sMyKeysPage() {
         ? t('ai4s.myKeys.upgradeBlockedNoKey')
         : undefined;
 
+  const openDialog = (kind: Exclude<ApplyKind, null>) => {
+    setApplyKind(kind);
+    if (kind === 'upgrade') {
+      setSelectedKeyIds(keys.filter((k) => k.status === 'enabled').map((k) => k.id));
+    }
+  };
+
+  const toggleKey = (id: string, checked: boolean) => {
+    setSelectedKeyIds((prev) => (checked ? [...prev, id] : prev.filter((x) => x !== id)));
+  };
+
   // issue #85 评审 P2 边角：keys 到达/档位变化后，已选 tier 可能已被选项过滤掉（竞态）——
-  // 置空让 placeholder 出现，不携带失效选项
+  // 置空让 placeholder 出现，不携带失效选项；issue #86 起选项随所选 Key 变化，勾选变化同样校正
   useEffect(() => {
-    if (tier && !upgradeOptions(currentTier).includes(tier as TierName)) setTier('');
-  }, [currentTier, tier]);
+    if (tier && !options.includes(tier as TierName)) setTier('');
+  }, [options, tier]);
 
   const closeDialog = () => {
     setApplyKind(null);
     setPurpose('');
     setTier('');
+    setSelectedKeyIds([]);
   };
 
   const submit = () => {
     if (applyKind === null) return;
-    createRequest.mutate(applyKind === 'new' ? { kind: 'new', purpose } : { kind: 'upgrade', tier }, {
+    createRequest.mutate(applyKind === 'new' ? { kind: 'new', purpose } : { kind: 'upgrade', tier, keyIds: selectedKeyIds }, {
       onSuccess: () => {
         toast.success(t('ai4s.myKeys.submitOk'));
         closeDialog();
@@ -319,7 +352,7 @@ export default function Ai4sMyKeysPage() {
                 </CardTitle>
               </div>
               <div className='flex gap-2'>
-                <Button size='sm' onClick={() => setApplyKind('new')}>
+                <Button size='sm' onClick={() => openDialog('new')}>
                   <IconPlus className='mr-1 h-4 w-4' />
                   {t('ai4s.myKeys.applyNew')}
                 </Button>
@@ -336,7 +369,7 @@ export default function Ai4sMyKeysPage() {
                     <TooltipContent>{upgradeHint}</TooltipContent>
                   </Tooltip>
                 ) : (
-                  <Button size='sm' variant='outline' onClick={() => setApplyKind('upgrade')}>
+                  <Button size='sm' variant='outline' onClick={() => openDialog('upgrade')}>
                     <IconTrendingUp className='mr-1 h-4 w-4' />
                     {t('ai4s.myKeys.applyUpgrade')}
                   </Button>
@@ -354,7 +387,7 @@ export default function Ai4sMyKeysPage() {
             ) : keys.length === 0 ? (
               <div className='py-10 text-center'>
                 <p className='text-muted-foreground text-sm'>{t('ai4s.myKeys.empty')}</p>
-                <Button className='mt-4' size='sm' onClick={() => setApplyKind('new')}>
+                <Button className='mt-4' size='sm' onClick={() => openDialog('new')}>
                   <IconPlus className='mr-1 h-4 w-4' />
                   {t('ai4s.myKeys.applyNew')}
                 </Button>
@@ -432,19 +465,39 @@ export default function Ai4sMyKeysPage() {
                   maxLength={200}
                 />
               ) : (
-                <Select value={tier} onValueChange={setTier}>
-                  <SelectTrigger>
-                    <SelectValue placeholder={t('ai4s.myKeys.dialog.tierPlaceholder')} />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {/* issue #85：只列秩次 > 当前档的选项（标准档用户只见高档） */}
-                    {upgradeOptions(currentTier).map((opt) => (
-                      <SelectItem key={opt} value={opt}>
-                        {t(opt === '高档' ? 'ai4s.myKeys.dialog.tierPremium' : 'ai4s.myKeys.dialog.tierStandard')}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <>
+                  {/* issue #86：目标 Key 复选（默认全选 enabled，名称+当前档 badge） */}
+                  <div className='space-y-1'>
+                    <div className='text-sm font-medium'>{t('ai4s.myKeys.dialog.targetKeys')}</div>
+                    <div className='max-h-40 space-y-2 overflow-y-auto rounded-md border p-3'>
+                      {keys
+                        .filter((k) => k.status === 'enabled')
+                        .map((k) => (
+                          <label key={k.id} className='flex cursor-pointer items-center gap-2 text-sm'>
+                            <Checkbox checked={selectedKeyIds.includes(k.id)} onCheckedChange={(c) => toggleKey(k.id, c === true)} />
+                            <span className='flex-1'>{k.name}</span>
+                            <Badge variant='secondary'>{k.profiles?.activeProfile || t('ai4s.myKeys.noTier')}</Badge>
+                          </label>
+                        ))}
+                    </div>
+                  </div>
+                  <Select value={tier} onValueChange={setTier}>
+                    <SelectTrigger>
+                      <SelectValue placeholder={t('ai4s.myKeys.dialog.tierPlaceholder')} />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {/* issue #86：只列秩次 > 所选 Key 最低档的选项 */}
+                      {options.map((opt) => (
+                        <SelectItem key={opt} value={opt}>
+                          {t(opt === '高档' ? 'ai4s.myKeys.dialog.tierPremium' : 'ai4s.myKeys.dialog.tierStandard')}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {selectedKeys.length > 0 && options.length === 0 && (
+                    <p className='text-muted-foreground text-sm'>{t('ai4s.myKeys.dialog.keysMaxed')}</p>
+                  )}
+                </>
               )}
               <Alert>
                 <AlertDescription>
@@ -456,7 +509,10 @@ export default function Ai4sMyKeysPage() {
               <Button variant='outline' onClick={closeDialog}>
                 {t('common.cancel', '取消')}
               </Button>
-              <Button onClick={submit} disabled={createRequest.isPending || (applyKind === 'new' ? !purpose.trim() : !tier)}>
+              <Button
+                onClick={submit}
+                disabled={createRequest.isPending || (applyKind === 'new' ? !purpose.trim() : !tier || selectedKeyIds.length === 0)}
+              >
                 {t('ai4s.myKeys.dialog.submit')}
               </Button>
             </DialogFooter>

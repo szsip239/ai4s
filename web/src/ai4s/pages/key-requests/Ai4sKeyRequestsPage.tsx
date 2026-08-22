@@ -1,11 +1,14 @@
 /**
  * 管理员「Key 审批」页（issue #79）：控制台发起通道的点批入口。
  * 流程：员工在「我的 Key」页提交 → 管理员飞书收审批卡（link 按钮直达本页）→ 本页点批 →
- * shim 同步执行（建 Key / 提档作用于申请人全部 enabled Key）→ 回执（审批卡更新 + 申请人私信）。
+ * shim 同步执行（建 Key / 提档作用于申请所选 Key）→ 回执（审批卡更新 + 申请人私信）。
  * issue #81：同意弹窗可选生效档位（默认：新建=体验档、提额=所求档），随 approve body 传 shim。
  * issue #85：提额申请档位收窄为 UPGRADE_TIERS（标准/高档，提额语义不含体验档；shim
  * resolve_request 同收窄，双保险），新建申请仍全集；approveUpgradeNote 改为事实陈述
  * （执行侧已硬拦降档，低于 Key 当前档的目标会被跳过并列出）。
+ * issue #86：提额按 Key 勾选——详情列与同意弹窗摘要显示所选 Key（upgradeDetailLabel 共用：
+ * 名称快照优先，fail-open 缺快照回退列 id；真存量申请两者皆无回退只显示目标档，
+ * 执行作用于申请人全部 enabled Key）。
  * 状态门幂等：仅 pending 行显示操作；已处理行的结果为终态（拒绝理由/执行摘要，绝无明文——
  * 非飞书申请人的明文只私信管理员本人，不落本页）。
  */
@@ -30,6 +33,7 @@ import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
 import { usePermissions } from '@/hooks/usePermissions';
 import { useAdminKeyRequests, useResolveKeyRequest, type AdminKeyRequest } from './api';
+import { upgradeDetailLabel } from '../my-keys/api';
 
 /** 审批可选档位·新建申请（issue #81 全集）：与 shim key_requests.ALLOWED_TIERS 白名单双向同源，改动需两侧同步 */
 const APPROVE_TIERS = ['体验档', '标准档', '高档'] as const;
@@ -115,7 +119,8 @@ export default function Ai4sKeyRequestsPage() {
                       <TableCell className='font-medium'>{r.applicant?.email || '—'}</TableCell>
                       <TableCell>{t(`ai4s.keyRequests.kind.${r.kind}`)}</TableCell>
                       <TableCell className='max-w-48 truncate text-muted-foreground'>
-                        {r.kind === 'new' ? r.purpose : r.tier}
+                        {/* issue #86：提额申请显示所选 Key（名称快照优先，fail-open 回退 id）；存量申请回退只显示目标档 */}
+                        {r.kind === 'new' ? r.purpose : (upgradeDetailLabel(r) ?? r.tier)}
                       </TableCell>
                       <TableCell className='text-muted-foreground'>
                         {r.createdAt ? format(new Date(r.createdAt), 'yyyy-MM-dd HH:mm') : '—'}
@@ -164,7 +169,7 @@ export default function Ai4sKeyRequestsPage() {
                 {approveTarget && (
                   <span className='mt-2 block'>
                     {approveTarget.applicant?.email} · {t(`ai4s.keyRequests.kind.${approveTarget.kind}`)} ·{' '}
-                    {approveTarget.kind === 'new' ? approveTarget.purpose : approveTarget.tier}
+                    {approveTarget.kind === 'new' ? approveTarget.purpose : (upgradeDetailLabel(approveTarget) ?? approveTarget.tier)}
                   </span>
                 )}
               </AlertDialogDescription>

@@ -13,7 +13,7 @@ const transpiled = ts.transpileModule(source, {
 }).outputText;
 const mod = await import(`data:text/javascript;base64,${Buffer.from(transpiled).toString('base64')}`);
 
-const { TIER_ORDER, tierRank, currentHighestTier, upgradeButtonBlock, upgradeOptions } = mod;
+const { TIER_ORDER, tierRank, upgradeButtonBlock, upgradeOptions } = mod;
 
 const key = (status, tier) => ({ status, profiles: { activeProfile: tier } });
 
@@ -28,28 +28,23 @@ test('tierRank: 体验<标准<高，未挂档/未知档 -1（与 shim TIER_RANK 
   assert.deepEqual([...TIER_ORDER], ['体验档', '标准档', '高档']);
 });
 
-test('currentHighestTier: 只数 enabled，取秩次最高档；disabled/archived 不参与', () => {
-  assert.equal(currentHighestTier([key('enabled', '体验档'), key('enabled', '高档')]), '高档');
-  assert.equal(currentHighestTier([key('disabled', '高档'), key('enabled', '标准档')]), '标准档');
-  assert.equal(currentHighestTier([key('archived', '高档')]), null); // 归档 key 保留旧快照但不计当前档
-  assert.equal(currentHighestTier([]), null);
-  assert.equal(currentHighestTier([key('enabled', null)]), null); // 未挂档
-  assert.equal(currentHighestTier([key('enabled', '无敌档')]), null); // 未知档不参与秩次
-});
-
-test('upgradeButtonBlock: 无 enabled key（含全 disabled/空列表）→ no-enabled-key；全高档 → maxed', () => {
+test('upgradeButtonBlock: 无 enabled key（含全 disabled/空列表）→ no-enabled-key；全部 enabled 均高档 → maxed', () => {
   assert.equal(upgradeButtonBlock([]), 'no-enabled-key');
   assert.equal(upgradeButtonBlock([key('disabled', '高档')]), 'no-enabled-key');
-  assert.equal(upgradeButtonBlock([key('enabled', '高档'), key('enabled', '体验档')]), 'maxed');
+  assert.equal(upgradeButtonBlock([key('enabled', '高档'), key('enabled', '高档')]), 'maxed'); // 全部最高档才禁用
+  assert.equal(upgradeButtonBlock([key('enabled', '高档'), key('enabled', '体验档')]), null); // 评审 P1-1：混档放行（只勾低档提档）
+  assert.equal(upgradeButtonBlock([key('enabled', '高档'), key('enabled', null)]), null); // 有未挂档可勾，不挡
   assert.equal(upgradeButtonBlock([key('enabled', '标准档')]), null);
   assert.equal(upgradeButtonBlock([key('enabled', '体验档')]), null);
   assert.equal(upgradeButtonBlock([key('enabled', null)]), null); // 未挂档可发起（shim 端再校验）
 });
 
-test('upgradeOptions: 只列秩次 > 当前档；体验档恒不在列（对齐 shim TIERS 白名单）', () => {
-  assert.deepEqual(upgradeOptions('标准档'), ['高档']); // 标准档用户只见高档
-  assert.deepEqual(upgradeOptions('体验档'), ['标准档', '高档']);
-  assert.deepEqual(upgradeOptions(null), ['标准档', '高档']); // 未挂档同体验档视野
-  assert.deepEqual(upgradeOptions('高档'), []); // 最高档无可选项（按钮已禁用，双保险）
-  assert.ok(!upgradeOptions(null).includes('体验档'));
+test('upgradeOptions: 按所选 Key 最低档过滤，只列更高档；体验档恒不在列（对齐 shim TIERS 白名单）', () => {
+  assert.deepEqual(upgradeOptions([key('enabled', '标准档')]), ['高档']); // 标准档只见高档
+  assert.deepEqual(upgradeOptions([key('enabled', '体验档')]), ['标准档', '高档']);
+  assert.deepEqual(upgradeOptions([key('enabled', '体验档'), key('enabled', '高档')]), ['标准档', '高档']); // 混选取最低档为 floor
+  assert.deepEqual(upgradeOptions([key('enabled', '高档')]), []); // 全高档无可选项
+  assert.deepEqual(upgradeOptions([key('enabled', null)]), ['标准档', '高档']); // 未挂档同体验档视野
+  assert.deepEqual(upgradeOptions([]), ['标准档', '高档']); // 空选（弹窗提交已拦，双保险）
+  assert.ok(!upgradeOptions([]).includes('体验档'));
 });

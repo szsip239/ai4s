@@ -184,7 +184,7 @@ class TestSelfKeyRequests(unittest.TestCase):
                                return_value=({"id": "kr-1", "status": "pending"}, None)) as cr:
             self.assertTrue(self_api.handle(h, "POST"))
         self.assertEqual(h.status, 201)
-        cr.assert_called_once_with(me, "new", "联调", "")
+        cr.assert_called_once_with(me, "new", "联调", "", key_ids=None)
 
     def test_post_invalid_400(self):
         h = self._handler(body={"kind": "bogus"})

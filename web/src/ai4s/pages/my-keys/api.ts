@@ -7,6 +7,7 @@
  * usage=null 表示用量暂不可用（展示降级，不影响列表）。
  * 鉴权/错误：401=未登录或 token 失效；503=内省或查询暂不可用（不降级）。
  * issue #79：申请提交后 30s 轮询本人申请列表（状态翻转经审批卡/私信异步发生，与巡检节奏一致）。
+ * issue #86：提额申请按 Key 勾选——提交带 keyIds，响应带 keyIds/keyNames 快照。
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiRequest } from '@/lib/api-client';
@@ -66,6 +67,19 @@ export interface KeyRequest {
   resolvedAt?: string | null;
   result?: string;
   keyName?: string | null;
+  /** issue #86：提额申请所选 Key（id 列表 + 名称快照）；存量申请无此字段 */
+  keyIds?: string[] | null;
+  keyNames?: string[] | null;
+}
+
+/**
+ * issue #86 评审 P1-2：提额申请详情显示——名称快照优先；fail-open 缺快照但有 keyIds 回退列 id；
+ * 真存量申请（两者皆无）返回 null，调用方回退只显示目标档。员工页/审批页共用。
+ */
+export function upgradeDetailLabel(r: KeyRequest): string | null {
+  if (r.keyNames?.length) return `${r.tier}（${r.keyNames.join(', ')}）`;
+  if (r.keyIds?.length) return `${r.tier}（${r.keyIds.join(', ')}）`;
+  return null;
 }
 
 interface KeyRequestsResponse {
@@ -84,7 +98,7 @@ export function useMyKeyRequests() {
 export function useCreateKeyRequest() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (input: { kind: 'new' | 'upgrade'; purpose?: string; tier?: string }) =>
+    mutationFn: (input: { kind: 'new' | 'upgrade'; purpose?: string; tier?: string; keyIds?: string[] }) =>
       apiRequest<{ request: KeyRequest }>('/self/key-requests', {
         method: 'POST',
         requireAuth: true,

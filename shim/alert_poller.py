@@ -16,7 +16,9 @@ axonhub 无事件源的事务靠主动轮询补齐。巡检项（状态翻转才
     带逐 key never-downgrade 守卫（目标秩>当前秩换挂 / ==同档重挂保留运维刷新路径 / <跳过并
     在结果文本列出，绝不降档），飞书审批定义与控制台（key_requests）两通道同享；
     per-key 当前档走 USER_ENABLED_KEYS_QUERY（按 userID 精确过滤），不复用巡检共用的
-    ENABLED_API_KEYS_QUERY（加字段影响面大）。
+    ENABLED_API_KEYS_QUERY（加字段影响面大）。issue #86：apply_tier_to_user 加 key_ids
+    子集参数（控制台按 Key 勾选提档；None=全部 enabled Key，飞书通道/存量申请原语义），
+    子集内审批期间被归档/删除的 Key 跳过并在结果文本列明。
   - 新建：APPROVED → open_id → axonhub 用户（无用户=未首登，回执提示先登录再重新申请）
     → createAPIKey（体验档写死，命名 emp-<oid8>-<yyyymmdd>-<用途摘要>-<ic尾4>）
     → 归属申请人（createAPIKey 无 userID 入参，v1.0.0-beta6 实证；建后 SQL 直改 user_id 并
@@ -285,20 +287,12 @@ def key_tier_name(key: dict):
     return (key.get("profiles") or {}).get("activeProfile") or None
 
 
-def highest_tier(keys):
-    """key 列表中秩次最高的档名；空列表/均未挂档（或档名不在秩次表）返回 None。"""
-    best = None
-    for k in keys:
-        name = key_tier_name(k)
-        if name in TIER_RANK and (best is None or TIER_RANK[name] > TIER_RANK[best]):
-            best = name
-    return best
-
-
-def apply_tier_to_user(ax: Axonhub, user: dict, tier_name: str):
+def apply_tier_to_user(ax: Axonhub, user: dict, tier_name: str, key_ids=None):
     """目标用户 enabled Key 换挂目标档 + 逐 key never-downgrade 守卫（issue #85，控制台/飞书
     两通道同享）：目标秩 > key 当前秩 → 换挂（升档）；== → 换挂（同档重挂，保留模板数值调整后
     刷新存量快照的运维路径）；< → 跳过并在结果文本如实列出（绝不降档）。未挂档 key 直挂。
+    issue #86：key_ids=目标子集（控制台按 Key 勾选）；None=全部 enabled Key（飞书通道与
+    #86 前存量申请的原语义）。子集内审批期间被归档/删除的 Key 跳过并在结果文本按 id 列明。
     返回结果文本；模板缺失/无 enabled Key 也走文本（调用方回执/落结果），gql 异常上抛。"""
     prof = load_tier_profile(ax, tier_name)
     if not prof:
@@ -306,6 +300,12 @@ def apply_tier_to_user(ax: Axonhub, user: dict, tier_name: str):
     own = query_user_enabled_keys(ax, user["id"])
     if not own:
         return f"{user.get('email')} 名下无 enabled Key"
+    missing = []
+    if key_ids is not None:
+        want = set(key_ids)
+        enabled_ids = {k["id"] for k in own}
+        missing = [kid for kid in key_ids if kid not in enabled_ids]  # 审批期间被归档/删除
+        own = [k for k in own if k["id"] in want]
     target_rank = TIER_RANK.get(tier_name)
     changed, skipped = [], []
     for k in own:
@@ -319,12 +319,16 @@ def apply_tier_to_user(ax: Axonhub, user: dict, tier_name: str):
             {"id": k["id"], "input": {"activeProfile": tier_name, "profiles": [prof]}},
         )
         changed.append(k["name"])
-    if not changed:
-        return f"未变更：名下 enabled Key 当前档均高于 {tier_name}，已跳过（绝不降档）：{', '.join(skipped)}"
-    text = f"已将 {len(changed)} 个 Key 换挂 {tier_name}（{', '.join(changed)}）"
+    parts = []
+    if changed:
+        parts.append(f"已将 {len(changed)} 个 Key 换挂 {tier_name}（{', '.join(changed)}）")
     if skipped:
-        text += f"；跳过 {len(skipped)} 个更高档 Key（绝不降档）：{', '.join(skipped)}"
-    return text
+        parts.append(f"跳过 {len(skipped)} 个更高档 Key（绝不降档）：{', '.join(skipped)}")
+    if missing:
+        parts.append(f"所选 {len(missing)} 个 Key 已不可用（归档/删除，跳过）：{', '.join(missing)}")
+    if not changed:
+        return "未变更：" + "；".join(parts) if parts else "未变更（所选 Key 均不可用）"
+    return "；".join(parts)
 
 
 def apply_tier(ax: Axonhub, open_id: str, tier_name: str):

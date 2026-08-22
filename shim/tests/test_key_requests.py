@@ -69,25 +69,38 @@ class _Base(unittest.TestCase):
         kr.FEISHU_ADMIN_OPEN_ID = self._saved_admin
         self._tmp.cleanup()
 
-    def _create(self, me=_ME_FEISHU, kind="new", purpose="项目联调", tier=""):
-        req, err = kr.create_request(me, kind, purpose, tier)
+    def _create(self, me=_ME_FEISHU, kind="new", purpose="项目联调", tier="", key_ids=None):
+        if kind == "upgrade" and key_ids is None:
+            key_ids = ["gid://axonhub/APIKey/101"]  # _Base 默认 mock 的体验档 key（issue #86 必填）
+        req, err = kr.create_request(me, kind, purpose, tier, key_ids=key_ids)
         self.assertIsNone(err)
         return req
 
 
 class TestValidate(_Base):
     def test_bad_kind(self):
-        self.assertEqual(kr.validate_payload({"kind": "x"})[3], "kind 必须是 new 或 upgrade")
+        self.assertEqual(kr.validate_payload({"kind": "x"})[4], "kind 必须是 new 或 upgrade")
 
     def test_new_requires_purpose(self):
-        self.assertIn("purpose", kr.validate_payload({"kind": "new"})[3])
+        self.assertIn("purpose", kr.validate_payload({"kind": "new"})[4])
 
     def test_upgrade_tier_whitelist(self):
-        self.assertIn("标准档", kr.validate_payload({"kind": "upgrade", "tier": "无敌档"})[3])
-        self.assertIsNone(kr.validate_payload({"kind": "upgrade", "tier": "高档"})[3])
+        self.assertIn("标准档", kr.validate_payload({"kind": "upgrade", "tier": "无敌档"})[4])
+        self.assertIsNone(kr.validate_payload({"kind": "upgrade", "tier": "高档", "keyIds": ["k1"]})[4])
 
     def test_body_not_dict(self):
-        self.assertIn("JSON", kr.validate_payload("not-a-dict")[3])
+        self.assertIn("JSON", kr.validate_payload("not-a-dict")[4])
+
+    def test_upgrade_requires_key_ids(self):
+        # issue #86：提额必须带非空 keyIds 列表；合法输入去重保序
+        self.assertIn("keyIds", kr.validate_payload({"kind": "upgrade", "tier": "高档"})[4])
+        self.assertIn("keyIds", kr.validate_payload({"kind": "upgrade", "tier": "高档", "keyIds": []})[4])
+        self.assertIn("keyIds", kr.validate_payload({"kind": "upgrade", "tier": "高档", "keyIds": "k1"})[4])
+        self.assertIn("keyIds", kr.validate_payload({"kind": "upgrade", "tier": "高档", "keyIds": ["", "  "]})[4])
+        kind, _, tier, key_ids, err = kr.validate_payload(
+            {"kind": "upgrade", "tier": "高档", "keyIds": ["k1", "k1", " k2 "]})
+        self.assertIsNone(err)
+        self.assertEqual((kind, tier, key_ids), ("upgrade", "高档", ["k1", "k2"]))
 
 
 class TestCreate(_Base):
@@ -112,7 +125,8 @@ class TestCreate(_Base):
         self._create(_ME_FEISHU)
         _, err = kr.create_request(_ME_FEISHU, "new", "再来一个", "")
         self.assertEqual(err[0], 409)
-        _, err2 = kr.create_request(_ME_FEISHU, "upgrade", "", "高档")  # 不同 kind 不拦
+        _, err2 = kr.create_request(_ME_FEISHU, "upgrade", "", "高档",
+                                    key_ids=["gid://axonhub/APIKey/101"])  # 不同 kind 不拦
         self.assertIsNone(err2)
 
     def test_admin_notify_fallback_group(self):
@@ -509,39 +523,43 @@ class TestSweepExpired(_Base):
 
 
 class TestUpgradeDirectionGuard(_Base):
-    """issue #85 申请侧方向守卫（fail-closed 三拒 + 查询异常 fail-open）。
+    """issue #85 申请侧方向守卫（fail-closed 三拒 + 查询异常 fail-open）；
+    issue #86 起按所选 Key 子集评估（keyIds 随 create_request 传入，归属校验同查询完成）。
     _Base 默认当前档=体验档；本类各用例按场景重挂 query_user_enabled_keys。"""
 
     def _guard_keys(self, *tiers):
         return [{"id": f"gid://axonhub/APIKey/1{i}", "name": f"k{i}", "userID": _ME_LOCAL["id"],
                  "profiles": {"activeProfile": t}} for i, t in enumerate(tiers)]
 
+    def _ids(self, n):
+        return [f"gid://axonhub/APIKey/1{i}" for i in range(n)]
+
     def test_top_tier_rejected_400(self):
-        # 已是最高档（混档取秩次最高：标准+高档 → 高档）→ 单独文案
+        # 所选全部已是最高档 → 单独文案
         with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
-                               side_effect=lambda ax, uid: self._guard_keys("标准档", "高档")):
-            req, err = kr.create_request(_ME_LOCAL, "upgrade", "", "高档")
+                               side_effect=lambda ax, uid: self._guard_keys("高档")):
+            req, err = kr.create_request(_ME_LOCAL, "upgrade", "", "高档", key_ids=self._ids(1))
         self.assertIsNone(req)
         self.assertEqual(err[0], 400)
         self.assertIn("已是最高档", err[1])
 
     def test_downgrade_and_sideways_rejected_400(self):
-        # 当前高档申标准（实际降档）→ 最高档文案优先；当前标准申标准（平档空转）→ 方向文案
+        # 所选高档申标准（实际降档）→ 最高档文案优先；所选标准申标准（平档空转）→ 方向文案
         with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
                                side_effect=lambda ax, uid: self._guard_keys("高档")):
-            _, err = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档")
+            _, err = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档", key_ids=self._ids(1))
         self.assertEqual(err[0], 400)
         self.assertIn("已是最高档", err[1])
         with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
                                side_effect=lambda ax, uid: self._guard_keys("标准档")):
-            _, err2 = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档")
+            _, err2 = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档", key_ids=self._ids(1))
         self.assertEqual(err2[0], 400)
-        self.assertIn("高于当前档位", err2[1])
+        self.assertIn("均已不低于", err2[1])
 
     def test_no_enabled_key_rejected_400(self):
         with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
                                side_effect=lambda ax, uid: []):
-            req, err = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档")
+            req, err = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档", key_ids=self._ids(1))
         self.assertIsNone(req)
         self.assertEqual(err[0], 400)
         self.assertIn("新建", err[1])  # 引导先申请新建
@@ -550,31 +568,115 @@ class TestUpgradeDirectionGuard(_Base):
         # 体验档申标准/高档 → 放行（_Base 默认 mock 即体验档，显式重挂以自文档化）
         with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
                                side_effect=lambda ax, uid: self._guard_keys("体验档")):
-            req, err = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档")
-        self.assertIsNone(err)
-        self.assertEqual(req["status"], "pending")
-        kr.cancel_request(req["id"], _ME_LOCAL["email"])  # 清掉 pending 再申高档
-        req2, err2 = kr.create_request(_ME_LOCAL, "upgrade", "", "高档")
+            req, err = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档", key_ids=self._ids(1))
+            self.assertIsNone(err)
+            self.assertEqual(req["status"], "pending")
+            kr.cancel_request(req["id"], _ME_LOCAL["email"])  # 清掉 pending 再申高档
+            req2, err2 = kr.create_request(_ME_LOCAL, "upgrade", "", "高档", key_ids=self._ids(1))
         self.assertIsNone(err2)
 
     def test_query_failure_fail_open(self):
-        # 当前档查询异常（axonhub 不可达）→ 放行 + 记日志（执行侧守卫兜底）
+        # 当前档查询异常（axonhub 不可达）→ 放行 + 记日志（执行侧守卫兜底）；无名称快照
         with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
                                side_effect=RuntimeError("gql down")):
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                req, err = kr.create_request(_ME_LOCAL, "upgrade", "", "高档")
+                req, err = kr.create_request(_ME_LOCAL, "upgrade", "", "高档", key_ids=self._ids(1))
         self.assertIsNone(err)
         self.assertEqual(req["status"], "pending")
         self.assertIn("fail-open", buf.getvalue())
+        self.assertIsNone(req["keyNames"])  # 显示侧回退
 
     def test_unprofiled_key_passes(self):
         # enabled 但未挂档（activeProfile 空）→ 秩次无从比较，放行（执行侧守卫兜底）
         with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
                                side_effect=lambda ax, uid: self._guard_keys(None)):
-            req, err = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档")
+            req, err = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档", key_ids=self._ids(1))
         self.assertIsNone(err)
         self.assertEqual(req["status"], "pending")
+
+
+class TestUpgradeKeySelection(_Base):
+    """issue #86 按 Key 勾选：归属/启用校验（一次查询完成）、子集方向守卫、名称快照、
+    详情行显示、执行子集化、存量无字段申请回退全量语义。"""
+
+    def _guard_keys(self, *tiers):
+        return [{"id": f"gid://axonhub/APIKey/2{i}", "name": f"sel-k{i}", "userID": _ME_LOCAL["id"],
+                 "profiles": {"activeProfile": t}} for i, t in enumerate(tiers)]
+
+    def _ids(self, n):
+        return [f"gid://axonhub/APIKey/2{i}" for i in range(n)]
+
+    def test_foreign_or_unknown_key_400(self):
+        # keyIds 混入他人/不存在/未启用 id（不在本人 enabled 集合）→ 400，不区分以免泄露
+        with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
+                               side_effect=lambda ax, uid: self._guard_keys("体验档")):
+            req, err = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档",
+                                         key_ids=self._ids(1) + ["gid://axonhub/APIKey/999"])
+        self.assertIsNone(req)
+        self.assertEqual(err[0], 400)
+        self.assertIn("不存在或未启用", err[1])
+
+    def test_all_selected_at_or_above_400(self):
+        # 所选（标准+高档）全部已 ≥ 目标标准档 → 拒收
+        with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
+                               side_effect=lambda ax, uid: self._guard_keys("标准档", "高档")):
+            _, err = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档", key_ids=self._ids(2))
+        self.assertEqual(err[0], 400)
+
+    def test_partial_below_passes_with_name_snapshot(self):
+        # 所选（高档+体验）部分低于目标标准 → 放行；keyIds/keyNames 快照按选择顺序存进 req
+        with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
+                               side_effect=lambda ax, uid: self._guard_keys("高档", "体验档")):
+            req, err = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档", key_ids=self._ids(2))
+        self.assertIsNone(err)
+        self.assertEqual(req["keyIds"], self._ids(2))
+        self.assertEqual(req["keyNames"], ["sel-k0", "sel-k1"])
+        # 详情行（审批卡/回执共用）显示目标 Key 名称 + 目标档
+        line = kr._detail_line(req)
+        self.assertIn("标准档", line)
+        self.assertIn("sel-k0", line)
+        self.assertIn("sel-k1", line)
+
+    def test_detail_line_legacy_fallback(self):
+        # 存量无 keyNames 字段的申请 → 回退「全部 enabled Key」文案
+        line = kr._detail_line({"kind": "upgrade", "tier": "高档"})
+        self.assertIn("全部 enabled Key", line)
+
+    def test_detail_line_fail_open_falls_back_to_ids(self):
+        # 评审 P1-2：fail-open 路径 keyNames=None 但 keyIds 有值 → 回退列 id 并标注快照缺失，
+        # 不得错误宣称「全部 enabled Key」（对子集申请是错误事实）
+        line = kr._detail_line({"kind": "upgrade", "tier": "高档",
+                                "keyIds": ["gid://axonhub/APIKey/20", "gid://axonhub/APIKey/21"],
+                                "keyNames": None})
+        self.assertIn("gid://axonhub/APIKey/20", line)
+        self.assertIn("gid://axonhub/APIKey/21", line)
+        self.assertIn("名称快照缺失", line)
+        self.assertNotIn("全部 enabled Key", line)
+
+    def test_execute_subset_passed_to_apply(self):
+        req = self._create(_ME_LOCAL, kind="upgrade", tier="高档", key_ids=["gid://axonhub/APIKey/101"])
+        with mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_LOCAL), \
+             mock.patch.object(kr.alert_poller, "apply_tier_to_user", return_value="ok") as at, \
+             mock.patch.object(kr, "_get_ax", return_value=object()):
+            out, err = kr.resolve_request(req["id"], "approve")
+        self.assertIsNone(err)
+        self.assertEqual(at.call_args.kwargs["key_ids"], ["gid://axonhub/APIKey/101"])
+
+    def test_legacy_request_without_keyids_falls_back_to_all(self):
+        # 存量申请（#86 前创建，无 keyIds/keyNames 字段）→ 执行回退「全部 enabled Key」（key_ids=None）
+        req = self._create(_ME_LOCAL, kind="upgrade", tier="高档")
+        with kr._lock:
+            reqs = kr._load()
+            stored = next(r for r in reqs if r["id"] == req["id"])
+            del stored["keyIds"], stored["keyNames"]  # 模拟存量记录形状
+            kr._save(reqs)
+        with mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_LOCAL), \
+             mock.patch.object(kr.alert_poller, "apply_tier_to_user", return_value="ok") as at, \
+             mock.patch.object(kr, "_get_ax", return_value=object()):
+            out, err = kr.resolve_request(req["id"], "approve")
+        self.assertIsNone(err)
+        self.assertIsNone(at.call_args.kwargs["key_ids"])
 
 
 class TestResolveTierNarrowing(_Base):

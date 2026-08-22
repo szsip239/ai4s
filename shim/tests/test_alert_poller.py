@@ -328,7 +328,7 @@ class TestLoadTierProfile(unittest.TestCase):
 
 
 class TestTierRank(unittest.TestCase):
-    """issue #85：档位秩次单一定义点（体验档<标准档<高档）+ key 档名/最高档纯函数。"""
+    """issue #85：档位秩次单一定义点（体验档<标准档<高档）+ key 档名纯函数。"""
 
     def test_rank_order(self):
         self.assertLess(ap.TIER_RANK["体验档"], ap.TIER_RANK["标准档"])
@@ -340,21 +340,13 @@ class TestTierRank(unittest.TestCase):
         self.assertIsNone(ap.key_tier_name({"profiles": None}))
         self.assertIsNone(ap.key_tier_name({}))
 
-    def test_highest_tier(self):
-        keys = [{"profiles": {"activeProfile": "体验档"}}, {"profiles": {"activeProfile": "高档"}}]
-        self.assertEqual(ap.highest_tier(keys), "高档")
-        self.assertEqual(ap.highest_tier([{"profiles": {"activeProfile": "标准档"}}]), "标准档")
-        self.assertIsNone(ap.highest_tier([]))
-        self.assertIsNone(ap.highest_tier([{"profiles": {"activeProfile": None}}]))
-        self.assertIsNone(ap.highest_tier([{"profiles": {"activeProfile": "无敌档"}}]))  # 未知档不参与秩次
-
 
 class TestApplyTierToUserGuard(unittest.TestCase):
     """issue #85 执行侧 never-downgrade（控制台/飞书两通道同享）：目标秩 > 当前秩换挂；
     == 同档重挂仍执行（模板数值调整后刷新存量快照的运维路径）；< 跳过并在结果文本如实列出；
     全部跳过返回「未变更」文本。查询换按 userID 精确过滤的新查询（不再复用巡检共用查询）。"""
 
-    def _run(self, own_keys, tier_name="标准档"):
+    def _run(self, own_keys, tier_name="标准档", key_ids=None):
         mutations = []
         key_query_vars = []
 
@@ -370,7 +362,7 @@ class TestApplyTierToUserGuard(unittest.TestCase):
                 return {"apiKeys": {"edges": [{"node": k} for k in own_keys]}}
 
         user = {"id": "gid://axonhub/User/9", "email": "u9@x.com"}
-        text = ap.apply_tier_to_user(FakeAx(), user, tier_name)
+        text = ap.apply_tier_to_user(FakeAx(), user, tier_name, key_ids=key_ids)
         return text, mutations, key_query_vars
 
     @staticmethod
@@ -412,6 +404,40 @@ class TestApplyTierToUserGuard(unittest.TestCase):
         text, mutations, _ = self._run([])
         self.assertIn("名下无 enabled Key", text)
         self.assertEqual(mutations, [])
+
+    # ---- issue #86：key_ids 子集化（控制台按 Key 勾选；None=全部 enabled 原语义）----
+
+    def test_subset_only_selected_mutated(self):
+        # 两把体验档 key 只勾选 k2 → 仅 k2 收到换挂 mutation，k1 不动
+        keys = [self._key("k1", "k-a", "体验档"), self._key("k2", "k-b", "体验档")]
+        text, mutations, _ = self._run(keys, key_ids=["k2"])
+        self.assertEqual([m["id"] for m in mutations], ["k2"])
+        self.assertIn("已将 1 个 Key 换挂 标准档（k-b）", text)
+
+    def test_subset_missing_key_listed_and_skipped(self):
+        # 审批期间被归档/删除的所选 Key（不在 enabled 集）→ 跳过并在结果文本按 id 列明
+        keys = [self._key("k1", "k-a", "体验档")]
+        text, mutations, _ = self._run(keys, key_ids=["k1", "k-gone"])
+        self.assertEqual([m["id"] for m in mutations], ["k1"])
+        self.assertIn("已不可用", text)
+        self.assertIn("k-gone", text)
+
+    def test_subset_all_missing_no_change(self):
+        # 所选全部已不可用 → 未变更、零 mutation
+        text, mutations, _ = self._run([self._key("k1", "k-a", "体验档")], key_ids=["k-gone"])
+        self.assertEqual(mutations, [])
+        self.assertIn("未变更", text)
+        self.assertIn("k-gone", text)
+
+    def test_subset_mixed_three_states(self):
+        # 子集混档（高档+体验）目标标准 + 未勾选同档 key k3 → k2 升、k1 跳过、k3 不动
+        keys = [self._key("k1", "k-prem", "高档"), self._key("k2", "k-trial", "体验档"),
+                self._key("k3", "k-untouched", "体验档")]
+        text, mutations, _ = self._run(keys, key_ids=["k1", "k2"])
+        self.assertEqual([m["id"] for m in mutations], ["k2"])
+        self.assertIn("k-trial", text)
+        self.assertIn("k-prem（当前高档）", text)
+        self.assertNotIn("k-untouched", text)
 
     def test_template_missing_text_unchanged(self):
         class FakeAx:

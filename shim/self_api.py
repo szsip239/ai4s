@@ -116,12 +116,12 @@ def _self_key_requests_post(handler, me: dict):
     payload = admin_api._read_body(handler)
     if payload is None:
         return  # 413/400 已在 _read_body 内回出
-    kind, purpose, tier, err = key_requests.validate_payload(payload)
+    kind, purpose, tier, key_ids, err = key_requests.validate_payload(payload)
     if err:
         admin_api._respond(handler, 400, {"error": err})
         return
     try:
-        req, kerr = key_requests.create_request(me, kind, purpose, tier)
+        req, kerr = key_requests.create_request(me, kind, purpose, tier, key_ids=key_ids)
     except Exception as e:
         print(f"[self] 申请创建失败: {type(e).__name__}: {e}", flush=True)
         admin_api._respond(handler, 503, {"error": "request store unavailable"})
