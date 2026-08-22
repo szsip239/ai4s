@@ -39,14 +39,14 @@ cd ../shim && python3 -m venv .venv && .venv/bin/pip install -r requirements-dev
 - 管理面：http://localhost:3000 （经 agentgateway 反代；宿主不再单独暴露 axonhub 调试口，issue #60），用 `.env` 中的 `AXONHUB_ADMIN_EMAIL` / `AXONHUB_ADMIN_PASSWORD` 登录（本地账号；阶段 1 切 飞书 OAuth→Casdoor→OIDC）。
 - 员工入口：`http://localhost:3000/v1`（OpenAI 兼容），唯一对员工的端口。
 - SSO（issue #14 已上线）：员工在 http://localhost:3000/sign-in 点"Casdoor SSO（飞书）"登录，JIT 自动建号。axonhub 无 JIT 默认项目机制；**issue #73 起 shim 巡检线程 30s 级自动把新员工补进 Default 项目**（`auto_assign_project`，入项发飞书群通知），手工兜底 `./scripts/assign-default-project.sh`（幂等）。
-- **Tailnet 内网访问（issue #63）**：宿主经 tailscale serve 暴露两条 tailnet-only HTTPS 入口，其他 tailnet 设备直接可用：
-  - console+API：`https://<host>.<tailnet>.ts.net:8445`（→ 127.0.0.1:3000；本机 localhost:3000 入口不受影响）
-  - Casdoor：`https://<host>.<tailnet>.ts.net:8444`（→ 127.0.0.1:8000）
-  - 命令：`tailscale serve --bg --https=8445 http://127.0.0.1:3000` / `tailscale serve --bg --https=8444 http://127.0.0.1:8000`（存于 tailscaled 状态，重启自愈；关闭用 `tailscale serve --https=<port> off`）。**不要用 443**：本机 sibling-project-nginx 占用 0.0.0.0:443 时会截胡同名流量。
-  - SSO 规范名已收敛到 ts.net：`axonhub/config.yml` 的 public_url/redirect_url=…:8445、issuer_url=…:8444，`casdoor/app.conf` origin=…:8444（issuer 与 origin 必须一致）。
-  - **前置依赖（飞书后台手工项）**：飞书开放平台应用（cli_xxxxxxxxxxxxxxxx）→ 安全设置 → 重定向 URL 须含 `https://<host>.<tailnet>.ts.net:8444/callback`，否则 SSO 最后一步报错误码 20029。
+- **公网访问（2026-08-22 起，替代 tailnet serve）**：宿主 `local-edge-nginx` 发布两条 example.com HTTPS 入口（模板 `sibling-project/.deploy/nginx-consolidation/local/templates/ai4s.conf.template`；iKuai dnat id=22/23 对齐 18999 模式）：
+  - console+API：`https://example.com:8445`（→ host.docker.internal:3000；本机 localhost:3000 入口不受影响）
+  - Casdoor：`https://example.com:8444`（→ host.docker.internal:8000）
+  - tailnet serve 8444/8445 已取消（8443/9443 属其他服务，保留）。
+  - SSO 规范名：`axonhub/config.yml` 的 public_url/redirect_url=example.com:8445、issuer_url=example.com:8444，`casdoor/app.conf` origin=example.com:8444（issuer 与 origin 必须一致）。
+  - **前置依赖（飞书后台手工项）**：飞书开放平台应用（cli_xxxxxxxxxxxxxxxx）→ 安全设置 → 重定向 URL 须含 `https://example.com:8444/callback`，否则 SSO 最后一步报错误码 20029。
   - Casdoor 应用的 `redirect_uris` 追加项（含 :8445 回调）是运行时 DB 配置，`casdoor_data` volume 重建后需经 `/api/update-application` 重设（同上方 display_name 的恢复套路）。
-  - **issuer 变更需迁移身份链接**：axonhub `oidc_identities` 按 (issuer, subject) 匹配既有用户；issuer 换名后旧链接失配，JIT 会撞邮箱唯一约束（`user_email_deleted_at` 23505）。恢复套路：`UPDATE oidc_identities SET issuer='<新 issuer>' WHERE subject='<sub>';`（2026-08-18 已对唯一 SSO 用户执行过一次）。
+  - **issuer 变更需迁移身份链接**（2026-08-22 已从 ts.net issuer 迁移到 example.com）：axonhub `oidc_identities` 按 (issuer, subject) 匹配既有用户；issuer 换名后旧链接失配，JIT 会撞邮箱唯一约束（`user_email_deleted_at` 23505）。恢复套路：`UPDATE oidc_identities SET issuer='<新 issuer>' WHERE subject='<sub>';`。
 - **Casdoor 展示名（issue #58/#59）**：组织/应用的 `display_name`（当前均为 `Ai-4S-infra`）是运行时 DB 配置，`casdoor_data` volume 重建后会回退初始值，需手工重设：
 
   ```bash
