@@ -5,6 +5,8 @@
  * 非 pending 重复点批幂等返回现状（不重复建 Key）。
  * issue #81：approve 可带 tier 覆盖执行档位（审批弹窗选档；空串=默认：新建体验档/提额所求档），
  * 档位白名单在 shim key_requests.ALLOWED_TIERS。
+ * issue #89：多项目隔离——列表带 X-Project-ID 头（管理员当前项目 gid），queryKey 以项目为维度；
+ * projectId 为空时 enabled=false 不发请求；点批不带头（执行落申请单记录的项目）。
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiRequest } from '@/lib/api-client';
@@ -20,11 +22,16 @@ interface KeyRequestsResponse {
 
 const QK = ['dlp-admin', 'key-requests'];
 
-export function useAdminKeyRequests() {
+export function useAdminKeyRequests(projectId: string | null) {
   return useQuery({
-    queryKey: QK,
-    queryFn: () => apiRequest<KeyRequestsResponse>('/dlp-admin/key-requests', { requireAuth: true }),
+    queryKey: [...QK, projectId],
+    queryFn: () =>
+      apiRequest<KeyRequestsResponse>('/dlp-admin/key-requests', {
+        requireAuth: true,
+        headers: { 'X-Project-ID': projectId as string },
+      }),
     retry: false,
+    enabled: !!projectId,
     refetchInterval: 30_000, // 新申请异步到达（员工控制台提交），与巡检节奏一致
   });
 }

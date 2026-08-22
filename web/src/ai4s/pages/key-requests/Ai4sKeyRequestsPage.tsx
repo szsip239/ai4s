@@ -11,6 +11,9 @@
  * 执行作用于申请人全部 enabled Key）。
  * 状态门幂等：仅 pending 行显示操作；已处理行的结果为终态（拒绝理由/执行摘要，绝无明文——
  * 非飞书申请人的明文只私信管理员本人，不落本页）。
+ * issue #89：多项目隔离——列表跟随顶部项目切换器（X-Project-ID 头）按项目过滤，未选项目
+ * 时空态引导；表格加「项目」列、同意弹窗摘要带项目名（存量申请无快照按 Default 显示）。
+ * 点批不带项目头：执行落申请单记录的项目（与管理员当前项目解耦，切错项目不批错单）。
  */
 import { useState } from 'react';
 import { format } from 'date-fns';
@@ -31,6 +34,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
+import { useSelectedProjectId } from '@/stores/projectStore';
 import { usePermissions } from '@/hooks/usePermissions';
 import { useAdminKeyRequests, useResolveKeyRequest, type AdminKeyRequest } from './api';
 import { upgradeDetailLabel } from '../my-keys/api';
@@ -54,7 +58,8 @@ function statusVariant(status: string): 'default' | 'secondary' | 'destructive' 
 
 export default function Ai4sKeyRequestsPage() {
   const { t } = useTranslation();
-  const query = useAdminKeyRequests();
+  const projectId = useSelectedProjectId(); // issue #89：列表按管理员当前项目过滤
+  const query = useAdminKeyRequests(projectId);
   const resolve = useResolveKeyRequest();
   // 点批是写操作（shim 端 write_channels 鉴权）：只读管理员可见列表但按钮禁用，对齐 channels 等 admin 页惯例
   const { channelPermissions } = usePermissions();
@@ -94,7 +99,9 @@ export default function Ai4sKeyRequestsPage() {
             <CardDescription>{t('ai4s.keyRequests.description')}</CardDescription>
           </CardHeader>
           <CardContent>
-            {query.isError ? (
+            {!projectId ? (
+              <p className='py-10 text-center text-sm text-muted-foreground'>{t('ai4s.keyRequests.noProject')}</p>
+            ) : query.isError ? (
               <Alert variant='destructive'>
                 <AlertDescription>{t('ai4s.keyRequests.loadError')}</AlertDescription>
               </Alert>
@@ -107,6 +114,7 @@ export default function Ai4sKeyRequestsPage() {
                     <TableHead>{t('ai4s.keyRequests.columns.applicant')}</TableHead>
                     <TableHead>{t('ai4s.keyRequests.columns.kind')}</TableHead>
                     <TableHead>{t('ai4s.keyRequests.columns.detail')}</TableHead>
+                    <TableHead>{t('ai4s.keyRequests.columns.project')}</TableHead>
                     <TableHead>{t('ai4s.keyRequests.columns.createdAt')}</TableHead>
                     <TableHead>{t('ai4s.keyRequests.columns.status')}</TableHead>
                     <TableHead>{t('ai4s.keyRequests.columns.result')}</TableHead>
@@ -122,6 +130,8 @@ export default function Ai4sKeyRequestsPage() {
                         {/* issue #86：提额申请显示所选 Key（名称快照优先，fail-open 回退 id）；存量申请回退只显示目标档 */}
                         {r.kind === 'new' ? r.purpose : (upgradeDetailLabel(r) ?? r.tier)}
                       </TableCell>
+                      {/* issue #89：项目名快照；存量申请无字段按 Default 显示（与 shim 过滤/执行同口径） */}
+                      <TableCell className='text-muted-foreground'>{r.projectName || 'Default'}</TableCell>
                       <TableCell className='text-muted-foreground'>
                         {r.createdAt ? format(new Date(r.createdAt), 'yyyy-MM-dd HH:mm') : '—'}
                       </TableCell>
@@ -169,7 +179,8 @@ export default function Ai4sKeyRequestsPage() {
                 {approveTarget && (
                   <span className='mt-2 block'>
                     {approveTarget.applicant?.email} · {t(`ai4s.keyRequests.kind.${approveTarget.kind}`)} ·{' '}
-                    {approveTarget.kind === 'new' ? approveTarget.purpose : (upgradeDetailLabel(approveTarget) ?? approveTarget.tier)}
+                    {approveTarget.kind === 'new' ? approveTarget.purpose : (upgradeDetailLabel(approveTarget) ?? approveTarget.tier)} ·{' '}
+                    {approveTarget.projectName || 'Default'}
                   </span>
                 )}
               </AlertDialogDescription>

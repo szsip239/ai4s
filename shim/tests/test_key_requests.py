@@ -7,6 +7,8 @@ key_requests._get_ax/_feishu_card_send/_feishu_card_update），状态文件用�
 模块级 REQUESTS_PATH（admin_api 测试钦定方式），不 mock 模块内部塑形/校验函数。
 issue #85：create_request 的 upgrade 方向守卫会查当前档（query_user_enabled_keys），
 _Base 默认 mock 成体验档 key（任何提额目标放行）；具体档位场景在 TestUpgradeDirectionGuard 内自行重挂。
+issue #89 增补：多项目隔离——TestProjectScope 覆盖成员校验（403/502）、项目快照、守卫/执行
+项目过滤、存量申请 Default 回退、list_requests 项目过滤与详情行项目显示。
 """
 import contextlib
 import io
@@ -53,11 +55,15 @@ class _Base(unittest.TestCase):
             mock.patch.object(kr, "_feishu_card_update",
                               side_effect=lambda mid, card: self.card_updates.append((mid, card)) or True),
             # issue #85：upgrade 方向守卫的当前档查询默认返回体验档 key（提额任何目标放行）；
-            # 需要特定档位的用例自行重挂本 mock
+            # 需要特定档位的用例自行重挂本 mock。issue #89：第三参 project_id（项目过滤入查询）
             mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
-                              side_effect=lambda ax, uid: [
+                              side_effect=lambda ax, uid, project_id=None: [
                                   {"id": "gid://axonhub/APIKey/101", "name": "emp-k", "userID": uid,
                                    "profiles": {"activeProfile": "体验档"}}]),
+            # issue #89：项目成员校验默认全员 Default 成员；非成员/查询异常用例自行重挂
+            mock.patch.object(kr.alert_poller, "query_user_projects",
+                              side_effect=lambda ax, uid: [
+                                  {"id": kr.alert_poller.KEY_PROJECT_ID, "name": "Default"}]),
         ]
         for p in self._patchers:
             p.start()
@@ -537,7 +543,7 @@ class TestUpgradeDirectionGuard(_Base):
     def test_top_tier_rejected_400(self):
         # 所选全部已是最高档 → 单独文案
         with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
-                               side_effect=lambda ax, uid: self._guard_keys("高档")):
+                               side_effect=lambda ax, uid, project_id=None: self._guard_keys("高档")):
             req, err = kr.create_request(_ME_LOCAL, "upgrade", "", "高档", key_ids=self._ids(1))
         self.assertIsNone(req)
         self.assertEqual(err[0], 400)
@@ -546,19 +552,19 @@ class TestUpgradeDirectionGuard(_Base):
     def test_downgrade_and_sideways_rejected_400(self):
         # 所选高档申标准（实际降档）→ 最高档文案优先；所选标准申标准（平档空转）→ 方向文案
         with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
-                               side_effect=lambda ax, uid: self._guard_keys("高档")):
+                               side_effect=lambda ax, uid, project_id=None: self._guard_keys("高档")):
             _, err = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档", key_ids=self._ids(1))
         self.assertEqual(err[0], 400)
         self.assertIn("已是最高档", err[1])
         with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
-                               side_effect=lambda ax, uid: self._guard_keys("标准档")):
+                               side_effect=lambda ax, uid, project_id=None: self._guard_keys("标准档")):
             _, err2 = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档", key_ids=self._ids(1))
         self.assertEqual(err2[0], 400)
         self.assertIn("均已不低于", err2[1])
 
     def test_no_enabled_key_rejected_400(self):
         with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
-                               side_effect=lambda ax, uid: []):
+                               side_effect=lambda ax, uid, project_id=None: []):
             req, err = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档", key_ids=self._ids(1))
         self.assertIsNone(req)
         self.assertEqual(err[0], 400)
@@ -567,7 +573,7 @@ class TestUpgradeDirectionGuard(_Base):
     def test_trial_can_upgrade_pass(self):
         # 体验档申标准/高档 → 放行（_Base 默认 mock 即体验档，显式重挂以自文档化）
         with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
-                               side_effect=lambda ax, uid: self._guard_keys("体验档")):
+                               side_effect=lambda ax, uid, project_id=None: self._guard_keys("体验档")):
             req, err = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档", key_ids=self._ids(1))
             self.assertIsNone(err)
             self.assertEqual(req["status"], "pending")
@@ -590,7 +596,7 @@ class TestUpgradeDirectionGuard(_Base):
     def test_unprofiled_key_passes(self):
         # enabled 但未挂档（activeProfile 空）→ 秩次无从比较，放行（执行侧守卫兜底）
         with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
-                               side_effect=lambda ax, uid: self._guard_keys(None)):
+                               side_effect=lambda ax, uid, project_id=None: self._guard_keys(None)):
             req, err = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档", key_ids=self._ids(1))
         self.assertIsNone(err)
         self.assertEqual(req["status"], "pending")
@@ -610,7 +616,7 @@ class TestUpgradeKeySelection(_Base):
     def test_foreign_or_unknown_key_400(self):
         # keyIds 混入他人/不存在/未启用 id（不在本人 enabled 集合）→ 400，不区分以免泄露
         with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
-                               side_effect=lambda ax, uid: self._guard_keys("体验档")):
+                               side_effect=lambda ax, uid, project_id=None: self._guard_keys("体验档")):
             req, err = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档",
                                          key_ids=self._ids(1) + ["gid://axonhub/APIKey/999"])
         self.assertIsNone(req)
@@ -620,14 +626,14 @@ class TestUpgradeKeySelection(_Base):
     def test_all_selected_at_or_above_400(self):
         # 所选（标准+高档）全部已 ≥ 目标标准档 → 拒收
         with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
-                               side_effect=lambda ax, uid: self._guard_keys("标准档", "高档")):
+                               side_effect=lambda ax, uid, project_id=None: self._guard_keys("标准档", "高档")):
             _, err = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档", key_ids=self._ids(2))
         self.assertEqual(err[0], 400)
 
     def test_partial_below_passes_with_name_snapshot(self):
         # 所选（高档+体验）部分低于目标标准 → 放行；keyIds/keyNames 快照按选择顺序存进 req
         with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
-                               side_effect=lambda ax, uid: self._guard_keys("高档", "体验档")):
+                               side_effect=lambda ax, uid, project_id=None: self._guard_keys("高档", "体验档")):
             req, err = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档", key_ids=self._ids(2))
         self.assertIsNone(err)
         self.assertEqual(req["keyIds"], self._ids(2))
@@ -746,6 +752,156 @@ class TestReapplyAfterTerminal(_Base):
             kr.resolve_request(req4["id"], "approve")
         _, err = kr.create_request(_ME_FEISHU, "new", "五来", "")
         self.assertIsNone(err)
+
+
+_P2 = "gid://axonhub/Project/2"
+
+
+class TestProjectScope(_Base):
+    """issue #89 多项目隔离：create 成员校验 fail-closed（非成员 403/查询异常 502）、req 存
+    projectId+projectName 快照、upgrade 守卫按项目过滤、执行落申请单项目（与管理员当前项目
+    解耦）、执行时复查成员（被移出不建 Key 但照常 approved）、存量无字段申请视为 Default、
+    list_requests 项目过滤、详情行项目显示。"""
+
+    def _member_of_p2(self):
+        """重挂成员 mock：caller 同时是 Default 与 P2 成员。"""
+        return mock.patch.object(kr.alert_poller, "query_user_projects",
+                                 side_effect=lambda ax, uid: [
+                                     {"id": kr.alert_poller.KEY_PROJECT_ID, "name": "Default"},
+                                     {"id": _P2, "name": "P-Test2"}])
+
+    def _create_p2(self, me=_ME_FEISHU, kind="new", tier="", key_ids=None):
+        with self._member_of_p2():
+            req, err = kr.create_request(me, kind, "项目联调", tier, key_ids=key_ids, project_id=_P2)
+        self.assertIsNone(err)
+        return req
+
+    def test_create_non_member_403(self):
+        # _Base 默认 mock 只有 Default 成员资格 → 对 P2 发申请 403（成员关系是安全闸门，fail-closed）
+        req, err = kr.create_request(_ME_FEISHU, "new", "联调", "", project_id=_P2)
+        self.assertIsNone(req)
+        self.assertEqual(err[0], 403)
+        self.assertIn("不是该项目成员", err[1])
+
+    def test_create_membership_query_error_502(self):
+        with mock.patch.object(kr.alert_poller, "query_user_projects",
+                               side_effect=RuntimeError("gql down")):
+            req, err = kr.create_request(_ME_FEISHU, "new", "联调", "", project_id=_P2)
+        self.assertIsNone(req)
+        self.assertEqual(err[0], 502)
+        self.assertIn("成员校验", err[1])
+
+    def test_create_no_uid_502(self):
+        req, err = kr.create_request({"email": "nouid@x"}, "new", "联调", "", project_id=_P2)
+        self.assertIsNone(req)
+        self.assertEqual(err[0], 502)
+
+    def test_create_stores_project_snapshot(self):
+        req = self._create_p2()
+        self.assertEqual(req["projectId"], _P2)
+        self.assertEqual(req["projectName"], "P-Test2")
+        # 缺省 project_id = Default 兜底（存量/直调语义）
+        req2 = self._create(_ME_LOCAL)
+        self.assertEqual(req2["projectId"], kr.alert_poller.KEY_PROJECT_ID)
+        self.assertEqual(req2["projectName"], "Default")
+
+    def test_guard_scoped_to_project(self):
+        # upgrade 守卫的当前档查询带申请项目——归属校验不再跨项目放行别项目同名 key
+        captured = []
+
+        def rec(ax, uid, project_id=None):
+            captured.append(project_id)
+            return [{"id": "gid://axonhub/APIKey/101", "name": "emp-k", "userID": uid,
+                     "profiles": {"activeProfile": "体验档"}}]
+
+        with self._member_of_p2(), \
+             mock.patch.object(kr.alert_poller, "query_user_enabled_keys", side_effect=rec):
+            req, err = kr.create_request(_ME_FEISHU, "upgrade", "", "标准档",
+                                         key_ids=["gid://axonhub/APIKey/101"], project_id=_P2)
+        self.assertIsNone(err)
+        self.assertEqual(captured, [_P2])
+        self.assertEqual(req["projectId"], _P2)
+
+    def test_execute_new_lands_in_request_project(self):
+        # 执行落申请单记录的项目（与管理员当前所在项目解耦）
+        req = self._create_p2()
+        with mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_FEISHU), \
+             self._member_of_p2(), \
+             mock.patch.object(kr.alert_poller, "ensure_emp_key",
+                               return_value=("emp-x", "ah-x", "")) as ek, \
+             mock.patch.object(kr, "_get_ax", return_value=object()):
+            out, err = kr.resolve_request(req["id"], "approve")
+        self.assertIsNone(err)
+        self.assertEqual(out["status"], "approved")
+        self.assertEqual(ek.call_args.kwargs["project_id"], _P2)
+
+    def test_execute_new_member_removed_no_key(self):
+        # 审批期间被移出项目 → 不建 Key、结果文本说明，申请照常 approved
+        req = self._create_p2()
+        with mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_FEISHU), \
+             mock.patch.object(kr.alert_poller, "ensure_emp_key") as ek, \
+             mock.patch.object(kr, "_get_ax", return_value=object()):
+            # _Base 默认成员 mock 只剩 Default → 执行复查不命中 P2
+            out, err = kr.resolve_request(req["id"], "approve")
+        self.assertIsNone(err)
+        self.assertEqual(out["status"], "approved")
+        self.assertIn("已不在项目", out["result"])
+        self.assertIn("P-Test2", out["result"])
+        ek.assert_not_called()
+
+    def test_execute_legacy_request_defaults_project(self):
+        # 存量申请（无 projectId 字段）执行落 Default——#89 前数据零迁移
+        req = self._create(_ME_FEISHU)
+        with kr._lock:
+            reqs = kr._load()
+            del reqs[0]["projectId"]
+            del reqs[0]["projectName"]
+            kr._save(reqs)
+        with mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_FEISHU), \
+             mock.patch.object(kr.alert_poller, "ensure_emp_key",
+                               return_value=("emp-x", "ah-x", "")) as ek, \
+             mock.patch.object(kr, "_get_ax", return_value=object()):
+            out, err = kr.resolve_request(req["id"], "approve")
+        self.assertIsNone(err)
+        self.assertEqual(out["status"], "approved")
+        self.assertEqual(ek.call_args.kwargs["project_id"], kr.alert_poller.KEY_PROJECT_ID)
+
+    def test_execute_upgrade_passes_project_id(self):
+        req = self._create_p2(kind="upgrade", tier="标准档", key_ids=["gid://axonhub/APIKey/101"])
+        with mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_FEISHU), \
+             mock.patch.object(kr.alert_poller, "apply_tier_to_user",
+                               return_value="已将 1 个 Key 换挂 标准档") as at, \
+             mock.patch.object(kr, "_get_ax", return_value=object()):
+            out, err = kr.resolve_request(req["id"], "approve")
+        self.assertIsNone(err)
+        self.assertEqual(at.call_args.kwargs["project_id"], _P2)
+        self.assertEqual(at.call_args.kwargs["key_ids"], ["gid://axonhub/APIKey/101"])
+
+    def test_list_requests_project_filter(self):
+        req_default = self._create(_ME_LOCAL)          # Default 项目
+        req_p2 = self._create_p2(_ME_FEISHU)           # P2 项目（不同人避开 dup 409）
+        # 存量无字段申请视为 Default
+        req_legacy = self._create({"id": "gid://axonhub/User/5", "email": "legacy@x",
+                                   "isOwner": False, "scopes": []})
+        with kr._lock:
+            reqs = kr._load()
+            for r in reqs:
+                if r["id"] == req_legacy["id"]:
+                    del r["projectId"]
+                    del r["projectName"]
+            kr._save(reqs)
+        p2_list = kr.list_requests(project_id=_P2)
+        self.assertEqual([r["id"] for r in p2_list], [req_p2["id"]])
+        default_list = kr.list_requests(project_id=kr.alert_poller.KEY_PROJECT_ID)
+        self.assertEqual({r["id"] for r in default_list}, {req_default["id"], req_legacy["id"]})
+        self.assertEqual(len(kr.list_requests()), 3)  # 不过滤=全量
+
+    def test_detail_line_shows_project(self):
+        req = self._create_p2()
+        self.assertIn("**项目**: P-Test2", kr._detail_line(req))
+        # 存量申请无快照 → Default（与过滤/执行同口径）
+        legacy = {"kind": "new", "purpose": "x"}
+        self.assertIn("**项目**: Default", kr._detail_line(legacy))
 
 
 if __name__ == "__main__":

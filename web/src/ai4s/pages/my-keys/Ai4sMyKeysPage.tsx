@@ -25,12 +25,15 @@
  * 选项按所选 Key 的最低档过滤，提交带 keyIds；申请列表详情列展示所选 Key
  * （upgradeDetailLabel：名称快照优先，fail-open 回退 id，存量申请回退目标档）。
  * 评审 P1-1：按钮门态 maxed 收窄为「全部 enabled key 均高档」（混档可开弹窗只勾低档提档）。
+ * issue #89：多项目隔离——本页跟随顶部项目切换器（useSelectedProjectId）：查询/提交带
+ * X-Project-ID 头按项目过滤；未选项目（零项目态）时内容区空态引导、不发请求、禁用申请按钮。
  */
 import { useEffect, useMemo, useState } from 'react';
 import { format } from 'date-fns';
 import { IconChevronDown, IconEye, IconEyeOff, IconKey, IconPlus, IconTrendingUp } from '@tabler/icons-react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
+import { useSelectedProjectId } from '@/stores/projectStore';
 import { cn } from '@/lib/utils';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
@@ -260,9 +263,10 @@ function RequestRow({ r, onCancel }: { r: KeyRequest; onCancel: (r: KeyRequest) 
 export default function Ai4sMyKeysPage() {
   const { t } = useTranslation();
   const { data: me } = useMe();
-  const myKeys = useMyKeys();
-  const myRequests = useMyKeyRequests();
-  const createRequest = useCreateKeyRequest();
+  const projectId = useSelectedProjectId(); // issue #89：页面数据跟随顶部项目切换器
+  const myKeys = useMyKeys(projectId);
+  const myRequests = useMyKeyRequests(projectId);
+  const createRequest = useCreateKeyRequest(projectId);
   const cancelRequest = useCancelKeyRequest();
   const [applyKind, setApplyKind] = useState<ApplyKind>(null);
   const [cancelTarget, setCancelTarget] = useState<KeyRequest | null>(null);
@@ -317,7 +321,7 @@ export default function Ai4sMyKeysPage() {
   };
 
   const submit = () => {
-    if (applyKind === null) return;
+    if (applyKind === null || !projectId) return; // issue #89：无项目上下文不提交（shim 侧同形 400 兜底）
     createRequest.mutate(applyKind === 'new' ? { kind: 'new', purpose } : { kind: 'upgrade', tier, keyIds: selectedKeyIds }, {
       onSuccess: () => {
         toast.success(t('ai4s.myKeys.submitOk'));
@@ -352,11 +356,11 @@ export default function Ai4sMyKeysPage() {
                 </CardTitle>
               </div>
               <div className='flex gap-2'>
-                <Button size='sm' onClick={() => openDialog('new')}>
+                <Button size='sm' disabled={!projectId} onClick={() => openDialog('new')}>
                   <IconPlus className='mr-1 h-4 w-4' />
                   {t('ai4s.myKeys.applyNew')}
                 </Button>
-                {upgradeBlock !== null ? (
+                {upgradeBlock !== null || !projectId ? (
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <span tabIndex={0} className='cursor-not-allowed'>
@@ -366,7 +370,7 @@ export default function Ai4sMyKeysPage() {
                         </Button>
                       </span>
                     </TooltipTrigger>
-                    <TooltipContent>{upgradeHint}</TooltipContent>
+                    <TooltipContent>{!projectId ? t('ai4s.myKeys.noProject') : upgradeHint}</TooltipContent>
                   </Tooltip>
                 ) : (
                   <Button size='sm' variant='outline' onClick={() => openDialog('upgrade')}>
@@ -378,7 +382,11 @@ export default function Ai4sMyKeysPage() {
             </div>
           </CardHeader>
           <CardContent>
-            {myKeys.isError ? (
+            {!projectId ? (
+              <div className='py-10 text-center'>
+                <p className='text-muted-foreground text-sm'>{t('ai4s.myKeys.noProject')}</p>
+              </div>
+            ) : myKeys.isError ? (
               <Alert variant='destructive'>
                 <AlertDescription>{t('ai4s.myKeys.loadError')}</AlertDescription>
               </Alert>
@@ -420,7 +428,9 @@ export default function Ai4sMyKeysPage() {
             <CardDescription>{t('ai4s.myKeys.requests.description')}</CardDescription>
           </CardHeader>
           <CardContent>
-            {requests.length === 0 ? (
+            {!projectId ? (
+              <p className='text-muted-foreground py-6 text-center text-sm'>{t('ai4s.myKeys.noProject')}</p>
+            ) : requests.length === 0 ? (
               <p className='text-muted-foreground py-6 text-center text-sm'>{t('ai4s.myKeys.requests.empty')}</p>
             ) : (
               <Table>

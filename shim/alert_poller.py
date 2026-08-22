@@ -19,6 +19,9 @@ axonhub 无事件源的事务靠主动轮询补齐。巡检项（状态翻转才
     ENABLED_API_KEYS_QUERY（加字段影响面大）。issue #86：apply_tier_to_user 加 key_ids
     子集参数（控制台按 Key 勾选提档；None=全部 enabled Key，飞书通道/存量申请原语义），
     子集内审批期间被归档/删除的 Key 跳过并在结果文本列明。
+    issue #89 多项目隔离：apply_tier_to_user/query_user_enabled_keys/ensure_emp_key/key_by_name
+    加 project_id 参数（默认 KEY_PROJECT_ID=Default——飞书通道与存量申请零变化，其 key 均落
+    Default）；控制台申请/审批按申请单记录的项目执行，不再跨项目拉齐。
   - 新建：APPROVED → open_id → axonhub 用户（无用户=未首登，回执提示先登录再重新申请）
     → createAPIKey（体验档写死，命名 emp-<oid8>-<yyyymmdd>-<用途摘要>-<ic尾4>）
     → 归属申请人（createAPIKey 无 userID 入参，v1.0.0-beta6 实证；建后 SQL 直改 user_id 并
@@ -270,18 +273,37 @@ def load_tier_profile(ax: Axonhub, tier_name: str):
 
 # issue #85：按 userID 精确查本人 enabled key 的当前挂档（profiles.activeProfile）——
 # apply_tier_to_user 逐 key 方向守卫与 key_requests 申请侧当前档查询共用。
+# issue #89：叠加 projectID 过滤（多项目隔离）。
 # 与 self_api._SELF_KEYS_QUERY 同源形状（where userID 等值），叠加 statusIn enabled；
 # 不复用 ENABLED_API_KEYS_QUERY——它是巡检/预警共用查询，加字段影响面大。
 USER_ENABLED_KEYS_QUERY = (
-    "query($uid: ID!) { apiKeys(first: 100, where: {userID: $uid, statusIn: [enabled]}) { edges { node { "
+    "query($uid: ID!, $projectID: ID!) { apiKeys(first: 100, where: {userID: $uid, projectID: $projectID, statusIn: [enabled]}) { edges { node { "
     "id name userID profiles { activeProfile } } } } }"
 )
 
 
-def query_user_enabled_keys(ax: Axonhub, uid: str):
-    """userID 精确查 enabled key（id/name/activeProfile）。first:100 上限与 ENABLED_API_KEYS_QUERY 同款。"""
-    data = ax.gql(USER_ENABLED_KEYS_QUERY, {"uid": uid})
+def query_user_enabled_keys(ax: Axonhub, uid: str, project_id: str = KEY_PROJECT_ID):
+    """userID+projectID 精确查 enabled key（id/name/activeProfile）。first:100 上限与 ENABLED_API_KEYS_QUERY 同款。
+    issue #89：projectID 入过滤（APIKeyWhereInput.projectID 2026-08-22 内省+实证支持）——
+    默认 Default 常量，飞书通道/存量申请语义不变（其 key 均落 Default）。"""
+    data = ax.gql(USER_ENABLED_KEYS_QUERY, {"uid": uid, "projectID": project_id})
     return [e["node"] for e in data["apiKeys"]["edges"]]
+
+
+# issue #89：用户项目成员列表（成员校验 + 项目名快照）。无 user(id:) 单查（内省实证），
+# 用 users(where:{id}) + projects 子查询；first:50 与 USERS_WITH_PROJECTS_QUERY 同款上限。
+USER_PROJECTS_QUERY = (
+    "query($uid: ID!) { users(first: 1, where: {id: $uid}) { edges { node { id "
+    "projects(first: 50) { edges { node { id name } } } } } } }"
+)
+
+
+def query_user_projects(ax: Axonhub, uid: str):
+    """用户所属项目列表（[{id, name}]）；用户不存在返回 []。"""
+    edges = ax.gql(USER_PROJECTS_QUERY, {"uid": uid})["users"]["edges"]
+    if not edges:
+        return []
+    return [e["node"] for e in ((edges[0]["node"].get("projects") or {}).get("edges") or [])]
 
 
 def key_tier_name(key: dict):
@@ -289,17 +311,18 @@ def key_tier_name(key: dict):
     return (key.get("profiles") or {}).get("activeProfile") or None
 
 
-def apply_tier_to_user(ax: Axonhub, user: dict, tier_name: str, key_ids=None):
+def apply_tier_to_user(ax: Axonhub, user: dict, tier_name: str, key_ids=None, project_id: str = KEY_PROJECT_ID):
     """目标用户 enabled Key 换挂目标档 + 逐 key never-downgrade 守卫（issue #85，控制台/飞书
     两通道同享）：目标秩 > key 当前秩 → 换挂（升档）；== → 换挂（同档重挂，保留模板数值调整后
     刷新存量快照的运维路径）；< → 跳过并在结果文本如实列出（绝不降档）。未挂档 key 直挂。
     issue #86：key_ids=目标子集（控制台按 Key 勾选）；None=全部 enabled Key（飞书通道与
     #86 前存量申请的原语义）。子集内审批期间被归档/删除的 Key 跳过并在结果文本按 id 列明。
+    issue #89：project_id 限定作用项目（默认 Default；多项目隔离——不再跨项目拉齐）。
     返回结果文本；模板缺失/无 enabled Key 也走文本（调用方回执/落结果），gql 异常上抛。"""
     prof = load_tier_profile(ax, tier_name)
     if not prof:
         return f"找不到 {tier_name} Profile 模板"
-    own = query_user_enabled_keys(ax, user["id"])
+    own = query_user_enabled_keys(ax, user["id"], project_id)
     if not own:
         return f"{user.get('email')} 名下无 enabled Key"
     missing = []
@@ -436,23 +459,27 @@ def feishu_dm(open_id: str, text: str) -> bool:
     return False
 
 
-def key_by_name(ax: Axonhub, name: str):
-    """按名+本项目查 key（幂等恢复用）；不存在返回 None。"""
-    edges = ax.gql(KEY_BY_NAME_QUERY, {"name": name, "projectID": KEY_PROJECT_ID})["apiKeys"]["edges"]
+def key_by_name(ax: Axonhub, name: str, project_id: str = KEY_PROJECT_ID):
+    """按名+指定项目查 key（幂等恢复用）；不存在返回 None。
+    issue #89：project_id 参数化（默认 Default 常量，飞书通道/存量申请零变化）。"""
+    edges = ax.gql(KEY_BY_NAME_QUERY, {"name": name, "projectID": project_id})["apiKeys"]["edges"]
     return edges[0]["node"] if edges else None
 
 
-def ensure_emp_key(ax: Axonhub, user: dict, seed: str, purpose: str, day: str, tail: str, tier: str = None):
+def ensure_emp_key(ax: Axonhub, user: dict, seed: str, purpose: str, day: str, tail: str,
+                   tier: str = None, project_id: str = KEY_PROJECT_ID):
     """建 key 核心（issue #79 抽出，控制台/飞书审批两通道共用）：按名幂等找回或新建 →
     归 user → 挂档（默认体验档；issue #81 控制台审批可选档覆盖经 tier 传入，飞书通道不传=原样）。
+    issue #89：project_id 参数化——控制台新建申请落在申请记录的项目（同名查找/创建同项目，
+    跨项目同名不串）；默认 Default 常量，飞书通道与存量申请零变化。
     返回 (name, plain, owner_note)；模板缺失/gql 异常上抛（调用方下轮重试）。
     幂等：半途失败留下同名 key 时按名找回明文续走（不重复建 key）。"""
     tier_name = tier or KEY_INIT_TIER
     name = make_key_name(seed, purpose, day, tail)
-    node = key_by_name(ax, name)
+    node = key_by_name(ax, name, project_id)
     if not node:
         node = ax.gql(CREATE_API_KEY_MUTATION,
-                      {"input": {"name": name, "projectID": KEY_PROJECT_ID}})["createAPIKey"]
+                      {"input": {"name": name, "projectID": project_id}})["createAPIKey"]
     plain = node["key"]
     owner_note = ""
     try:

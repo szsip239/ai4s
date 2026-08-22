@@ -10,6 +10,8 @@ issue #72 增补：审批同步泛化（提额/新建并存）、新建执行体
 issue #73 增补：新用户自动入 Default 项目（pending_default_project_users 纯函数筛选、
 auto_assign_project 幂等/单用户失败不阻塞/入项群通知）。
 issue #87 增补：Default 解析 fail-closed（按名命中不依赖顺序、缺失时不加人不发通知只记日志）。
+issue #89 增补：项目参数化 helper（query_user_projects 形状、ensure_emp_key/apply_tier 的
+projectID 透传与 Default 兜底）；apply_tier 的 USER_ENABLED_KEYS_QUERY 断言随项目过滤更新。
 """
 import json
 import io
@@ -382,8 +384,8 @@ class TestApplyTierToUserGuard(unittest.TestCase):
         self.assertIn("已将 1 个 Key 换挂 标准档（k-trial）", text)
         self.assertIn("跳过 1 个", text)
         self.assertIn("k-prem（当前高档）", text)
-        # 按 userID 精确过滤（uid 变量下发），不再拉全量 enabled 列表
-        self.assertEqual(qvars, [{"uid": "gid://axonhub/User/9"}])
+        # #89 按 userID+projectID 过滤（uid 变量下发），不再拉全量 enabled 列表
+        self.assertEqual(qvars, [{"uid": "gid://axonhub/User/9", "projectID": ap.KEY_PROJECT_ID}])
 
     def test_same_tier_reapply_still_runs(self):
         # 同档重挂仍执行（保留运维刷新路径）
@@ -620,6 +622,78 @@ class TestCreateEmpKey(unittest.TestCase):
             return h(query, variables)
         with self.assertRaises(RuntimeError):
             self._run(handler)
+
+
+class TestProjectScopedHelpers(unittest.TestCase):
+    """issue #89 增补：项目参数化 helper——query_user_projects 形状（含用户不存在）、
+    ensure_emp_key 的 projectID 透传（同名查找/创建同项目）与 Default 兜底、
+    apply_tier_to_user 把 project_id 传进 enabled key 查询。"""
+
+    _P2 = "gid://axonhub/Project/2"
+
+    def test_query_user_projects_shape(self):
+        ax = mock.Mock()
+        ax.gql = mock.Mock(return_value={"users": {"edges": [{"node": {
+            "id": "gid://axonhub/User/2",
+            "projects": {"edges": [{"node": {"id": "gid://axonhub/Project/1", "name": "Default"}},
+                                   {"node": {"id": self._P2, "name": "P-Test2"}}]}}}]}})
+        projs = ap.query_user_projects(ax, "gid://axonhub/User/2")
+        self.assertEqual(projs, [{"id": "gid://axonhub/Project/1", "name": "Default"},
+                                 {"id": self._P2, "name": "P-Test2"}])
+        self.assertEqual(ax.gql.call_args[0][1], {"uid": "gid://axonhub/User/2"})
+
+    def test_query_user_projects_user_missing(self):
+        ax = mock.Mock()
+        ax.gql = mock.Mock(return_value={"users": {"edges": []}})
+        self.assertEqual(ap.query_user_projects(ax, "gid://axonhub/User/404"), [])
+
+    def _ensure_ax(self, seen):
+        """ensure_emp_key 线路边界假 gql：记录同名查找与创建的变量。"""
+        tpl = {"name": "体验档", "profile": {"modelMappings": [], "quota": {}}}
+
+        def fake_gql(query, variables=None):
+            if "apiKeys(" in query:
+                seen["lookup"] = variables
+                return {"apiKeys": {"edges": []}}
+            if "createAPIKey" in query:
+                seen["create"] = variables
+                return {"createAPIKey": {"id": "gid://axonhub/APIKey/9", "name": "n", "key": "ah-x"}}
+            if "apiKeyProfileTemplates" in query:
+                return {"apiKeyProfileTemplates": {"edges": [{"node": tpl}]}}
+            if "updateAPIKeyProfiles" in query:
+                return {"updateAPIKeyProfiles": {"id": "x"}}
+            raise AssertionError(f"unexpected gql: {query[:60]}")
+
+        ax = mock.Mock()
+        ax.gql = fake_gql
+        return ax
+
+    def test_ensure_emp_key_project_id_passthrough(self):
+        # 指定项目：同名查找与 createAPIKey 同落该项目（跨项目同名不串）
+        seen = {}
+        with mock.patch.object(ap, "assign_key_owner"):
+            ap.ensure_emp_key(self._ensure_ax(seen), {"id": "gid://axonhub/User/7"},
+                              "seed", "联调", "20260822", "tail-1", project_id=self._P2)
+        self.assertEqual(seen["lookup"]["projectID"], self._P2)
+        self.assertEqual(seen["create"]["input"]["projectID"], self._P2)
+
+    def test_ensure_emp_key_default_project_fallback(self):
+        # 不传 project_id = Default 常量（飞书通道/存量申请零变化）
+        seen = {}
+        with mock.patch.object(ap, "assign_key_owner"):
+            ap.ensure_emp_key(self._ensure_ax(seen), {"id": "gid://axonhub/User/7"},
+                              "seed", "", "20260822", "t")
+        self.assertEqual(seen["lookup"]["projectID"], ap.KEY_PROJECT_ID)
+        self.assertEqual(seen["create"]["input"]["projectID"], ap.KEY_PROJECT_ID)
+
+    def test_apply_tier_passes_project_id(self):
+        # 执行侧换挂的 enabled key 评估集限定（user, project_id）
+        with mock.patch.object(ap, "load_tier_profile", return_value={"modelMappings": [], "quota": {}}), \
+             mock.patch.object(ap, "query_user_enabled_keys", return_value=[]) as q:
+            text = ap.apply_tier_to_user(mock.Mock(), {"id": "gid://axonhub/User/7", "email": "e@x"},
+                                         "标准档", project_id=self._P2)
+        self.assertEqual(q.call_args[0][2], self._P2)
+        self.assertIn("无 enabled Key", text)
 
 
 class TestApprovalSyncKeyKind(unittest.TestCase):

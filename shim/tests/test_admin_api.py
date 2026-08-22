@@ -79,14 +79,17 @@ _SHIM = _start_server(shim_app.Handler)
 _SHIM_BASE = f"http://127.0.0.1:{_SHIM.server_address[1]}"
 
 
-def _request(method, path, token=None, payload=None, scheme="Bearer"):
-    """对测试 shim 发请求；返回 (status, json body)。非 2xx 不抛异常。scheme 可换大小写变体。"""
+def _request(method, path, token=None, payload=None, scheme="Bearer", headers=None):
+    """对测试 shim 发请求；返回 (status, json body)。非 2xx 不抛异常。scheme 可换大小写变体。
+    headers=额外请求头 dict（issue #89 X-Project-ID 用例）。"""
     data = json.dumps(payload, ensure_ascii=False).encode() if payload is not None else None
     req = urllib.request.Request(_SHIM_BASE + path, data=data, method=method)
     if data is not None:
         req.add_header("Content-Type", "application/json")
     if token:
         req.add_header("Authorization", f"{scheme} {token}")
+    for k, v in (headers or {}).items():
+        req.add_header(k, v)
     try:
         with urllib.request.urlopen(req, timeout=5) as r:
             return r.status, json.load(r)
@@ -2079,6 +2082,45 @@ class KeyRequestResolveWiringTest(unittest.TestCase):
                                  token="reader-token", payload={"tier": "标准档"})
         self.assertEqual(status, 403)
         rr.assert_not_called()
+
+
+class KeyRequestListProjectHeaderTest(unittest.TestCase):
+    """issue #89：GET /dlp-admin/key-requests 按管理员当前项目（X-Project-ID 头，gid 形）过滤；
+    头缺失/非法 400，list_requests 不被调用。"""
+
+    _P2 = "gid://axonhub/Project/2"
+
+    def setUp(self):
+        _FAKE_STATE["mode"] = "ok"
+        _FAKE_STATE["tokens"] = {
+            "reader-token": {"id": "42", "isOwner": False, "scopes": ["read_channels"]},
+        }
+
+    def test_list_filters_by_project_header(self):
+        with mock.patch("key_requests.list_requests", return_value=[]) as lr:
+            status, body = _request("GET", "/dlp-admin/key-requests", token="reader-token",
+                                    headers={"X-Project-ID": self._P2})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["requests"], [])
+        lr.assert_called_once_with(project_id=self._P2)
+
+    def test_list_missing_or_bad_project_header_400(self):
+        for headers in (None, {"X-Project-ID": "2"}, {"X-Project-ID": "gid://axonhub/User/2"}):
+            with mock.patch("key_requests.list_requests") as lr:
+                status, body = _request("GET", "/dlp-admin/key-requests",
+                                        token="reader-token", headers=headers)
+            self.assertEqual(status, 400, headers)
+            self.assertIn("项目上下文", body["error"])
+            lr.assert_not_called()
+
+    def test_approve_reject_do_not_require_project_header(self):
+        # 点批不读项目头（执行落申请单记录的项目，与管理员当前项目解耦）
+        _FAKE_STATE["tokens"]["writer-token"] = {"id": "7", "isOwner": False,
+                                                 "scopes": ["read_channels", "write_channels"]}
+        with mock.patch("key_requests.resolve_request",
+                        return_value=({"id": "kr-9", "status": "approved"}, None)):
+            status, _ = _request("POST", "/dlp-admin/key-requests/approve/kr-9", token="writer-token")
+        self.assertEqual(status, 200)
 
 
 if __name__ == "__main__":

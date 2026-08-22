@@ -8,6 +8,10 @@ doc_extract 提取文本后与粘贴路径（POST /dlp-admin/edm/corpus）汇入
 issue #49：doc_extract 懒加载到 upload 调用点（解析库 import 失败不波及 /request /response 检测路径）；
 提取文本 8M 字符上限（doc_extract.MAX_EXTRACTED_CHARS，防 zip/流扩张 OOM）。
 issue #50：扫描 PDF/图片经 Tesseract OCR（shim 容器内置，本地识别不出域）。
+issue #89：多项目隔离——read_project_header 统一解析/校验 X-Project-ID 头（gid 形，self
+平面同用）；GET /dlp-admin/key-requests 按管理员当前项目过滤申请列表（存量无项目字段
+申请视为 Default；approve/reject 不读项目头——执行按申请单记录的项目，与管理员当前
+所在项目解耦，切错项目不批错单）。
 
 与检测路径（/request /response 调用链）完全隔离：admin 平面 fail-closed——
 内省不可达回 503，不适用检测链的 fail-open 分级（契约 docs/contracts/dlp-webhook-shim.md）。
@@ -828,11 +832,26 @@ def _ping(handler, me):
 # key_requests 函数级懒加载：其顶层 import alert_poller→admin_api，admin_api 顶层互导会成环
 
 
+def read_project_header(handler):
+    """X-Project-ID 头（issue #89 员工自助面/审批多项目隔离）：合法形 gid://axonhub/Project/<id>
+    （控制台 projectStore 存的就是 gid）。返回 gid 或 None（缺失/格式非法——调用方 400 兜底）。
+    self 平面同用（self_api import 本模块，无环）。"""
+    raw = (handler.headers.get("X-Project-ID") or "").strip()
+    if not raw.startswith("gid://axonhub/Project/") or len(raw) <= len("gid://axonhub/Project/"):
+        return None
+    return raw
+
+
 def _kr_list(handler, _me):
-    """GET 全部申请（新到旧）。"""
+    """GET 申请列表（新到旧）。issue #89：按管理员当前项目（X-Project-ID）过滤，
+    无项目字段的存量申请视为 Default；头缺失/非法 400。"""
     import key_requests
+    pid = read_project_header(handler)
+    if not pid:
+        _respond(handler, 400, {"error": "缺少项目上下文（X-Project-ID 头），请先在控制台选择项目"})
+        return
     try:
-        reqs = key_requests.list_requests()
+        reqs = key_requests.list_requests(project_id=pid)
     except Exception as e:
         print(f"[admin] key 申请列表失败: {type(e).__name__}: {e}", flush=True)
         _respond(handler, 503, {"error": "request store unavailable"})

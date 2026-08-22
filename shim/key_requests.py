@@ -15,6 +15,11 @@ issue #86 按 Key 勾选：upgrade payload 带 keyIds（非空、全部属于本
 审批页/申请列表显示目标 Key 名称，审批期间改名不影响）；执行按子集换挂（审批期间被归档/
 删除的 Key 跳过并在结果文本列明）；存量无 keyIds 字段的申请回退「全部 enabled Key」语义。
 新建申请不变。
+issue #89 多项目隔离：申请单存 projectId/projectName 快照（self 平面 X-Project-ID 头传入）；
+创建时校验申请人是该项目成员（非成员 403、查询异常 502，fail-closed），方向守卫按
+（本人, 本项目）评估；批准执行落在申请单记录的项目（与管理员当前项目解耦），新建执行时
+复查成员资格（被移出项目不建 Key，结果文本说明）；列表（self/admin 平面）按项目过滤，
+无项目字段的存量申请视为 Default；飞书审批老通道无项目上下文，维持落 Default 不变。
 申请人撤回（issue #80）：POST /self/key-requests/<id>/cancel，仅本人 + 仅 pending，
 置 canceled + 管理员回执（卡片更新/无卡降级群文本），幂等不重复通知。
 
@@ -125,12 +130,19 @@ def shape_public(req: dict) -> dict:
     return {k: v for k, v in req.items() if k not in ("cardMessageId", "ts")}
 
 
-def list_requests(email: str = "") -> list:
-    """申请列表（新到旧）。email 非空=员工侧本人过滤。"""
+def _req_project_id(req: dict) -> str:
+    """申请单所属项目（issue #89）：无项目字段的存量申请视为 Default（过滤与执行同此口径）。"""
+    return req.get("projectId") or alert_poller.KEY_PROJECT_ID
+
+
+def list_requests(email: str = "", project_id: str = None) -> list:
+    """申请列表（新到旧）。email 非空=员工侧本人过滤；project_id 非空=按项目过滤（issue #89）。"""
     with _lock:
         reqs = _load()
     if email:
         reqs = [r for r in reqs if (r.get("applicant") or {}).get("email") == email]
+    if project_id:
+        reqs = [r for r in reqs if _req_project_id(r) == project_id]
     return [shape_public(r) for r in reversed(reqs)]
 
 
@@ -189,8 +201,11 @@ _STATUS_COLOR = {"pending": "orange", "approved": "green", "rejected": "red", "e
 
 
 def _detail_line(req: dict) -> str:
+    # issue #89：审批卡/回执显示项目名（管理员不再只能去控制台辨认目标项目）；
+    # 存量申请无快照 → Default（与过滤/执行同口径）
+    project = f"**项目**: {req.get('projectName') or 'Default'}"
     if req["kind"] == "new":
-        return f"**用途**: {req.get('purpose') or '—'}"
+        return f"{project}\n**用途**: {req.get('purpose') or '—'}"
     # issue #86：提额按所选 Key 列名（名称快照）；fail-open 无快照但有 keyIds 时回退列 id；
     # 两者皆无（真存量申请）回退原全量语义文案
     names = req.get("keyNames") or []
@@ -201,7 +216,7 @@ def _detail_line(req: dict) -> str:
         scope = f"，目标 Key: {', '.join(ids)}（名称快照缺失）"
     else:
         scope = "（作用于其全部 enabled Key）"
-    return f"**目标档**: {req.get('tier') or '—'}{scope}"
+    return f"{project}\n**目标档**: {req.get('tier') or '—'}{scope}"
 
 
 def _request_card(req: dict) -> dict:
@@ -326,11 +341,12 @@ def validate_payload(payload) -> tuple:
     return kind, purpose, tier, list(dict.fromkeys(x.strip() for x in raw_ids)), None  # 去重保序
 
 
-def _upgrade_direction_guard(me: dict, tier: str, key_ids: list):
+def _upgrade_direction_guard(me: dict, tier: str, key_ids: list, project_id: str):
     """issue #85 提额方向守卫（申请侧 fail-closed；执行侧 apply_tier_to_user 逐 key 守卫兜底）。
     issue #86：按所选 Key 子集评估——一次 USER_ENABLED_KEYS_QUERY 同时完成归属/启用校验
     （keyIds 必须全部命中本人 enabled 集合，否则 400，不区分他人/不存在/未启用以免泄露）
     与方向评估（所选全部已 ≥ 目标档才拒收，部分低于目标放行）。
+    issue #89：评估集限定（本人, project_id）——归属校验不再跨项目放行别项目的同名/同主 key。
     返回 ((status, 文案) 或 None, 所选 key 列表或 None)——key 列表供 create_request 存名称快照；
     fail-open（查询异常）时 (None, None)：放行 + 记日志，名称快照缺失时显示侧回退 id。"""
     if not key_ids:  # validate_payload 已拦；直调防御（fail-closed 同形文案）
@@ -340,12 +356,12 @@ def _upgrade_direction_guard(me: dict, tier: str, key_ids: list):
         print("[keyreq] 提额守卫：caller 无 id，无从查档，放行（执行侧兜底）", flush=True)
         return None, None
     try:
-        keys = alert_poller.query_user_enabled_keys(_get_ax(), uid)
+        keys = alert_poller.query_user_enabled_keys(_get_ax(), uid, project_id)
     except Exception as e:
         print(f"[keyreq] 提额当前档查询异常，fail-open 放行: {type(e).__name__}: {e}", flush=True)
         return None, None
     if not keys:
-        return (400, "名下无启用中的 Key，请先申请新建 Key"), None
+        return (400, "本项目下无启用中的 Key，请先申请新建 Key"), None
     enabled_ids = {k["id"] for k in keys}
     if any(kid not in enabled_ids for kid in key_ids):
         return (400, "所选 Key 不存在或未启用，请刷新后重选"), None
@@ -359,18 +375,34 @@ def _upgrade_direction_guard(me: dict, tier: str, key_ids: list):
     return None, selected
 
 
-def create_request(me: dict, kind: str, purpose: str, tier: str, key_ids=None):
+def create_request(me: dict, kind: str, purpose: str, tier: str, key_ids=None, project_id: str = None):
     """落一条待办申请 + 通知管理员。返回 (req_public, err)；err 形如 (status, 文案)。
     反 spam：同申请人同 kind 已有 pending → 409。
     issue #85：kind=upgrade 先过方向守卫（锁外慢查询，不落锁）。
     issue #86：upgrade 带 keyIds 目标子集；req 存 keyIds + keyNames 快照（显示用，
-    审批期间改名不影响；fail-open 无快照时显示侧回退 id）。"""
+    审批期间改名不影响；fail-open 无快照时显示侧回退 id）。
+    issue #89：project_id=目标项目（self 平面 X-Project-ID 头传入；None=Default 兜底
+    直调/存量语义）。req 存 projectId + projectName 快照；申请人必须是该项目成员
+    （一次 USER_PROJECTS_QUERY 完成校验+名称快照），非成员 403、查询异常 502——
+    成员关系是安全闸门 fail-closed（区别于方向守卫的 fail-open），两 kind 同查。"""
     email = me.get("email") or ""
     if not email:
         return None, (502, "caller 身份无 email，无法登记申请")
+    pid = project_id or alert_poller.KEY_PROJECT_ID
+    uid = me.get("id")
+    if not uid:
+        return None, (502, "caller 身份无 id，无法校验项目成员")
+    try:
+        projs = alert_poller.query_user_projects(_get_ax(), uid)
+    except Exception as e:
+        print(f"[keyreq] 项目成员校验查询异常: {type(e).__name__}: {e}", flush=True)
+        return None, (502, "项目成员校验暂不可用，请稍后重试")
+    proj = next((p for p in projs if p.get("id") == pid), None)
+    if not proj:
+        return None, (403, "你不是该项目成员，请切换到所属项目后再发起申请")
     key_names = None
     if kind == "upgrade":
-        err, selected = _upgrade_direction_guard(me, tier, key_ids)
+        err, selected = _upgrade_direction_guard(me, tier, key_ids, pid)
         if err:
             return None, err
         if selected:
@@ -398,6 +430,8 @@ def create_request(me: dict, kind: str, purpose: str, tier: str, key_ids=None):
             "keyName": None,
             "keyIds": key_ids,      # issue #86：提额目标 Key 子集（new/存量申请为 None=全部 enabled）
             "keyNames": key_names,  # 名称快照（显示用；fail-open 无快照为 None）
+            "projectId": pid,                # issue #89：目标项目（执行/过滤同以此为据）
+            "projectName": proj.get("name"), # 项目名快照（显示用，审批期间改名不影响）
             "cardMessageId": None,
         }
         reqs.append(req)
@@ -443,23 +477,33 @@ def _deliver_new_key(req: dict, name: str, plain: str, owner_note: str, tier_nam
 def _execute(req: dict, tier_override: str = ""):
     """approve 执行体（复用 #72/#19 primitives）。返回 (result 摘要, key_name 或 None, applicant_dm_text)。
     tier_override=管理员批准时改定的档位（issue #81）：新建覆盖默认体验档、提额覆盖所求档；空串=原默认。
+    issue #89：执行落在申请单记录的项目（与管理员当前所在项目解耦，切错项目不批错单）；
+    无项目字段的存量申请视为 Default。kind=new 执行时复查成员资格——审批期间被移出项目
+    则不建 Key，结果文本说明（参照上方「无用户」先例，申请照常转 approved 落结果）。
     异常上抛——调用方保持 pending 供重试。"""
     email = (req.get("applicant") or {}).get("email") or ""
     user = alert_poller.find_user_by_email(_get_ax(), email)
     if not user:
         return f"axonhub 中无 {email} 用户（已删除？），未执行", None, None
+    pid = _req_project_id(req)
     if req["kind"] == "new":
+        projs = alert_poller.query_user_projects(_get_ax(), user["id"])  # 异常上抛=保持 pending 重试
+        if pid not in {p.get("id") for p in projs}:
+            return (f"申请人已不在项目 {req.get('projectName') or pid} 中（审批期间被移除），未建 Key",
+                    None, None)
         # seed：飞书身份用 open_id（与 #72 命名一致），非飞书用 u<uid>（同名幂等不受影响——tail 是申请 id）
         seed = (req.get("applicant") or {}).get("openId") or f"u{str(user['id']).rsplit('/', 1)[-1]}"
         day = time.strftime("%Y%m%d", time.gmtime(req.get("ts") or time.time()))
         tier_name = tier_override or alert_poller.KEY_INIT_TIER
         name, plain, owner_note = alert_poller.ensure_emp_key(
-            _get_ax(), user, seed, req.get("purpose") or "", day, req["id"], tier=tier_name)
+            _get_ax(), user, seed, req.get("purpose") or "", day, req["id"],
+            tier=tier_name, project_id=pid)
         result, dm_text = _deliver_new_key(req, name, plain, owner_note, tier_name)
         return result, name, dm_text
     result = alert_poller.apply_tier_to_user(
         _get_ax(), user, tier_override or (req.get("tier") or ""),
-        key_ids=req.get("keyIds"))  # issue #86：None（存量申请无字段）回退「全部 enabled Key」语义
+        key_ids=req.get("keyIds"),  # issue #86：None（存量申请无字段）回退「全部 enabled Key」语义
+        project_id=pid)             # issue #89：只动申请单项目内所选 Key（不再跨项目拉齐）
     dm = f"[ai4s] 你的提额申请已通过（{req['id']}）\n{result}"
     return result, None, dm
 

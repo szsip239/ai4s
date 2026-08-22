@@ -8,6 +8,8 @@
  * 鉴权/错误：401=未登录或 token 失效；503=内省或查询暂不可用（不降级）。
  * issue #79：申请提交后 30s 轮询本人申请列表（状态翻转经审批卡/私信异步发生，与巡检节奏一致）。
  * issue #86：提额申请按 Key 勾选——提交带 keyIds，响应带 keyIds/keyNames 快照。
+ * issue #89：多项目隔离——查询/提交带 X-Project-ID 头（控制台 projectStore 的 gid），
+ * queryKey 以项目为维度；projectId 为空（未选项目）时 enabled=false 不发请求（页面空态引导）。
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiRequest } from '@/lib/api-client';
@@ -45,11 +47,16 @@ interface MyKeysResponse {
   keys: MyKey[];
 }
 
-export function useMyKeys() {
+export function useMyKeys(projectId: string | null) {
   return useQuery({
-    queryKey: ['self', 'keys'],
-    queryFn: () => apiRequest<MyKeysResponse>('/self/keys', { requireAuth: true }),
+    queryKey: ['self', 'keys', projectId],
+    queryFn: () =>
+      apiRequest<MyKeysResponse>('/self/keys', {
+        requireAuth: true,
+        headers: { 'X-Project-ID': projectId as string },
+      }),
     retry: false,
+    enabled: !!projectId,
   });
 }
 
@@ -70,6 +77,9 @@ export interface KeyRequest {
   /** issue #86：提额申请所选 Key（id 列表 + 名称快照）；存量申请无此字段 */
   keyIds?: string[] | null;
   keyNames?: string[] | null;
+  /** issue #89：申请目标项目（gid + 名称快照）；存量申请无此字段（shim/页面均按 Default 口径） */
+  projectId?: string | null;
+  projectName?: string | null;
 }
 
 /**
@@ -86,22 +96,28 @@ interface KeyRequestsResponse {
   requests: KeyRequest[];
 }
 
-export function useMyKeyRequests() {
+export function useMyKeyRequests(projectId: string | null) {
   return useQuery({
-    queryKey: ['self', 'key-requests'],
-    queryFn: () => apiRequest<KeyRequestsResponse>('/self/key-requests', { requireAuth: true }),
+    queryKey: ['self', 'key-requests', projectId],
+    queryFn: () =>
+      apiRequest<KeyRequestsResponse>('/self/key-requests', {
+        requireAuth: true,
+        headers: { 'X-Project-ID': projectId as string },
+      }),
     retry: false,
+    enabled: !!projectId,
     refetchInterval: 30_000, // 审批结果异步到达（管理员点批/超时清扫），与巡检节奏一致
   });
 }
 
-export function useCreateKeyRequest() {
+export function useCreateKeyRequest(projectId: string | null) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: { kind: 'new' | 'upgrade'; purpose?: string; tier?: string; keyIds?: string[] }) =>
       apiRequest<{ request: KeyRequest }>('/self/key-requests', {
         method: 'POST',
         requireAuth: true,
+        headers: { 'X-Project-ID': projectId as string },
         body: input, // api-client 统一 JSON.stringify，此处传对象即可
       }),
     onSuccess: () => {

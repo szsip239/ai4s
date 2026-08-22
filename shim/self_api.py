@@ -15,6 +15,9 @@ UserPersonalAPIKeyReadRule 对 type≠personal 的 key 不做属主隔离，read
 用量展示（issue #83）：员工直查 apiKeyQuotaUsages 被上游 FORBIDDEN，本模块在 key 集已锁死
 本人的前提下用 admin token 逐 key 代查内嵌（usage 字段）；与管理员侧 profiles 对话框同一
 上游聚合，展示进度与 403 拦截同源。单 key 用量失败置 None，不拖垮列表。
+多项目隔离（issue #89）：/self/keys 与 /self/key-requests（GET/POST）要求 X-Project-ID 头
+（admin_api.read_project_header 校验，缺失/非法 400）；key 列表按 userID+projectID 过滤，
+申请列表按项目过滤（存量无项目字段视为 Default）；POST 非项目成员 403（key_requests 校验）。
 本模块不进检测路径；单请求失败只影响本请求。
 """
 import admin_api  # _introspect/_respond 复用（issue #74 实现约定）
@@ -22,10 +25,12 @@ import alert_poller  # Axonhub gql 客户端复用（login + 401 重登重试）
 import key_requests  # 控制台申请通道（issue #79）：store/校验/通知；顶层 import 无环（其依赖 admin_api←alert_poller）
 
 # 本人 key 查询：服务端 userID 等值过滤（APIKeyWhereInput.userID 2026-08-21 内省实证支持）。
+# issue #89：叠加 projectID 等值过滤（同日内省实证）——「我的 Key」按控制台当前项目隔离；
+# 项目上下文来自 X-Project-ID 头（admin_api.read_project_header 校验），缺失/非法 400。
 # 约束：first:100 硬上限——个人名下 key 数量级为个位数，超限需改 after 分页。
 # key 明文：issue #81 起对本人下发（唯一闸门=上面的 userID=me.id 过滤）。
 _SELF_KEYS_QUERY = (
-    "query($uid: ID!) { apiKeys(first: 100, where: {userID: $uid}) { edges { node { "
+    "query($uid: ID!, $projectID: ID!) { apiKeys(first: 100, where: {userID: $uid, projectID: $projectID}) { edges { node { "
     "id name key status createdAt profiles { activeProfile profiles { name quota { requests totalTokens cost } } }"
     " } } } }"
 )
@@ -66,11 +71,12 @@ def query_key_usages(key_gid: str) -> list:
     return [{k: u.get(k) for k in _USAGE_FIELDS} for u in (data.get("apiKeyQuotaUsages") or [])]
 
 
-def query_own_keys(user_gid: str) -> list:
+def query_own_keys(user_gid: str, project_id: str = alert_poller.KEY_PROJECT_ID) -> list:
     """admin token 查本人名下 key（含 enabled/disabled/archived 全状态，状态由页面展示）。
+    issue #89：project_id 限定项目（多项目隔离；默认 Default 常量兜底直调）。
     issue #83：每把 key 内嵌各档用量；单 key 用量失败只置 None 不拖垮列表
     （key 列表是主功能，用量是增强展示；身份闸门不受此影响——用量挂在已锁死本人的 key 上）。"""
-    data = _get_ax().gql(_SELF_KEYS_QUERY, {"uid": user_gid})
+    data = _get_ax().gql(_SELF_KEYS_QUERY, {"uid": user_gid, "projectID": project_id})
     keys = []
     for e in data["apiKeys"]["edges"]:
         node = e["node"]
@@ -84,9 +90,20 @@ def query_own_keys(user_gid: str) -> list:
     return keys
 
 
+def _project_or_400(handler) -> str:
+    """issue #89：读 X-Project-ID 项目上下文；缺失/非法即回 400 并返回 None。"""
+    pid = admin_api.read_project_header(handler)
+    if not pid:
+        admin_api._respond(handler, 400, {"error": "缺少项目上下文（X-Project-ID 头），请先在控制台选择项目"})
+    return pid
+
+
 def _self_keys(handler, me: dict):
+    pid = _project_or_400(handler)
+    if not pid:
+        return
     try:
-        keys = query_own_keys(me["id"])
+        keys = query_own_keys(me["id"], pid)
     except Exception as e:
         print(f"[self] 本人 key 查询失败: {type(e).__name__}: {e}", flush=True)
         admin_api._respond(handler, 503, {"error": "key query unavailable"})
@@ -97,13 +114,17 @@ def _self_keys(handler, me: dict):
 def _self_key_requests_get(handler, me: dict):
     """本人申请列表（issue #79）：email 服务端过滤，只见本人申请。
     fail-closed（评审 P1）：caller 无 email 时 list_requests("") 不过滤=返回全部申请，
-    属主隔离即失效——与 create_request 同语义，直接 502。"""
+    属主隔离即失效——与 create_request 同语义，直接 502。
+    issue #89：再按 X-Project-ID 项目过滤（存量无项目字段申请视为 Default）。"""
     email = me.get("email") or ""
     if not email:
         admin_api._respond(handler, 502, {"error": "caller 身份无 email，无法过滤本人申请"})
         return
+    pid = _project_or_400(handler)
+    if not pid:
+        return
     try:
-        reqs = key_requests.list_requests(email=email)
+        reqs = key_requests.list_requests(email=email, project_id=pid)
     except Exception as e:
         print(f"[self] 本人申请查询失败: {type(e).__name__}: {e}", flush=True)
         admin_api._respond(handler, 503, {"error": "request query unavailable"})
@@ -112,7 +133,8 @@ def _self_key_requests_get(handler, me: dict):
 
 
 def _self_key_requests_post(handler, me: dict):
-    """发起申请（issue #79）：落待办 + 推管理员审批卡。校验失败 400；冲突 409；存储失败 503。"""
+    """发起申请（issue #79）：落待办 + 推管理员审批卡。校验失败 400；冲突 409；存储失败 503。
+    issue #89：项目上下文来自 X-Project-ID（缺失 400）；非该项目成员 403（key_requests 校验）。"""
     payload = admin_api._read_body(handler)
     if payload is None:
         return  # 413/400 已在 _read_body 内回出
@@ -120,8 +142,11 @@ def _self_key_requests_post(handler, me: dict):
     if err:
         admin_api._respond(handler, 400, {"error": err})
         return
+    pid = _project_or_400(handler)
+    if not pid:
+        return
     try:
-        req, kerr = key_requests.create_request(me, kind, purpose, tier, key_ids=key_ids)
+        req, kerr = key_requests.create_request(me, kind, purpose, tier, key_ids=key_ids, project_id=pid)
     except Exception as e:
         print(f"[self] 申请创建失败: {type(e).__name__}: {e}", flush=True)
         admin_api._respond(handler, 503, {"error": "request store unavailable"})
