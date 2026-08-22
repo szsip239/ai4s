@@ -96,6 +96,25 @@ def _self_key_requests_post(handler, me: dict):
     admin_api._respond(handler, 201, {"request": req})
 
 
+def _self_key_request_cancel(handler, me: dict, rid: str):
+    """撤回本人申请（issue #80）：仅 pending 可撤，幂等。
+    fail-closed email 判定对齐 GET（评审 P1）：无 email 无法判定归属，直接 502。"""
+    email = me.get("email") or ""
+    if not email:
+        admin_api._respond(handler, 502, {"error": "caller 身份无 email，无法判定申请归属"})
+        return
+    try:
+        req, kerr = key_requests.cancel_request(rid, email)
+    except Exception as e:
+        print(f"[self] 申请撤回失败 {rid}: {type(e).__name__}: {e}", flush=True)
+        admin_api._respond(handler, 503, {"error": "request store unavailable"})
+        return
+    if kerr:
+        admin_api._respond(handler, kerr[0], {"error": kerr[1]})
+        return
+    admin_api._respond(handler, 200, {"request": req})
+
+
 def handle(handler, method: str) -> bool:
     """/self/* 分发（与 admin_api.handle 同约定）：命中即处理返回 True，否则 False 交还。
     鉴权=有效登录用户（内省通过即可，无 scope 门槛）。
@@ -119,6 +138,10 @@ def handle(handler, method: str) -> bool:
         _self_key_requests_get(handler, me)
     elif method == "POST" and path == "/self/key-requests":
         _self_key_requests_post(handler, me)
+    elif method == "POST" and path.startswith("/self/key-requests/") and path.endswith("/cancel"):
+        # 撤回（issue #80）：/self/key-requests/<id>/cancel；畸形 id 由 cancel_request 自然 404
+        rid = path[len("/self/key-requests/"):-len("/cancel")].strip("/")
+        _self_key_request_cancel(handler, me, rid)
     else:
         admin_api._respond(handler, 404, {"error": "unknown self endpoint"})
     return True

@@ -22,9 +22,10 @@ import { useRoutePermissions } from '@/hooks/useRoutePermissions';
  * 全部条目内联展示：图标 + 中文标签；激活项 = accent-soft 底 + accent 字（与 C×W token 联动）。
  * 新增代码按 vendor 隔离规则只落 src/ai4s/。
  * issue #54 归并：渠道管理+模型 →「接入管理」（页内 Tab 切换），用户+角色 →「用户与角色」；
- * 观测域的用量统计/追踪/线程、成员域的用户/角色同样经各页 Ai4sPageTabs 可达。
+ * 日志域的用量统计/追踪/线程、成员域的用户/角色同样经各页 Ai4sPageTabs 可达。
  * issue #55 收尾：「审计日志」统一为「观测」（与 ⌘K 域名一致）；补「成员」入口
  * （/project/users、/project/roles 直达时顶栏有激活项）。
+ * issue #80：「观测」改名「日志」（zh）/ Logs（en），键名 sidebar.items.observability 与路由不变。
  * issue #65：成员（项目域）+ 用户与角色（全局域）合并为单一「人员」入口，
  * 四个人员域页面经统一 people Tab 组互跳；顶栏 10 项 → 9 项。
  * issue #65 评审 P2：人员入口按权限回落——有系统级 read_users 落全局 /users，

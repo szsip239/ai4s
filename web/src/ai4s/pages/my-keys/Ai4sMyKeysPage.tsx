@@ -5,6 +5,8 @@
  * issue #79：两个按钮从指引对话框升级为真实发起——填用途/目标档提交 → shim 落待办申请并
  * 推管理员飞书审批卡，管理员在控制台审批页点批后自动执行；「我的申请」区展示本人
  * 申请的 pending/approved/rejected/expired 状态与结果（30s 轮询，与巡检节奏一致）。
+ * issue #80：pending 行加「撤回」（确认后 POST cancel）——仅本人 pending 可撤，
+ * 撤回置 canceled 并回执管理员（审批卡更新/群文本），状态新增 canceled 态。
  * 原飞书审批定义通道并存（飞书里直接提单仍可用，两通道共用执行体）。
  * 交付分流：飞书身份（email 为 ou_*@casdoor.oidc）→ 批准后明文私信本人；
  * 非飞书（本地/钉钉/企微账号）→ 明文只给管理员，本页显示「已通过，请联系管理员领取」。
@@ -18,6 +20,10 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import {
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Textarea } from '@/components/ui/textarea';
@@ -25,7 +31,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
 import { useMe } from '@/features/auth/data/auth';
-import { useCreateKeyRequest, useMyKeyRequests, useMyKeys, type KeyRequest, type MyKey } from './api';
+import { useCancelKeyRequest, useCreateKeyRequest, useMyKeyRequests, useMyKeys, type KeyRequest, type MyKey } from './api';
 
 type ApplyKind = 'new' | 'upgrade' | null;
 
@@ -59,7 +65,7 @@ function KeyRow({ k }: { k: MyKey }) {
   );
 }
 
-function RequestRow({ r }: { r: KeyRequest }) {
+function RequestRow({ r, onCancel }: { r: KeyRequest; onCancel: (r: KeyRequest) => void }) {
   const { t } = useTranslation();
   return (
     <TableRow>
@@ -74,6 +80,13 @@ function RequestRow({ r }: { r: KeyRequest }) {
       <TableCell className='max-w-64 truncate text-muted-foreground' title={r.result || ''}>
         {r.result || '—'}
       </TableCell>
+      <TableCell>
+        {r.status === 'pending' && (
+          <Button size='sm' variant='outline' onClick={() => onCancel(r)}>
+            {t('ai4s.myKeys.requests.cancel')}
+          </Button>
+        )}
+      </TableCell>
     </TableRow>
   );
 }
@@ -84,7 +97,9 @@ export default function Ai4sMyKeysPage() {
   const myKeys = useMyKeys();
   const myRequests = useMyKeyRequests();
   const createRequest = useCreateKeyRequest();
+  const cancelRequest = useCancelKeyRequest();
   const [applyKind, setApplyKind] = useState<ApplyKind>(null);
+  const [cancelTarget, setCancelTarget] = useState<KeyRequest | null>(null);
   const [purpose, setPurpose] = useState('');
   const [tier, setTier] = useState('');
 
@@ -111,6 +126,17 @@ export default function Ai4sMyKeysPage() {
         onError: (e) => toast.error(e.message),
       }
     );
+  };
+
+  const doCancel = () => {
+    if (!cancelTarget) return;
+    cancelRequest.mutate(cancelTarget.id, {
+      onSuccess: () => {
+        toast.success(t('ai4s.myKeys.requests.cancelOk'));
+        setCancelTarget(null);
+      },
+      onError: (e) => toast.error(e.message),
+    });
   };
 
   return (
@@ -191,11 +217,12 @@ export default function Ai4sMyKeysPage() {
                     <TableHead>{t('ai4s.myKeys.requests.columns.status')}</TableHead>
                     <TableHead>{t('ai4s.myKeys.requests.columns.createdAt')}</TableHead>
                     <TableHead>{t('ai4s.myKeys.requests.columns.result')}</TableHead>
+                    <TableHead>{t('ai4s.myKeys.requests.columns.actions')}</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {requests.map((r) => (
-                    <RequestRow key={r.id} r={r} />
+                    <RequestRow key={r.id} r={r} onCancel={setCancelTarget} />
                   ))}
                 </TableBody>
               </Table>
@@ -254,6 +281,29 @@ export default function Ai4sMyKeysPage() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        <AlertDialog open={cancelTarget !== null} onOpenChange={(open) => !open && setCancelTarget(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>{t('ai4s.myKeys.requests.cancelConfirmTitle')}</AlertDialogTitle>
+              <AlertDialogDescription>
+                {t('ai4s.myKeys.requests.cancelConfirmDesc')}
+                {cancelTarget && (
+                  <span className='mt-2 block'>
+                    {t(`ai4s.myKeys.requests.kind.${cancelTarget.kind}`)} ·{' '}
+                    {cancelTarget.kind === 'new' ? cancelTarget.purpose : cancelTarget.tier}
+                  </span>
+                )}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>{t('common.cancel', '取消')}</AlertDialogCancel>
+              <AlertDialogAction disabled={cancelRequest.isPending} onClick={doCancel}>
+                {t('ai4s.myKeys.requests.cancel')}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </Main>
     </>
   );

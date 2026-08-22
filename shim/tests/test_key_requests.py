@@ -6,6 +6,7 @@ seam 纪律与 test_self_api/test_alert_poller 同款：执行体与飞书发送
 key_requests._get_ax/_feishu_card_send/_feishu_card_update），状态文件用临时目录覆写
 模块级 REQUESTS_PATH（admin_api 测试钦定方式），不 mock 模块内部塑形/校验函数。
 """
+import io
 import json
 import os
 import sys
@@ -124,6 +125,34 @@ class TestCreate(_Base):
         # 卡片绝不含明文语义：此时还没有 key；按钮是 link（控制台审批页），无回调 value
         card = self.cards[0][1]
         self.assertIn(req["id"], json.dumps(card, ensure_ascii=False))
+
+    def test_card_mid_writeback_race_updates_terminal_card(self):
+        # 评审 P2 窄竞态：审批卡发送期间申请已被撤回（当时回执因无 cardMessageId 走降级群文本），
+        # 回写 mid 时发现已非 pending 必须补一次终态卡片更新——否则管理员手里留永不更新的待审批卡
+        kr.FEISHU_ADMIN_OPEN_ID = "ou_admin"
+
+        def _send_during_cancel(oid, card):
+            # 发卡慢：发送期间申请人撤回完成（等价 cancel 锁内段的终态翻转）
+            with kr._lock:
+                reqs = kr._load()
+                r = next(x for x in reqs if x["status"] == "pending")
+                r["status"] = "canceled"
+                r["resolvedAt"] = "2026-08-22T00:00:00Z"
+                r["result"] = "申请人撤回"
+                kr._save(reqs)
+            return "mid-race"
+
+        with mock.patch.object(kr.alert_poller, "FEISHU_APP_ID", "cli_x"), \
+             mock.patch.object(kr.alert_poller, "FEISHU_APP_SECRET", "s"), \
+             mock.patch.object(kr, "_feishu_card_send", side_effect=_send_during_cancel):
+            req, err = kr.create_request(_ME_FEISHU, "new", "竞态", "")
+        self.assertIsNone(err)
+        self.assertEqual(len(self.card_updates), 1)  # 回写补偿：终态卡更新已补发
+        mid, card = self.card_updates[0]
+        self.assertEqual(mid, "mid-race")
+        self.assertIn("已撤回", json.dumps(card, ensure_ascii=False))
+        stored = [r for r in kr._load() if r["id"] == req["id"]][0]
+        self.assertEqual(stored["cardMessageId"], "mid-race")
 
 
 class TestResolve(_Base):
@@ -295,6 +324,114 @@ class TestResolveConcurrency(_Base):
         out, err = box["result"]
         self.assertIsNone(err)
         self.assertEqual(out["status"], "approved")  # 执行完成后正常落终态（TTL 不再追溯）
+
+    def test_cancel_while_executing_409(self):
+        # issue #80：撤回与 approve 执行同一道 _executing 门——执行中撤回 409，不得半途改终态
+        req = self._create(_ME_FEISHU)
+        t, release, box = self._start_blocked_approve(req)
+        try:
+            out, err = kr.cancel_request(req["id"], _ME_FEISHU["email"])
+            self.assertEqual(err[0], 409)
+            self.assertEqual(out["status"], "pending")
+        finally:
+            release.set()
+            t.join(5)
+        out, err = box["result"]
+        self.assertIsNone(err)
+        self.assertEqual(out["status"], "approved")
+
+
+class TestCancel(_Base):
+    """issue #80：申请人撤回（仅本人 + 仅 pending，幂等，管理员回执）。"""
+
+    def test_cancel_pending_group_fallback_receipt(self):
+        # 默认无 FEISHU_ADMIN_OPEN_ID（_Base）→ 创建走群通知、无 cardMessageId → 撤回回执降级群文本
+        req = self._create(_ME_FEISHU)
+        out, err = kr.cancel_request(req["id"], _ME_FEISHU["email"])
+        self.assertIsNone(err)
+        self.assertEqual(out["status"], "canceled")
+        self.assertEqual(out["result"], "申请人撤回")
+        self.assertIsNotNone(out["resolvedAt"])
+        # 创建 1 条群通知 + 撤回 1 条群回执
+        self.assertEqual(len(self.group), 2)
+        self.assertIn("已撤回", self.group[-1])
+        self.assertIn(req["id"], self.group[-1])
+        self.assertEqual(self.dms, [])  # 申请人本人操作，不再私信申请人
+
+    def test_cancel_with_card_updates_receipt(self):
+        kr.FEISHU_ADMIN_OPEN_ID = "ou_admin"
+        with mock.patch.object(kr.alert_poller, "FEISHU_APP_ID", "cli_x"), \
+             mock.patch.object(kr.alert_poller, "FEISHU_APP_SECRET", "s"):
+            req = self._create(_ME_FEISHU)
+        out, err = kr.cancel_request(req["id"], _ME_FEISHU["email"])
+        self.assertIsNone(err)
+        self.assertEqual(out["status"], "canceled")
+        self.assertEqual(len(self.card_updates), 1)  # 有卡场景：审批卡更新为已撤回
+        mid, card = self.card_updates[0]
+        self.assertEqual(mid, "mid-1")
+        self.assertIn("已撤回", json.dumps(card, ensure_ascii=False))
+        self.assertEqual(len(self.group), 0)  # 有卡不再降级群文本
+
+    def test_cancel_other_user_404(self):
+        req = self._create(_ME_LOCAL)  # 他人申请
+        out, err = kr.cancel_request(req["id"], _ME_FEISHU["email"])
+        self.assertIsNone(out)
+        self.assertEqual(err[0], 404)  # 与未找到同码：不泄露他人申请存在性
+        stored = [r for r in kr._load() if r["id"] == req["id"]][0]
+        self.assertEqual(stored["status"], "pending")  # 他人申请不受影响
+
+    def test_cancel_not_found_404(self):
+        out, err = kr.cancel_request("kr-20990101-000000", _ME_FEISHU["email"])
+        self.assertIsNone(out)
+        self.assertEqual(err[0], 404)
+
+    def test_cancel_non_pending_returns_current(self):
+        req = self._create(_ME_FEISHU)
+        with mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_FEISHU), \
+             mock.patch.object(kr.alert_poller, "ensure_emp_key", return_value=("emp-x", "ah-x", "")), \
+             mock.patch.object(kr, "_get_ax", return_value=object()):
+            kr.resolve_request(req["id"], "approve")
+        dms_before = len(self.dms)
+        out, err = kr.cancel_request(req["id"], _ME_FEISHU["email"])  # 已 approved 不可撤
+        self.assertIsNone(err)  # 幂等现状，不是错误
+        self.assertEqual(out["status"], "approved")
+        self.assertEqual(len(self.dms), dms_before)  # 不重复通知
+        self.assertEqual(len(self.group), 1)  # 仅创建时那一条
+
+    def test_cancel_twice_idempotent(self):
+        req = self._create(_ME_FEISHU)
+        kr.cancel_request(req["id"], _ME_FEISHU["email"])
+        out, err = kr.cancel_request(req["id"], _ME_FEISHU["email"])  # 重复撤回
+        self.assertIsNone(err)
+        self.assertEqual(out["status"], "canceled")
+        self.assertEqual(len(self.group), 2)  # 回执不重复（创建 1 + 撤回 1）
+        # 撤回后管理员点批被状态门拒（审批页不可再操作的 shim 侧保证）
+        out2, _ = kr.resolve_request(req["id"], "approve")
+        self.assertEqual(out2["status"], "canceled")
+
+
+class TestCardUpdateShape(unittest.TestCase):
+    """评审 P2 锁死（issue #80）：更新卡片消息必须 PATCH 且 body 仅含 content——
+    PUT + msg_type=interactive 恒 400（230001 invalid msg_type）静默失败，#79 回执曾因此从未送达。
+    独立 TestCase 不继承 _Base——_Base 把 _feishu_card_update 本身 mock 掉了，形状测试要调真实函数。"""
+
+    def test_update_uses_patch_and_content_only(self):
+        captured = {}
+
+        def _fake_urlopen(req, timeout=None):
+            captured["method"] = req.get_method()
+            captured["url"] = req.full_url
+            captured["body"] = json.loads(req.data)
+            return io.BytesIO(b'{"code": 0, "data": {}}')
+
+        with mock.patch.object(kr.alert_poller, "feishu_tenant_token", return_value="tt-x"), \
+             mock.patch("urllib.request.urlopen", side_effect=_fake_urlopen):
+            ok = kr._feishu_card_update("mid-1", {"header": {"template": "grey"}})
+        self.assertTrue(ok)
+        self.assertEqual(captured["method"], "PATCH")
+        self.assertEqual(set(captured["body"]), {"content"})  # 仅 content，无 msg_type
+        self.assertEqual(json.loads(captured["body"]["content"]), {"header": {"template": "grey"}})
+        self.assertIn("/im/v1/messages/mid-1", captured["url"])
 
 
 class TestSweepExpired(_Base):

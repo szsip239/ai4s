@@ -5,6 +5,8 @@
 本模块落待办申请（状态文件原子写）→ app bot 私信管理员审批卡（link 按钮直达控制台审批页）→
 管理员在控制台点批（admin 平面 /dlp-admin/key-requests/*）→ 复用 #72/#19 执行体
 （alert_poller.ensure_emp_key / apply_tier_to_user）→ 回执（卡片更新 + 申请人私信/页面状态）。
+申请人撤回（issue #80）：POST /self/key-requests/<id>/cancel，仅本人 + 仅 pending，
+置 canceled + 管理员回执（卡片更新/无卡降级群文本），幂等不重复通知。
 
 卡片回调选型（调研结论，issue 已记录取舍）：飞书卡片按钮原生回调（card.action.trigger
 长连接）需要 (a) 开放平台后台逐 App 配置回调订阅——不在代码库/IaC 内，本环境无法验证，
@@ -141,15 +143,18 @@ def _feishu_card_send(open_id: str, card: dict):
 
 
 def _feishu_card_update(message_id: str, card: dict) -> bool:
-    """更新已发出的卡片（回执：状态+结果，无明文）。"""
+    """更新已发出的卡片（回执：状态+结果，无明文）。
+    接口实证（issue #80 冒烟抓出 #79 存量 bug）：更新应用卡片消息用 PATCH /im/v1/messages/:id
+    且 body 只含 content；PUT + msg_type=interactive 恒 400（230001 invalid msg_type）——
+    best-effort 静默失败，#79 的 approve/reject 回执卡更新实际从未成功。"""
     try:
-        body = {"msg_type": "interactive", "content": json.dumps(card, ensure_ascii=False)}
+        body = {"content": json.dumps(card, ensure_ascii=False)}
         req = urllib.request.Request(
             f"https://open.feishu.cn/open-apis/im/v1/messages/{message_id}",
             data=json.dumps(body, ensure_ascii=False).encode(),
             headers={"Authorization": f"Bearer {alert_poller.feishu_tenant_token()}",
                      "Content-Type": "application/json"},
-            method="PUT",
+            method="PATCH",
         )
         with urllib.request.urlopen(req, timeout=10) as r:
             d = json.load(r)
@@ -161,8 +166,10 @@ def _feishu_card_update(message_id: str, card: dict) -> bool:
     return False
 
 
-_STATUS_LABEL = {"pending": "待审批", "approved": "已通过", "rejected": "已拒绝", "expired": "已超时"}
-_STATUS_COLOR = {"pending": "orange", "approved": "green", "rejected": "red", "expired": "grey"}
+_STATUS_LABEL = {"pending": "待审批", "approved": "已通过", "rejected": "已拒绝", "expired": "已超时",
+                 "canceled": "已撤回"}  # canceled: issue #80 申请人撤回
+_STATUS_COLOR = {"pending": "orange", "approved": "green", "rejected": "red", "expired": "grey",
+                 "canceled": "grey"}
 
 
 def _detail_line(req: dict) -> str:
@@ -223,6 +230,10 @@ def _notify_admin_new_request(req: dict):
                 if cur is not None:
                     cur["cardMessageId"] = mid
                     _save(reqs)
+            if cur is not None and cur["status"] != "pending":
+                # 发卡期间已被点批/撤回（评审 P2 窄竞态）：当时的回执因无 cardMessageId 走了
+                # 降级通道，这里补一次卡片更新——否则管理员手里留一张永不更新的待审批卡
+                _feishu_card_update(mid, _receipt_card(cur))
             return
         print(f"[keyreq] 审批卡未送达，降级群通知: {req['id']}", flush=True)
     kind_label = "新建 Key" if req["kind"] == "new" else "额度提额"
@@ -243,6 +254,22 @@ def _notify_resolved(req: dict, applicant_dm_text: str = ""):
     open_id = (req.get("applicant") or {}).get("openId")
     if open_id and applicant_dm_text:
         alert_poller.feishu_dm(open_id, applicant_dm_text)
+
+
+def _notify_canceled(req: dict):
+    """撤回回执给管理员（issue #80）：有审批卡（cardMessageId）→ 更新为已撤回；无卡
+    （未配 FEISHU_ADMIN_OPEN_ID 的降级群通知场景）→ 群文本注明。申请人本人操作，不再私信申请人。
+    best-effort，失败只记日志。"""
+    mid = req.get("cardMessageId")
+    if mid:
+        _feishu_card_update(mid, _receipt_card(req))
+        return
+    kind_label = "新建 Key" if req["kind"] == "new" else "额度提额"
+    alert_poller.send_feishu(
+        f"[ai4s Key 申请] 申请人已撤回（{kind_label}）\n"
+        f"申请人: {(req.get('applicant') or {}).get('email')}\n"
+        f"申请 ID: {req['id']}"
+    )
 
 
 # ---- 生命周期 ----
@@ -425,6 +452,31 @@ def resolve_request(rid: str, action: str, reason: str = ""):
     finally:
         with _lock:
             _executing.discard(rid)
+
+
+def cancel_request(rid: str, email: str):
+    """申请人撤回（issue #80）：仅本人 + 仅 pending。返回 (req_public 或 None, (status, 文案) 或 None)：
+      - (None, (404, ...)) 未找到或非本人（同码不区分，不泄露他人申请存在性）；
+      - (req, (409, ...)) 目标正在执行 approve（与 resolve_request 同一 _executing 门）；
+      - (req, None) 撤回成功/幂等现状（非 pending 直接返回，不重复通知）。
+    回执：审批卡更新为已撤回；无卡场景（降级群通知）→ 群文本注明。"""
+    with _lock:
+        reqs = _load()
+        req = next((r for r in reqs if r["id"] == rid
+                    and (r.get("applicant") or {}).get("email") == email), None)
+        if req is None:
+            return None, (404, "request not found")
+        if req["status"] != "pending":
+            return shape_public(req), None  # 幂等：重复撤回/已被处理都返现状
+        if rid in _executing:
+            return shape_public(req), (409, "该申请正在执行通过操作，请稍后刷新查看结果")
+        req["status"] = "canceled"
+        req["resolvedAt"] = _iso(time.time())
+        req["result"] = "申请人撤回"
+        _save(reqs)
+        snap = dict(req)
+    _notify_canceled(snap)
+    return shape_public(snap), None
 
 
 def sweep_expired():

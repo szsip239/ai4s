@@ -25,7 +25,7 @@ export const pageTabGroups = {
     { label: t('sidebar.items.users'), url: '/users' },
     { label: t('sidebar.items.roles'), url: '/project/roles' },
   ],
-  /** 观测（项目组）：请求 | 用量统计 | 追踪 | 线程 */
+  /** 日志（项目组，issue #80 改名，键名 observability 保留）：请求 | 用量统计 | 追踪 | 线程 */
   observability: (t: (key: string) => string): PageTab[] => [
     { label: t('sidebar.items.requests'), url: '/project/requests' },
     { label: t('sidebar.items.usageStats'), url: '/project/usage-stats' },

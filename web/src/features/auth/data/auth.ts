@@ -21,10 +21,10 @@ interface MeResponse {
 }
 
 /**
- * issue #69 P2-E：登录落点按权限解析第一个可用页（owner → /；员工已选项目时 → /project/requests 观测），
+ * issue #69 P2-E：登录落点按权限解析第一个可用页（owner → /；员工已选项目时 → /project/requests 日志），
  * 不再写死 /project/playground（无 write_requests/read_channels 的用户落上去即 403）。
  * 注意：项目 scopes 读 localStorage 的 selectedProjectId——首登（未选项目）时 projectScopes 为空，
- * 项目级候选全部不可见，落兜底 /settings/profile（无 guard 的安全页）；回访用户才落观测。
+ * 项目级候选全部不可见，落兜底 /settings/profile（无 guard 的安全页）；回访用户才落日志页。
  */
 function resolvePostSignInPath(user: AuthUser): string {
   const selectedProjectId = useProjectStore.getState().selectedProjectId;

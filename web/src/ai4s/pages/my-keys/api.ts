@@ -46,7 +46,7 @@ export function useMyKeys() {
 
 // ---- issue #79：控制台发起 key 申请 ----
 
-export type KeyRequestStatus = 'pending' | 'approved' | 'rejected' | 'expired';
+export type KeyRequestStatus = 'pending' | 'approved' | 'rejected' | 'expired' | 'canceled';
 
 export interface KeyRequest {
   id: string;
@@ -86,5 +86,19 @@ export function useCreateKeyRequest() {
       qc.invalidateQueries({ queryKey: ['self', 'key-requests'] });
       qc.invalidateQueries({ queryKey: ['self', 'keys'] });
     },
+  });
+}
+
+// ---- issue #80：撤回本人 pending 申请 ----
+
+export function useCancelKeyRequest() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) =>
+      apiRequest<{ request: KeyRequest }>(`/self/key-requests/${id}/cancel`, {
+        method: 'POST',
+        requireAuth: true,
+      }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['self', 'key-requests'] }),
   });
 }

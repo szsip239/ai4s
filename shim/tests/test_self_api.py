@@ -209,6 +209,45 @@ class TestSelfKeyRequests(unittest.TestCase):
             self.assertTrue(self_api.handle(h, "POST"))
         self.assertEqual(h.status, 401)
 
+    # ---- issue #80：POST /self/key-requests/<id>/cancel 撤回 ----
+
+    def test_cancel_ok_200(self):
+        h = self._handler(path="/self/key-requests/kr-1/cancel")
+        with mock.patch.object(self_api.admin_api, "_introspect",
+                               return_value=({"id": "u2", "email": "e@x.com"}, None)), \
+             mock.patch.object(self_api.key_requests, "cancel_request",
+                               return_value=({"id": "kr-1", "status": "canceled"}, None)) as cr:
+            self.assertTrue(self_api.handle(h, "POST"))
+        self.assertEqual(h.status, 200)
+        cr.assert_called_once_with("kr-1", "e@x.com")  # 属主判定用内省 email（服务端）
+
+    def test_cancel_no_email_502(self):
+        # fail-closed（对齐 #79 评审 P1）：无 email 无法判定归属，直接 502 且不调 store
+        h = self._handler(path="/self/key-requests/kr-1/cancel")
+        with mock.patch.object(self_api.admin_api, "_introspect", return_value=({"id": "u2"}, None)), \
+             mock.patch.object(self_api.key_requests, "cancel_request") as cr:
+            self.assertTrue(self_api.handle(h, "POST"))
+        self.assertEqual(h.status, 502)
+        cr.assert_not_called()
+
+    def test_cancel_404_passthrough(self):
+        # 非本人/未找到（key_requests 同码不区分）透传 404
+        h = self._handler(path="/self/key-requests/kr-9/cancel")
+        with mock.patch.object(self_api.admin_api, "_introspect",
+                               return_value=({"id": "u2", "email": "e"}, None)), \
+             mock.patch.object(self_api.key_requests, "cancel_request",
+                               return_value=(None, (404, "request not found"))):
+            self.assertTrue(self_api.handle(h, "POST"))
+        self.assertEqual(h.status, 404)
+
+    def test_cancel_no_token_401(self):
+        h = self._handler(path="/self/key-requests/kr-1/cancel")
+        h.headers.pop("Authorization")
+        with mock.patch.object(self_api.admin_api, "_introspect",
+                               side_effect=AssertionError("不应被调用")):
+            self.assertTrue(self_api.handle(h, "POST"))
+        self.assertEqual(h.status, 401)
+
 
 class TestShapeKey(unittest.TestCase):
     """白名单塑形：上游节点即使带 key 明文/多余字段也剥掉（纵深防御——响应永不含明文）。"""
