@@ -12,6 +12,9 @@ UserPersonalAPIKeyReadRule 对 type≠personal 的 key 不做属主隔离，read
 内省失败 401/axonhub 不可达 503，不降级。响应经字段白名单塑形，上游即使多返回也剥掉。
 明文可见性（issue #81 拍板）：key 明文对本人可见——唯一闸门=服务端 userID=me.id 等值过滤，
 他人/未登录一律拿不到；审批私信之外的查看兜底（私信丢失地/换机场景）。
+用量展示（issue #83）：员工直查 apiKeyQuotaUsages 被上游 FORBIDDEN，本模块在 key 集已锁死
+本人的前提下用 admin token 逐 key 代查内嵌（usage 字段）；与管理员侧 profiles 对话框同一
+上游聚合，展示进度与 403 拦截同源。单 key 用量失败置 None，不拖垮列表。
 本模块不进检测路径；单请求失败只影响本请求。
 """
 import admin_api  # _introspect/_respond 复用（issue #74 实现约定）
@@ -26,9 +29,21 @@ _SELF_KEYS_QUERY = (
     "id name key status createdAt profiles { activeProfile profiles { name quota { requests totalTokens cost } } }"
     " } } } }"
 )
+# issue #83：员工用量展示——员工直查 apiKeyQuotaUsages 被上游 FORBIDDEN（只认系统级 scope，
+# 与 #68 同源），由 shim admin token 代查。安全闸门不变：key 集已由上一条查询按 userID=me.id
+# 锁死本人，这里只对本人 key id 逐个取用量（数量级个位数，N+1 可接受；与巡检循环同模式）。
+# 与管理员侧 profiles 对话框同一上游查询/同一聚合，展示与 403 拦截天然同源。
+_QUOTA_USAGES_QUERY = (
+    "query($apiKeyId: ID!) { apiKeyQuotaUsages(apiKeyId: $apiKeyId) { profileName "
+    "quota { requests totalTokens cost period { type pastDuration { value unit } calendarDuration { unit } } } "
+    "window { start end } usage { requestCount totalTokens totalCost } } }"
+)
 # 响应白名单字段（expiresAt 在本版上游 schema 不存在——APIKey 字段内省无此项，不落响应；
-# id 为 GID，供前端列表 React key 用——评审 P2；key=明文，issue #81 本人可见）
-_KEY_FIELDS = ("id", "name", "key", "status", "createdAt", "profiles")
+# id 为 GID，供前端列表 React key 用——评审 P2；key=明文，issue #81 本人可见；
+# usage=各档用量，issue #83 代查内嵌，None=用量暂不可用不影响列表）
+_KEY_FIELDS = ("id", "name", "key", "status", "createdAt", "profiles", "usage")
+# 用量条目白名单（与管理员侧 APIKeyProfileQuotaUsage 同形，原样透传这四个键）
+_USAGE_FIELDS = ("profileName", "quota", "window", "usage")
 
 _ax = None  # 模块级 Axonhub 单例（token 缓存；login 惰性）
 
@@ -45,10 +60,28 @@ def _shape_key(node: dict) -> dict:
     return {k: node.get(k) for k in _KEY_FIELDS}
 
 
+def query_key_usages(key_gid: str) -> list:
+    """admin token 代查单 key 各档用量（issue #83）。条目经白名单塑形后原样透传。"""
+    data = _get_ax().gql(_QUOTA_USAGES_QUERY, {"apiKeyId": key_gid})
+    return [{k: u.get(k) for k in _USAGE_FIELDS} for u in (data.get("apiKeyQuotaUsages") or [])]
+
+
 def query_own_keys(user_gid: str) -> list:
-    """admin token 查本人名下 key（含 enabled/disabled/archived 全状态，状态由页面展示）。"""
+    """admin token 查本人名下 key（含 enabled/disabled/archived 全状态，状态由页面展示）。
+    issue #83：每把 key 内嵌各档用量；单 key 用量失败只置 None 不拖垮列表
+    （key 列表是主功能，用量是增强展示；身份闸门不受此影响——用量挂在已锁死本人的 key 上）。"""
     data = _get_ax().gql(_SELF_KEYS_QUERY, {"uid": user_gid})
-    return [_shape_key(e["node"]) for e in data["apiKeys"]["edges"]]
+    keys = []
+    for e in data["apiKeys"]["edges"]:
+        node = e["node"]
+        shaped = _shape_key(node)
+        try:
+            shaped["usage"] = query_key_usages(node["id"])
+        except Exception as ex:
+            print(f"[self] key 用量代查失败 {node['id']}: {type(ex).__name__}: {ex}", flush=True)
+            shaped["usage"] = None
+        keys.append(shaped)
+    return keys
 
 
 def _self_keys(handler, me: dict):

@@ -254,6 +254,79 @@ class TestMakeKeyName(unittest.TestCase):
         self.assertEqual(a, b)
 
 
+class TestLoadTierProfile(unittest.TestCase):
+    """issue #83：load_tier_profile 全字段透传锁死——模板 profile 的 channelIDs/
+    channelTags/channelTagsMatchMode/modelIDs/loadBalanceStrategy 一个不落（#81 丢
+    modelMappings 落库 null 的同款教训；档位渠道允许列表经模板下发，丢字段=换档
+    静默丢限制）。"""
+
+    def _load(self, tpl_profile):
+        class FakeAx:
+            def gql(self, query, variables=None):
+                tpl = {"name": "体验档", "profile": tpl_profile}
+                return {"apiKeyProfileTemplates": {"edges": [{"node": tpl}]}}
+
+        return ap.load_tier_profile(FakeAx(), "体验档")
+
+    def test_full_field_passthrough(self):
+        # 模板带全量实值时逐字段原样透传（quota.cost 转 str 为既有约定，前端 zod coerce）
+        tpl_profile = {
+            "modelMappings": [{"from": "gpt-4o", "to": "deepseek-v4"}],
+            "channelIDs": [2, 4, 7],
+            "channelTags": ["sub"],
+            "channelTagsMatchMode": "all",
+            "modelIDs": ["k3"],
+            "loadBalanceStrategy": "round_robin",
+            "quota": {"requests": 100, "totalTokens": 4300000, "cost": 3,
+                      "period": {"type": "calendar_duration", "pastDuration": None,
+                                 "calendarDuration": {"unit": "month"}}},
+        }
+        prof = self._load(tpl_profile)
+        for field in ("channelIDs", "channelTags", "channelTagsMatchMode", "modelIDs",
+                      "loadBalanceStrategy", "modelMappings"):
+            self.assertEqual(prof[field], tpl_profile[field], field)
+        self.assertEqual(prof["quota"]["requests"], 100)
+        self.assertEqual(prof["quota"]["totalTokens"], 4300000)
+        self.assertEqual(prof["quota"]["cost"], "3")
+        self.assertEqual(prof["quota"]["period"]["calendarDuration"], {"unit": "month"})
+        self.assertIsNone(prof["quota"]["period"]["pastDuration"])  # 键存在且原样为 None
+
+    def test_past_duration_passthrough(self):
+        # 评审 P2：period.pastDuration 为本次新拉字段，实值必须透传（非 calendar 模板直挂）
+        tpl_profile = {"modelMappings": [],
+                       "quota": {"requests": 500, "totalTokens": None, "cost": None,
+                                 "period": {"type": "past_duration",
+                                            "pastDuration": {"value": 12, "unit": "hour"},
+                                            "calendarDuration": None}}}
+        prof = self._load(tpl_profile)
+        self.assertEqual(prof["quota"]["period"]["type"], "past_duration")
+        self.assertEqual(prof["quota"]["period"]["pastDuration"], {"value": 12, "unit": "hour"})
+        self.assertIsNone(prof["quota"]["period"]["calendarDuration"])
+
+    def test_empty_optional_fields_pass_as_null(self):
+        # 模板限制字段为空（标准/高档有意全开）：null 原样透传，不臆造空数组/默认值——
+        # 落库与模板语义一致（null=不限制）；channelTagsMatchMode 唯一例外落 'any'
+        # （对齐前端 zod 缺省，且 'any' 搭配空 channelTags 本就不限制任何渠道）
+        tpl_profile = {"modelMappings": [], "channelIDs": None, "channelTags": None,
+                       "channelTagsMatchMode": None, "modelIDs": None, "loadBalanceStrategy": None,
+                       "quota": {"requests": None, "totalTokens": 43000000, "cost": 20,
+                                 "period": {"type": "calendar_duration", "calendarDuration": {"unit": "month"}}}}
+        prof = self._load(tpl_profile)
+        self.assertIsNone(prof["channelIDs"])
+        self.assertIsNone(prof["channelTags"])
+        self.assertIsNone(prof["modelIDs"])
+        self.assertIsNone(prof["loadBalanceStrategy"])
+        self.assertEqual(prof["channelTagsMatchMode"], "any")
+        self.assertEqual(prof["modelMappings"], [])
+
+    def test_template_missing_returns_none(self):
+        class FakeAx:
+            def gql(self, query, variables=None):
+                return {"apiKeyProfileTemplates": {"edges": []}}
+
+        self.assertIsNone(ap.load_tier_profile(FakeAx(), "不存在的档"))
+
+
 class TestAssignKeyOwner(unittest.TestCase):
     """issue #72 归属步骤：GID 解析 + SQL 形状（psycopg 以假模块注入，不落真库）。"""
 

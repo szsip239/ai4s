@@ -204,7 +204,8 @@ USER_BY_EMAIL_QUERY = (
 PROFILE_TEMPLATES_QUERY = (
     "query { apiKeyProfileTemplates(first: 50) { edges { node { id name "
     "profile { name modelMappings { from to } "
-    "quota { requests totalTokens cost period { type calendarDuration { unit } } } } } } } }"
+    "channelIDs channelTags channelTagsMatchMode modelIDs loadBalanceStrategy "
+    "quota { requests totalTokens cost period { type pastDuration { value unit } calendarDuration { unit } } } } } } } }"
 )
 UPDATE_PROFILES_MUTATION = (
     "mutation($id: ID!, $input: UpdateAPIKeyProfilesInput!) { updateAPIKeyProfiles(id: $id, input: $input) { id } }"
@@ -220,21 +221,36 @@ def find_user_by_email(ax: Axonhub, email: str):
 def load_tier_profile(ax: Axonhub, tier_name: str):
     """Profile 模板 → updateAPIKeyProfiles 输入形状；模板不存在返回 None。
     issue #81：modelMappings 必须透传（模板空则 []）——此前丢弃落库 null，前端 zod
-    必填数组解析崩（Key 管理「配置」对话框报错）。"""
+    必填数组解析崩（Key 管理「配置」对话框报错）。
+    issue #83：全字段透传（channelIDs/channelTags/channelTagsMatchMode/modelIDs/
+    loadBalanceStrategy 一个不落）——档位渠道允许列表经模板下发，丢字段=换档时静默丢
+    限制（#81 同款教训）；channelTagsMatchMode 空落 'any'（对齐前端 zod 缺省语义）。"""
     tpls = ax.gql(PROFILE_TEMPLATES_QUERY)["apiKeyProfileTemplates"]["edges"]
     tpl = next((e["node"] for e in tpls if e["node"]["name"] == tier_name), None)
     if not tpl:
         return None
-    quota = (tpl["profile"] or {}).get("quota") or {}
+    prof = tpl["profile"] or {}
+    quota = prof.get("quota") or {}
     period = quota.get("period") or {}
+    period_type = period.get("type", "calendar_duration")
+    # calendarDuration 缺省兜底只对 calendar 类模板生效；past_duration 模板不得臆造 calendar 值
+    calendar = period.get("calendarDuration")
+    if calendar is None and period_type == "calendar_duration":
+        calendar = {"unit": "month"}
     return {"name": tier_name,
-            "modelMappings": (tpl["profile"] or {}).get("modelMappings") or [],
+            "modelMappings": prof.get("modelMappings") or [],
+            "channelIDs": prof.get("channelIDs"),
+            "channelTags": prof.get("channelTags"),
+            "channelTagsMatchMode": prof.get("channelTagsMatchMode") or "any",
+            "modelIDs": prof.get("modelIDs"),
+            "loadBalanceStrategy": prof.get("loadBalanceStrategy"),
             "quota": {
         "requests": quota.get("requests"),
         "totalTokens": quota.get("totalTokens"),
         "cost": str(quota["cost"]) if quota.get("cost") is not None else None,
-        "period": {"type": period.get("type", "calendar_duration"),
-                   "calendarDuration": period.get("calendarDuration") or {"unit": "month"}},
+        "period": {"type": period_type,
+                   "pastDuration": period.get("pastDuration"),
+                   "calendarDuration": calendar},
     }}
 
 

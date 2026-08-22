@@ -258,7 +258,8 @@ class TestShapeKey(unittest.TestCase):
                 "profiles": {"activeProfile": "体验档"},
                 "key": "ah-plain-visible-to-owner", "userID": "gid://axonhub/User/1", "scopes": ["*"]}
         shaped = self_api._shape_key(node)
-        self.assertEqual(set(shaped), {"id", "name", "key", "status", "createdAt", "profiles"})
+        # issue #83：usage 键固定存在（query_own_keys 填充实值；裸 _shape_key 下为 None）
+        self.assertEqual(set(shaped), {"id", "name", "key", "status", "createdAt", "profiles", "usage"})
         self.assertEqual(shaped["key"], "ah-plain-visible-to-owner")  # 本人明文可见（issue #81）
         self.assertNotIn("gid://axonhub/User/1", json.dumps(shaped))  # userID 仍剥
         self.assertNotIn("scopes", shaped)
@@ -278,6 +279,69 @@ class TestShapeKey(unittest.TestCase):
         self.assertEqual(captured["v"], {"uid": "gid://axonhub/User/9"})
         self.assertIn("userID", captured["q"])  # 明文下发的唯一闸门：服务端本人过滤
         self.assertIn(" key ", captured["q"])  # issue #81：查询取明文字段，本人可见
+
+
+class TestQueryOwnKeysUsage(unittest.TestCase):
+    """issue #83：/self/keys 内嵌本人各档用量（admin token 代查 apiKeyQuotaUsages）。
+    闸门：key 集先经 userID=me.id 锁死本人，用量只对本人 key id 逐个查询。"""
+
+    def _fake_ax(self, key_nodes, usages_by_id, fail_ids=()):
+        calls = []
+
+        class FakeAx:
+            def gql(self, query, variables=None):
+                calls.append((query, variables or {}))
+                if "apiKeyQuotaUsages" in query:
+                    kid = variables["apiKeyId"]
+                    if kid in fail_ids:
+                        raise RuntimeError("quota query down")
+                    return {"apiKeyQuotaUsages": usages_by_id.get(kid, [])}
+                return {"apiKeys": {"edges": [{"node": n} for n in key_nodes]}}
+
+        return FakeAx(), calls
+
+    def test_usage_embedded_and_bound_per_key(self):
+        # 用量按 key id 逐查内嵌；条目白名单四键（多余字段剥掉）；零用量原样为 0
+        nodes = [
+            {"id": "gid://axonhub/APIKey/5", "name": "k1", "status": "enabled"},
+            {"id": "gid://axonhub/APIKey/6", "name": "k2", "status": "enabled"},
+        ]
+        usages = {"gid://axonhub/APIKey/5": [
+            {"profileName": "体验档", "quota": {"cost": 3}, "window": {"start": "s", "end": "e"},
+             "usage": {"requestCount": 0, "totalTokens": 0, "totalCost": 0},
+             "internalField": "剥掉"}]}
+        fake, calls = self._fake_ax(nodes, usages)
+        with mock.patch.object(self_api, "_get_ax", return_value=fake):
+            keys = self_api.query_own_keys("gid://axonhub/User/9")
+        self.assertEqual(len(keys), 2)
+        self.assertEqual(keys[0]["usage"], [
+            {"profileName": "体验档", "quota": {"cost": 3}, "window": {"start": "s", "end": "e"},
+             "usage": {"requestCount": 0, "totalTokens": 0, "totalCost": 0}}])
+        self.assertEqual(keys[1]["usage"], [])  # 无用量记录 → 空数组；页面按「无当前档条目」显示 —（非 0）
+        usage_calls = [v for q, v in calls if "apiKeyQuotaUsages" in q]
+        self.assertEqual(usage_calls, [{"apiKeyId": "gid://axonhub/APIKey/5"},
+                                       {"apiKeyId": "gid://axonhub/APIKey/6"}])
+
+    def test_usage_failure_degrades_to_null(self):
+        # 单 key 用量查询失败置 None，不拖垮列表其余 key（用量是增强展示，列表为主功能）
+        nodes = [{"id": "gid://axonhub/APIKey/5", "name": "k1", "status": "enabled"},
+                 {"id": "gid://axonhub/APIKey/6", "name": "k2", "status": "enabled"}]
+        usages = {"gid://axonhub/APIKey/6": [
+            {"profileName": "标准档", "quota": {}, "window": {}, "usage": {}}]}
+        fake, _ = self._fake_ax(nodes, usages, fail_ids={"gid://axonhub/APIKey/5"})
+        with mock.patch.object(self_api, "_get_ax", return_value=fake):
+            keys = self_api.query_own_keys("gid://axonhub/User/9")
+        self.assertIsNone(keys[0]["usage"])
+        self.assertEqual(len(keys[1]["usage"]), 1)
+
+    def test_me_gate_unchanged_with_usage(self):
+        # 本人边界仍在第一条查询的 userID=me.id；用量查询只跟随本人 key id（无用户入参面）
+        fake, calls = self._fake_ax([], {})
+        with mock.patch.object(self_api, "_get_ax", return_value=fake):
+            self.assertEqual(self_api.query_own_keys("gid://axonhub/User/9"), [])
+        keys_calls = [v for q, v in calls if "apiKeys(" in q]
+        self.assertEqual(keys_calls, [{"uid": "gid://axonhub/User/9"}])
+        self.assertFalse(any("apiKeyQuotaUsages" in q for q, _ in calls))  # 无 key 不查用量
 
 
 if __name__ == "__main__":

@@ -3,11 +3,14 @@
  * 端点语义：caller Bearer 经 axonhub me 内省确认身份，admin token 服务端按 userID=me.id 过滤，
  * 只回白名单字段——绝不含他人 key；issue #81 起含本人 key 明文（唯一闸门=服务端本人过滤，
  * 页面默认掩码展示，点「显示」查看）。
+ * issue #83：响应内嵌 usage（shim 代查 apiKeyQuotaUsages，与管理员侧 profiles 对话框同源）；
+ * usage=null 表示用量暂不可用（展示降级，不影响列表）。
  * 鉴权/错误：401=未登录或 token 失效；503=内省或查询暂不可用（不降级）。
  * issue #79：申请提交后 30s 轮询本人申请列表（状态翻转经审批卡/私信异步发生，与巡检节奏一致）。
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiRequest } from '@/lib/api-client';
+import type { UsageEntry } from './key-usage';
 
 export interface MyKeyProfileQuota {
   requests?: number | null;
@@ -33,6 +36,8 @@ export interface MyKey {
   status: 'enabled' | 'disabled' | 'archived' | string;
   createdAt?: string | null;
   profiles?: MyKeyProfiles | null;
+  /** 各档用量（issue #83 shim 代查内嵌）；null=用量暂不可用，展示降级不报错 */
+  usage?: UsageEntry[] | null;
 }
 
 interface MyKeysResponse {

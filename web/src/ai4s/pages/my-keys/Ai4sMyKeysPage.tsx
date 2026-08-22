@@ -14,30 +14,42 @@
  * 非飞书（本地/钉钉/企微账号）→ 明文私信管理员备付；两种身份都可在本页查看明文。
  * issue #82：页底内嵌配置指南折叠卡（KeyGuide）——接入地址/客户端示例/档位说明/FAQ，
  * 员工零 scope 可看；入口地址取 window.location.origin 自适应（tailnet 规范名/localhost）。
+ * issue #83：每把 key 展示当前档用量（进度条+数字：cost 点/token/请求次数），可展开看各档
+ * 用量与周期/重置时间（窗口边界为北京时间自然月，issue #83 B）；数据来自 /self/keys 内嵌
+ * usage（shim 代查 apiKeyQuotaUsages，与管理员侧 profiles 对话框同源），只读。
  */
 import { useState } from 'react';
 import { format } from 'date-fns';
+import { IconChevronDown, IconEye, IconEyeOff, IconKey, IconPlus, IconTrendingUp } from '@tabler/icons-react';
 import { useTranslation } from 'react-i18next';
-import { IconEye, IconEyeOff, IconKey, IconPlus, IconTrendingUp } from '@tabler/icons-react';
 import { toast } from 'sonner';
+import { cn } from '@/lib/utils';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { CopyButton } from '@/components/ui/copy-button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { CopyButton } from '@/components/ui/copy-button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import {
-  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
-  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
-} from '@/components/ui/alert-dialog';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Textarea } from '@/components/ui/textarea';
+import { Progress } from '@/components/ui/progress';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Textarea } from '@/components/ui/textarea';
 import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
 import { useMe } from '@/features/auth/data/auth';
-import { useCancelKeyRequest, useCreateKeyRequest, useMyKeyRequests, useMyKeys, type KeyRequest, type MyKey } from './api';
 import { KeyGuide } from './KeyGuide';
+import { useCancelKeyRequest, useCreateKeyRequest, useMyKeyRequests, useMyKeys, type KeyRequest, type MyKey } from './api';
+import { activeUsageEntry, formatCredits, formatTokenCount, quotaProgress, type UsageEntry } from './key-usage';
 
 type ApplyKind = 'new' | 'upgrade' | null;
 
@@ -54,43 +66,148 @@ function reqStatusVariant(status: string): 'default' | 'secondary' | 'destructiv
   return 'outline';
 }
 
-function KeyRow({ k }: { k: MyKey }) {
+/** issue #83：单档用量数字行——cost 点 / token / 请求次数，只显示配额非空的维度 */
+function UsageNumbers({ entry, zh }: { entry: UsageEntry; zh: boolean }) {
   const { t } = useTranslation();
-  const [showKey, setShowKey] = useState(false);
-  const tier = k.profiles?.activeProfile || t('ai4s.myKeys.noTier');
-  // 掩码：保前缀 ah- 与尾 4 位便于辨认，中间打码（issue #81 明文本人可见，默认不裸露）
-  const masked = k.key ? `${k.key.slice(0, 3)}••••••••${k.key.slice(-4)}` : '—';
+  const q = entry.quota ?? {};
+  const u = entry.usage ?? {};
+  const parts: string[] = [];
+  if (q.cost != null) {
+    parts.push(`${formatCredits(Number(u.totalCost ?? 0))} / ${formatCredits(Number(q.cost))} ${t('ai4s.myKeys.usage.credits')}`);
+  }
+  if (q.totalTokens != null) {
+    parts.push(`${formatTokenCount(Number(u.totalTokens ?? 0), zh)} / ${formatTokenCount(Number(q.totalTokens), zh)} Token`);
+  }
+  parts.push(t('ai4s.myKeys.usage.requests', { count: Number(u.requestCount ?? 0) }));
+  return <span>{parts.join(' · ')}</span>;
+}
+
+/** issue #83：各档用量展开明细（对齐上游 profiles 对话框粒度，只读；含周期与重置时间） */
+function UsageDetailRows({ k }: { k: MyKey }) {
+  const { t, i18n } = useTranslation();
+  const zh = i18n.language.startsWith('zh');
   return (
     <TableRow>
-      <TableCell className='font-medium'>{k.name}</TableCell>
-      <TableCell>
-        {k.key ? (
-          <span className='flex items-center gap-1'>
-            <code className='text-xs'>{showKey ? k.key : masked}</code>
-            <Button
-              size='icon'
-              variant='ghost'
-              className='h-6 w-6'
-              title={t(showKey ? 'ai4s.myKeys.key.hide' : 'ai4s.myKeys.key.show')}
-              onClick={() => setShowKey((v) => !v)}
-            >
-              {showKey ? <IconEyeOff className='h-3.5 w-3.5' /> : <IconEye className='h-3.5 w-3.5' />}
-            </Button>
-            {/* 复制走仓库既有 CopyButton（useCopyToClipboard：成功/失败 toast + 已复制态翻转） */}
-            <CopyButton content={k.key} />
-          </span>
-        ) : (
-          '—'
-        )}
-      </TableCell>
-      <TableCell>
-        <Badge variant={statusVariant(k.status)}>{t(`ai4s.myKeys.status.${k.status}`, k.status)}</Badge>
-      </TableCell>
-      <TableCell>{tier}</TableCell>
-      <TableCell className='text-muted-foreground'>
-        {k.createdAt ? format(new Date(k.createdAt), 'yyyy-MM-dd HH:mm') : '—'}
+      <TableCell colSpan={6} className='bg-muted/30'>
+        <div className='space-y-4 py-1'>
+          {(k.usage ?? []).map((e) => {
+            const p = quotaProgress(e);
+            return (
+              <div key={e.profileName} className='space-y-1'>
+                <div className='flex items-center gap-2 text-sm'>
+                  <span className='font-medium'>{e.profileName}</span>
+                  {e.profileName === k.profiles?.activeProfile && <Badge variant='secondary'>{t('ai4s.myKeys.usage.current')}</Badge>}
+                  {!p && <span className='text-muted-foreground text-xs'>{t('ai4s.myKeys.usage.unlimited')}</span>}
+                  {p && <span className='text-muted-foreground text-xs'>{Math.round(p.pct)}%</span>}
+                </div>
+                {p && <Progress value={Math.min(p.pct, 100)} className='h-1.5 max-w-72' />}
+                <div className='text-muted-foreground text-xs'>
+                  <UsageNumbers entry={e} zh={zh} />
+                </div>
+                {(e.window?.start || e.window?.end) && (
+                  <div className='text-muted-foreground text-xs'>
+                    {t('ai4s.myKeys.usage.period')}: {e.window?.start ? format(new Date(e.window.start), 'yyyy-MM-dd HH:mm') : '—'} →{' '}
+                    {e.window?.end ? format(new Date(e.window.end), 'yyyy-MM-dd HH:mm') : '—'}
+                    {e.window?.end && (
+                      <>
+                        {' '}
+                        · {t('ai4s.myKeys.usage.resetAt')}: {format(new Date(e.window.end), 'yyyy-MM-dd HH:mm')}
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </TableCell>
     </TableRow>
+  );
+}
+
+function KeyRow({ k }: { k: MyKey }) {
+  const { t, i18n } = useTranslation();
+  const zh = i18n.language.startsWith('zh');
+  const [showKey, setShowKey] = useState(false);
+  const [showUsage, setShowUsage] = useState(false);
+  const activeProfile = k.profiles?.activeProfile;
+  const tier = activeProfile || t('ai4s.myKeys.noTier');
+  // 掩码：保前缀 ah- 与尾 4 位便于辨认，中间打码（issue #81 明文本人可见，默认不裸露）
+  const masked = k.key ? `${k.key.slice(0, 3)}••••••••${k.key.slice(-4)}` : '—';
+  const activeEntry = activeUsageEntry(k.usage, activeProfile);
+  const progress = activeEntry ? quotaProgress(activeEntry) : null;
+  const hasUsageEntries = (k.usage?.length ?? 0) > 0;
+  return (
+    <>
+      <TableRow>
+        <TableCell className='font-medium'>{k.name}</TableCell>
+        <TableCell>
+          {k.key ? (
+            <span className='flex items-center gap-1'>
+              <code className='text-xs'>{showKey ? k.key : masked}</code>
+              <Button
+                size='icon'
+                variant='ghost'
+                className='h-6 w-6'
+                title={t(showKey ? 'ai4s.myKeys.key.hide' : 'ai4s.myKeys.key.show')}
+                onClick={() => setShowKey((v) => !v)}
+              >
+                {showKey ? <IconEyeOff className='h-3.5 w-3.5' /> : <IconEye className='h-3.5 w-3.5' />}
+              </Button>
+              {/* 复制走仓库既有 CopyButton（useCopyToClipboard：成功/失败 toast + 已复制态翻转） */}
+              <CopyButton content={k.key} />
+            </span>
+          ) : (
+            '—'
+          )}
+        </TableCell>
+        <TableCell>
+          <Badge variant={statusVariant(k.status)}>{t(`ai4s.myKeys.status.${k.status}`, k.status)}</Badge>
+        </TableCell>
+        <TableCell>{tier}</TableCell>
+        <TableCell>
+          {/* issue #83 用量列：未挂档 —（档位列已显示「未挂档」）；usage=null 降级「暂不可用」 */}
+          {!activeProfile ? (
+            <span className='text-muted-foreground'>—</span>
+          ) : k.usage == null ? (
+            <span className='text-muted-foreground text-xs'>{t('ai4s.myKeys.usage.unavailable')}</span>
+          ) : !activeEntry ? (
+            <span className='text-muted-foreground'>—</span>
+          ) : (
+            <div className='flex items-center gap-1'>
+              <div className='min-w-36 flex-1'>
+                {progress ? (
+                  <>
+                    <div className='flex items-center gap-2'>
+                      <Progress value={Math.min(progress.pct, 100)} className='h-1.5 flex-1' />
+                      <span className='text-muted-foreground text-xs'>{Math.round(progress.pct)}%</span>
+                    </div>
+                    <div className='text-muted-foreground mt-1 text-xs'>
+                      <UsageNumbers entry={activeEntry} zh={zh} />
+                    </div>
+                  </>
+                ) : (
+                  <span className='text-muted-foreground text-xs'>{t('ai4s.myKeys.usage.unlimited')}</span>
+                )}
+              </div>
+              {hasUsageEntries && (
+                <Button
+                  size='icon'
+                  variant='ghost'
+                  className='h-6 w-6'
+                  aria-label={t('ai4s.myKeys.usage.expand')}
+                  onClick={() => setShowUsage((v) => !v)}
+                >
+                  <IconChevronDown className={cn('h-3.5 w-3.5 transition-transform', showUsage && 'rotate-180')} />
+                </Button>
+              )}
+            </div>
+          )}
+        </TableCell>
+        <TableCell className='text-muted-foreground'>{k.createdAt ? format(new Date(k.createdAt), 'yyyy-MM-dd HH:mm') : '—'}</TableCell>
+      </TableRow>
+      {showUsage && hasUsageEntries && <UsageDetailRows k={k} />}
+    </>
   );
 }
 
@@ -103,10 +220,8 @@ function RequestRow({ r, onCancel }: { r: KeyRequest; onCancel: (r: KeyRequest) 
       <TableCell>
         <Badge variant={reqStatusVariant(r.status)}>{t(`ai4s.myKeys.requests.status.${r.status}`, r.status)}</Badge>
       </TableCell>
-      <TableCell className='text-muted-foreground'>
-        {r.createdAt ? format(new Date(r.createdAt), 'yyyy-MM-dd HH:mm') : '—'}
-      </TableCell>
-      <TableCell className='max-w-64 truncate text-muted-foreground' title={r.result || ''}>
+      <TableCell className='text-muted-foreground'>{r.createdAt ? format(new Date(r.createdAt), 'yyyy-MM-dd HH:mm') : '—'}</TableCell>
+      <TableCell className='text-muted-foreground max-w-64 truncate' title={r.result || ''}>
         {r.result || '—'}
       </TableCell>
       <TableCell>
@@ -145,16 +260,13 @@ export default function Ai4sMyKeysPage() {
 
   const submit = () => {
     if (applyKind === null) return;
-    createRequest.mutate(
-      applyKind === 'new' ? { kind: 'new', purpose } : { kind: 'upgrade', tier },
-      {
-        onSuccess: () => {
-          toast.success(t('ai4s.myKeys.submitOk'));
-          closeDialog();
-        },
-        onError: (e) => toast.error(e.message),
-      }
-    );
+    createRequest.mutate(applyKind === 'new' ? { kind: 'new', purpose } : { kind: 'upgrade', tier }, {
+      onSuccess: () => {
+        toast.success(t('ai4s.myKeys.submitOk'));
+        closeDialog();
+      },
+      onError: (e) => toast.error(e.message),
+    });
   };
 
   const doCancel = () => {
@@ -200,10 +312,10 @@ export default function Ai4sMyKeysPage() {
                 <AlertDescription>{t('ai4s.myKeys.loadError')}</AlertDescription>
               </Alert>
             ) : myKeys.isLoading ? (
-              <div className='text-sm text-muted-foreground'>{t('common.loading', '加载中…')}</div>
+              <div className='text-muted-foreground text-sm'>{t('common.loading', '加载中…')}</div>
             ) : keys.length === 0 ? (
               <div className='py-10 text-center'>
-                <p className='text-sm text-muted-foreground'>{t('ai4s.myKeys.empty')}</p>
+                <p className='text-muted-foreground text-sm'>{t('ai4s.myKeys.empty')}</p>
                 <Button className='mt-4' size='sm' onClick={() => setApplyKind('new')}>
                   <IconPlus className='mr-1 h-4 w-4' />
                   {t('ai4s.myKeys.applyNew')}
@@ -217,6 +329,7 @@ export default function Ai4sMyKeysPage() {
                     <TableHead>{t('ai4s.myKeys.columns.key')}</TableHead>
                     <TableHead>{t('ai4s.myKeys.columns.status')}</TableHead>
                     <TableHead>{t('ai4s.myKeys.columns.tier')}</TableHead>
+                    <TableHead>{t('ai4s.myKeys.columns.usage')}</TableHead>
                     <TableHead>{t('ai4s.myKeys.columns.createdAt')}</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -237,7 +350,7 @@ export default function Ai4sMyKeysPage() {
           </CardHeader>
           <CardContent>
             {requests.length === 0 ? (
-              <p className='py-6 text-center text-sm text-muted-foreground'>{t('ai4s.myKeys.requests.empty')}</p>
+              <p className='text-muted-foreground py-6 text-center text-sm'>{t('ai4s.myKeys.requests.empty')}</p>
             ) : (
               <Table>
                 <TableHeader>
@@ -266,9 +379,7 @@ export default function Ai4sMyKeysPage() {
         <Dialog open={applyKind !== null} onOpenChange={(open) => !open && closeDialog()}>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>
-                {applyKind === 'new' ? t('ai4s.myKeys.dialog.newTitle') : t('ai4s.myKeys.dialog.upgradeTitle')}
-              </DialogTitle>
+              <DialogTitle>{applyKind === 'new' ? t('ai4s.myKeys.dialog.newTitle') : t('ai4s.myKeys.dialog.upgradeTitle')}</DialogTitle>
               <DialogDescription>
                 {applyKind === 'new' ? t('ai4s.myKeys.dialog.newDesc') : t('ai4s.myKeys.dialog.upgradeDesc')}
               </DialogDescription>
@@ -295,9 +406,7 @@ export default function Ai4sMyKeysPage() {
               )}
               <Alert>
                 <AlertDescription>
-                  {isFeishuBound
-                    ? t('ai4s.myKeys.dialog.deliverFeishu')
-                    : t('ai4s.myKeys.dialog.deliverNonFeishu')}
+                  {isFeishuBound ? t('ai4s.myKeys.dialog.deliverFeishu') : t('ai4s.myKeys.dialog.deliverNonFeishu')}
                 </AlertDescription>
               </Alert>
             </div>
@@ -305,10 +414,7 @@ export default function Ai4sMyKeysPage() {
               <Button variant='outline' onClick={closeDialog}>
                 {t('common.cancel', '取消')}
               </Button>
-              <Button
-                onClick={submit}
-                disabled={createRequest.isPending || (applyKind === 'new' ? !purpose.trim() : !tier)}
-              >
+              <Button onClick={submit} disabled={createRequest.isPending || (applyKind === 'new' ? !purpose.trim() : !tier)}>
                 {t('ai4s.myKeys.dialog.submit')}
               </Button>
             </DialogFooter>
