@@ -58,3 +58,67 @@ test('GUIDE_MODELS ⊆ deploy/pricing.json 模型键（echo-test 豁免）', () 
     assert.ok(priced.has(m.name), `${m.name} 不在 deploy/pricing.json 任何渠道的 models 里`);
   }
 });
+
+// ---- issue #84：指南档位数字守卫——locale 写死的档位数值（指南 guide.tiers.* + 申请弹窗
+// dialog.tierStandard/tierPremium）必须与契约矩阵一致（zh/en 双侧）。
+// 与 docs/contracts/quota-tiers.md 矩阵表格格式耦合（`| 名称（key） | N 点 | N 亿 | …` 行结构）——
+// 可接受，对齐上方 pricing 守卫惯例：矩阵改数值或改表格格式时此测试先红，逼着同步。----
+
+const repoRoot = join(srcRoot, '..', '..');
+
+/** zh「1.5 亿 / 5000 万」→ 原始数 */
+function zhTokenNum(s) {
+  const m = s.match(/([\d.]+)\s*(亿|万)\s*Token/);
+  assert.ok(m, `zh token 段解析失败: ${s}`);
+  return Number(m[1]) * (m[2] === '亿' ? 1e8 : 1e4);
+}
+
+/** en「150M / 3B / 750M」→ 原始数 */
+function enTokenNum(s) {
+  const m = s.match(/([\d.]+)\s*([KMB])\s*tokens/i);
+  assert.ok(m, `en token 段解析失败: ${s}`);
+  const mult = { K: 1e3, M: 1e6, B: 1e9 }[m[2].toUpperCase()];
+  return Number(m[1]) * mult;
+}
+
+/** 契约矩阵行（| 体验档（trial） | 100 点 | 1.5 亿 | … |）→ {cost, tokens} */
+function contractRow(contract, tierName) {
+  const line = contract.split('\n').find((l) => l.startsWith(`| ${tierName}（`));
+  assert.ok(line, `契约矩阵缺 ${tierName} 行`);
+  const cells = line.split('|').map((c) => c.trim());
+  const cost = Number(cells[2].match(/([\d.]+)\s*点/)?.[1]);
+  const tokens = zhTokenNum(`${cells[3]} Token`); // 复用 zh 解析（补 Token 后缀）
+  assert.ok(cost > 0 && tokens > 0, `契约行解析失败: ${line}`);
+  return { cost, tokens };
+}
+
+test('指南档位数字 = 契约矩阵（zh/en 双侧，issue #84 守卫）', () => {
+  const contract = readFileSync(join(repoRoot, 'docs', 'contracts', 'quota-tiers.md'), 'utf8');
+  const zh = JSON.parse(readFileSync(join(srcRoot, 'ai4s', 'locales', 'zh-CN', 'ai4s-patch.json'), 'utf8'));
+  const en = JSON.parse(readFileSync(join(srcRoot, 'ai4s', 'locales', 'en', 'ai4s-patch.json'), 'utf8'));
+  for (const [key, tierName] of [
+    ['trial', '体验档'],
+    ['standard', '标准档'],
+    ['premium', '高档'],
+  ]) {
+    const want = contractRow(contract, tierName);
+    const zhLine = zh[`ai4s.myKeys.guide.tiers.${key}`];
+    const enLine = en[`ai4s.myKeys.guide.tiers.${key}`];
+    assert.ok(zhLine && enLine, `locale 缺 guide.tiers.${key}`);
+    const zhCost = Number(zhLine.match(/([\d.]+)\s*点/)?.[1]);
+    const enCost = Number(enLine.match(/([\d.]+)\s*credits/i)?.[1]);
+    assert.equal(zhCost, want.cost, `zh ${tierName} cost`);
+    assert.equal(enCost, want.cost, `en ${tierName} cost`);
+    assert.equal(zhTokenNum(zhLine), want.tokens, `zh ${tierName} tokens`);
+    assert.equal(enTokenNum(enLine), want.tokens, `en ${tierName} tokens`);
+    // 申请弹窗档位标签（仅 standard/premium）只写 cost，同矩阵比对
+    const dialogKey = { standard: 'dialog.tierStandard', premium: 'dialog.tierPremium' }[key];
+    if (dialogKey) {
+      const zhDialog = zh[`ai4s.myKeys.${dialogKey}`];
+      const enDialog = en[`ai4s.myKeys.${dialogKey}`];
+      assert.ok(zhDialog && enDialog, `locale 缺 ${dialogKey}`);
+      assert.equal(Number(zhDialog.match(/([\d.]+)\s*点/)?.[1]), want.cost, `zh ${dialogKey} cost`);
+      assert.equal(Number(enDialog.match(/([\d.]+)\s*credits/i)?.[1]), want.cost, `en ${dialogKey} cost`);
+    }
+  }
+});

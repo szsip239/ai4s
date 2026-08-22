@@ -292,7 +292,6 @@ export default function Ai4sMyKeysPage() {
                   <IconKey className='h-5 w-5' />
                   {t('ai4s.myKeys.title')}
                 </CardTitle>
-                <CardDescription>{t('ai4s.myKeys.description')}</CardDescription>
               </div>
               <div className='flex gap-2'>
                 <Button size='sm' onClick={() => setApplyKind('new')}>

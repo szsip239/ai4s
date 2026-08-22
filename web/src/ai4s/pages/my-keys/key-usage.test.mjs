@@ -15,20 +15,23 @@ const mod = await import(`data:text/javascript;base64,${Buffer.from(transpiled).
 
 const { formatTokenCount, formatCredits, quotaProgress, activeUsageEntry } = mod;
 
-test('formatTokenCount: zh 万/亿口径（与 #82 指南一致）', () => {
+test('formatTokenCount: zh 万/亿口径（与 #82 指南一致；档位实值为 issue #84 放大后）', () => {
   assert.equal(formatTokenCount(0, true), '0');
   assert.equal(formatTokenCount(9999, true), '9999');
-  assert.equal(formatTokenCount(4300000, true), '430万');
-  assert.equal(formatTokenCount(43000000, true), '4300万');
-  assert.equal(formatTokenCount(215000000, true), '2.2亿'); // 2.15 亿 round-half 到 1 位小数
+  assert.equal(formatTokenCount(150000000, true), '1.5亿'); // 体验档
+  assert.equal(formatTokenCount(750000000, true), '7.5亿'); // 标准档
+  assert.equal(formatTokenCount(3000000000, true), '30亿'); // 高档
   assert.equal(formatTokenCount(125000, true), '12.5万');
 });
 
-test('formatTokenCount: en K/M 口径', () => {
+test('formatTokenCount: en K/M/B 口径（issue #84 起 ≥1e9 用 B）', () => {
   assert.equal(formatTokenCount(999, false), '999');
   assert.equal(formatTokenCount(1500, false), '1.5K');
-  assert.equal(formatTokenCount(4300000, false), '4.3M');
-  assert.equal(formatTokenCount(215000000, false), '215M');
+  assert.equal(formatTokenCount(150000000, false), '150M'); // 体验档
+  assert.equal(formatTokenCount(750000000, false), '750M'); // 标准档
+  assert.equal(formatTokenCount(999000000, false), '999M'); // 边界：未达 1e9 仍走 M
+  assert.equal(formatTokenCount(1000000000, false), '1B'); // 边界：恰 1e9 起走 B
+  assert.equal(formatTokenCount(3000000000, false), '3B'); // 高档
 });
 
 test('formatCredits: 最多两位小数，浮点尾巴截断', () => {
@@ -40,18 +43,18 @@ test('formatCredits: 最多两位小数，浮点尾巴截断', () => {
 
 test('quotaProgress: cost 优先（credit 帽主控），pct=已用/配额', () => {
   const e = {
-    quota: { cost: 3, totalTokens: 4300000, requests: null },
-    usage: { totalCost: '1.5', totalTokens: 100, requestCount: 2 },
+    quota: { cost: 100, totalTokens: 150000000, requests: null }, // 体验档（issue #84 数值）
+    usage: { totalCost: '50', totalTokens: 100, requestCount: 2 },
   };
   const p = quotaProgress(e);
   assert.equal(p.kind, 'cost');
-  assert.equal(p.used, 1.5);
-  assert.equal(p.total, 3);
+  assert.equal(p.used, 50);
+  assert.equal(p.total, 100);
   assert.equal(Math.round(p.pct), 50);
 });
 
 test('quotaProgress: cost 空时落 token/requests 维度', () => {
-  const t = quotaProgress({ quota: { cost: null, totalTokens: 4300000 }, usage: { totalTokens: 430000 } });
+  const t = quotaProgress({ quota: { cost: null, totalTokens: 150000000 }, usage: { totalTokens: 15000000 } });
   assert.equal(t.kind, 'totalTokens');
   assert.equal(Math.round(t.pct), 10);
   const r = quotaProgress({ quota: { cost: null, totalTokens: null, requests: 100 }, usage: { requestCount: 25 } });
@@ -60,12 +63,12 @@ test('quotaProgress: cost 空时落 token/requests 维度', () => {
 });
 
 test('quotaProgress: 零用量显示 0；配额全空（不设限）返回 null；usage 缺省不炸', () => {
-  const zero = quotaProgress({ quota: { cost: 3 }, usage: { totalCost: 0, totalTokens: 0, requestCount: 0 } });
+  const zero = quotaProgress({ quota: { cost: 100 }, usage: { totalCost: 0, totalTokens: 0, requestCount: 0 } });
   assert.equal(zero.used, 0);
   assert.equal(zero.pct, 0);
   assert.equal(quotaProgress({ quota: { cost: null, totalTokens: null, requests: null } }), null);
   assert.equal(quotaProgress({ quota: null, usage: null }), null);
-  const noUsage = quotaProgress({ quota: { cost: 3 } });
+  const noUsage = quotaProgress({ quota: { cost: 100 } });
   assert.equal(noUsage.used, 0); // usage 字段缺省按 0 计，不报错
 });
 

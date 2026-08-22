@@ -23,7 +23,7 @@ export interface UsageEntry {
   usage?: { requestCount?: number; totalTokens?: number; totalCost?: number | string } | null;
 }
 
-/** token 计数本地化：zh ≥1亿→x.x亿 / ≥1万→x.x万；en ≥1M→x.xM / ≥1K→x.xK（与 #82 指南口径一致） */
+/** token 计数本地化：zh ≥1亿→x.x亿 / ≥1万→x.x万；en ≥1B→x.xB / ≥1M→x.xM / ≥1K→x.xK（与 #82 指南口径一致） */
 export function formatTokenCount(n: number, zh: boolean): string {
   const trim = (v: number) => `${Math.round(v * 10) / 10}`;
   if (zh) {
@@ -31,6 +31,7 @@ export function formatTokenCount(n: number, zh: boolean): string {
     if (n >= 1e4) return `${trim(n / 1e4)}万`;
     return `${n}`;
   }
+  if (n >= 1e9) return `${trim(n / 1e9)}B`; // issue #84：高档 30 亿 → 3B（避免 3000M）
   if (n >= 1e6) return `${trim(n / 1e6)}M`;
   if (n >= 1e3) return `${trim(n / 1e3)}K`;
   return `${n}`;

@@ -1,6 +1,10 @@
 import i18n from 'i18next';
 import LanguageDetector from 'i18next-browser-languagedetector';
 import { initReactI18next } from 'react-i18next';
+// issue #69 P1-C：en 补键包（上游 en 同样缺失的键，英文文案；zh 侧不受影响）
+import ai4sPatchEn from '../ai4s/locales/en/ai4s-patch.json';
+// 挂载点 M6：ai4s zh-CN 补键包（issue #12）
+import ai4sPatchZhCN from '../ai4s/locales/zh-CN/ai4s-patch.json';
 
 function mergeTranslations(...translations: Array<Record<string, unknown>>) {
   return Object.assign({}, ...translations);
@@ -16,9 +20,6 @@ function getModuleDefaultExport(module: unknown): Record<string, unknown> {
   }
   return module as Record<string, unknown>;
 }
-
-import ai4sPatchZhCN from '../ai4s/locales/zh-CN/ai4s-patch.json'; // 挂载点 M6：ai4s zh-CN 补键包（issue #12）
-import ai4sPatchEn from '../ai4s/locales/en/ai4s-patch.json'; // issue #69 P1-C：en 补键包（上游 en 同样缺失的键，英文文案；zh 侧不受影响）
 
 const enModules = import.meta.glob('../locales/en/*.json', { eager: true }) as Record<string, unknown>;
 const zhCNModules = import.meta.glob('../locales/zh-CN/*.json', { eager: true }) as Record<string, unknown>;
@@ -52,7 +53,7 @@ i18n
       format: (value, format, lng, options) => {
         if (format === 'currency') {
           // ai4s（issue #18）：cost 语义是 credit（1 credit = $1 官方原价 × 渠道倍率），
-          // 显示为"点 / credits"，不显示货币符号；档位：体验 3 / 标准 20 / 高档 80 点每自然月
+          // 显示为"点 / credits"，不显示货币符号；档位：体验 100 / 标准 500 / 高档 2000 点每自然月（issue #84 起）
           const num = typeof value === 'number' ? value : Number(value);
           if (Number.isNaN(num)) return String(value);
           const isZh = (lng || '').startsWith('zh');

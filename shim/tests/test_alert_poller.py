@@ -277,7 +277,7 @@ class TestLoadTierProfile(unittest.TestCase):
             "channelTagsMatchMode": "all",
             "modelIDs": ["k3"],
             "loadBalanceStrategy": "round_robin",
-            "quota": {"requests": 100, "totalTokens": 4300000, "cost": 3,
+            "quota": {"requests": 7, "totalTokens": 150000000, "cost": 100,
                       "period": {"type": "calendar_duration", "pastDuration": None,
                                  "calendarDuration": {"unit": "month"}}},
         }
@@ -285,9 +285,9 @@ class TestLoadTierProfile(unittest.TestCase):
         for field in ("channelIDs", "channelTags", "channelTagsMatchMode", "modelIDs",
                       "loadBalanceStrategy", "modelMappings"):
             self.assertEqual(prof[field], tpl_profile[field], field)
-        self.assertEqual(prof["quota"]["requests"], 100)
-        self.assertEqual(prof["quota"]["totalTokens"], 4300000)
-        self.assertEqual(prof["quota"]["cost"], "3")
+        self.assertEqual(prof["quota"]["requests"], 7)
+        self.assertEqual(prof["quota"]["totalTokens"], 150000000)
+        self.assertEqual(prof["quota"]["cost"], "100")
         self.assertEqual(prof["quota"]["period"]["calendarDuration"], {"unit": "month"})
         self.assertIsNone(prof["quota"]["period"]["pastDuration"])  # 键存在且原样为 None
 
@@ -309,7 +309,7 @@ class TestLoadTierProfile(unittest.TestCase):
         # （对齐前端 zod 缺省，且 'any' 搭配空 channelTags 本就不限制任何渠道）
         tpl_profile = {"modelMappings": [], "channelIDs": None, "channelTags": None,
                        "channelTagsMatchMode": None, "modelIDs": None, "loadBalanceStrategy": None,
-                       "quota": {"requests": None, "totalTokens": 43000000, "cost": 20,
+                       "quota": {"requests": None, "totalTokens": 750000000, "cost": 500,
                                  "period": {"type": "calendar_duration", "calendarDuration": {"unit": "month"}}}}
         prof = self._load(tpl_profile)
         self.assertIsNone(prof["channelIDs"])
@@ -399,8 +399,8 @@ class TestCreateEmpKey(unittest.TestCase):
         return result, gql_calls, assign, dm
 
     def _handler(self, user=True, existing_key=None):
-        tpl = {"name": "体验档", "profile": {"modelMappings": [], "quota": {"requests": None, "totalTokens": 4300000,
-               "cost": 3, "period": {"type": "calendar_duration", "calendarDuration": {"unit": "month"}}}}}
+        tpl = {"name": "体验档", "profile": {"modelMappings": [], "quota": {"requests": None, "totalTokens": 150000000,
+               "cost": 100, "period": {"type": "calendar_duration", "calendarDuration": {"unit": "month"}}}}}
 
         def handler(query, variables):
             if "users(" in query:

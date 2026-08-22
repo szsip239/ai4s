@@ -9,7 +9,7 @@ import { IconBook, IconChevronDown } from '@tabler/icons-react';
 import { useTranslation } from 'react-i18next';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { GUIDE_MODELS, buildGuideSnippets } from './key-guide';
 
@@ -35,13 +35,11 @@ export function KeyGuide() {
       <Card className='mt-4'>
         <CardHeader>
           <div className='flex items-start justify-between gap-3'>
-            <div>
-              <CardTitle className='flex items-center gap-2'>
-                <IconBook className='h-5 w-5' />
-                {t('ai4s.myKeys.guide.title')}
-              </CardTitle>
-              <CardDescription>{t('ai4s.myKeys.guide.description')}</CardDescription>
-            </div>
+            {/* issue #84 文案瘦身：删掉自明性引言（卡名「配置指南」已自明） */}
+            <CardTitle className='flex items-center gap-2'>
+              <IconBook className='h-5 w-5' />
+              {t('ai4s.myKeys.guide.title')}
+            </CardTitle>
             {/* trigger 落真实 button（ai-elements/plan.tsx 惯例）：保留 button 语义与键盘可达 */}
             <CollapsibleTrigger asChild>
               <Button variant='ghost' size='icon' aria-label={t('ai4s.myKeys.guide.toggle')}>
