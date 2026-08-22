@@ -32,6 +32,8 @@ axonhub 无事件源的事务靠主动轮询补齐。巡检项（状态翻转才
   axonhub 无 JIT 默认项目钩子、无用户创建事件（上游实证），靠轮询补齐——users 扫描筛
   activated/非 owner/不在 Default 项目 → addUserToProject（scopes 与脚本 SCOPES 一致）；
   幂等天然成立（已成员被筛除），单用户失败记日志下轮重试，入项成功发群通知让管理员感知。
+  issue #87：Default 解析 fail-closed——只按名命中 "Default"，找不到记日志本轮跳过，
+  不回退到 myProjects 首项（改名/删除时会把新用户静默加进任意项目且通知谎报 Default）。
 
 发送：飞书群机器人签名校验（与 shim /feishu-alert 同算法）；axonhub 实时事件
 （channel.auto_disabled）走 shim /feishu-alert 适配器，本模块不重复。
@@ -622,8 +624,10 @@ def auto_assign_project(ax: Axonhub):
     项目头实证：addUserToProject 不需要 X-Project-ID（项目由 input.projectId 决定，
     2026-08-20 与 assign-default-project.sh 不带头跑通一致），复用 Axonhub.gql 即可。"""
     projs = ax.gql(MY_PROJECTS_QUERY)["myProjects"] or []
-    pid = next((p["id"] for p in projs if p.get("name") == "Default"),
-               projs[0]["id"] if projs else None)
+    # issue #87：fail-closed——只认名为 Default 的项目，找不到记日志本轮跳过；
+    # 不回退到任意项目（此前回退 projs[0]：Default 被改名/删除时会把新用户静默加进
+    # 第一个项目，且通知仍谎报「Default」，多项目场景实测发现）
+    pid = next((p["id"] for p in projs if p.get("name") == "Default"), None)
     if not pid:
         print("[alert] 自动入项：myProjects 中未找到 Default 项目，本轮跳过", flush=True)
         return

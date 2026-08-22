@@ -9,13 +9,16 @@ issue #57 增补：POLL_INTERVAL 非法值 import 安全（P1）、save_state �
 issue #72 增补：审批同步泛化（提额/新建并存）、新建执行体各分支、归属 SQL 形状（psycopg 假模块注入）。
 issue #73 增补：新用户自动入 Default 项目（pending_default_project_users 纯函数筛选、
 auto_assign_project 幂等/单用户失败不阻塞/入项群通知）。
+issue #87 增补：Default 解析 fail-closed（按名命中不依赖顺序、缺失时不加人不发通知只记日志）。
 """
 import json
+import io
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from unittest import mock
 
 # 让测试可 import shim 目录下的 alert_poller（discover 从 shim/tests 启动）
@@ -809,6 +812,24 @@ class TestAutoAssignProject(unittest.TestCase):
         sends, adds = self._run([self._user(9, "new@x")], my_projects=[])
         self.assertEqual(adds, [])
         self.assertEqual(sends, [])
+
+    def test_default_not_first_still_picked(self):
+        # issue #87 回归：Default 不在 myProjects 首位也按名命中（不依赖列表顺序）
+        sends, adds = self._run([self._user(9, "new@x")], my_projects=[
+            {"id": "gid://axonhub/Project/2", "name": "P-Test"},
+            {"id": "gid://axonhub/Project/1", "name": "Default"}])
+        self.assertEqual([a["projectId"] for a in adds], ["gid://axonhub/Project/1"])
+        self.assertEqual(len(sends), 1)
+        self.assertIn("自动加入 Default 项目", sends[0])
+
+    def test_default_missing_fail_closed(self):
+        # issue #87：Default 被改名/删除 → 不加任何项目、不发通知、只记日志（不回退 projs[0]）
+        with redirect_stdout(io.StringIO()) as buf:
+            sends, adds = self._run([self._user(9, "new@x")], my_projects=[
+                {"id": "gid://axonhub/Project/2", "name": "P-Test"}])
+        self.assertEqual(adds, [])
+        self.assertEqual(sends, [])
+        self.assertIn("未找到 Default 项目", buf.getvalue())
 
 
 class TestCheckCycleDebounce(unittest.TestCase):
