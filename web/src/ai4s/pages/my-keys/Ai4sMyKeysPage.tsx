@@ -12,6 +12,8 @@
  * 原飞书审批定义通道并存（飞书里直接提单仍可用，两通道共用执行体）。
  * 交付分流：飞书身份（email 为 ou_*@casdoor.oidc）→ 批准后明文私信本人；
  * 非飞书（本地/钉钉/企微账号）→ 明文私信管理员备付；两种身份都可在本页查看明文。
+ * issue #82：页底内嵌配置指南折叠卡（KeyGuide）——接入地址/客户端示例/档位说明/FAQ，
+ * 员工零 scope 可看；入口地址取 window.location.origin 自适应（tailnet 规范名/localhost）。
  */
 import { useState } from 'react';
 import { format } from 'date-fns';
@@ -35,6 +37,7 @@ import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
 import { useMe } from '@/features/auth/data/auth';
 import { useCancelKeyRequest, useCreateKeyRequest, useMyKeyRequests, useMyKeys, type KeyRequest, type MyKey } from './api';
+import { KeyGuide } from './KeyGuide';
 
 type ApplyKind = 'new' | 'upgrade' | null;
 
@@ -256,6 +259,9 @@ export default function Ai4sMyKeysPage() {
             )}
           </CardContent>
         </Card>
+
+        {/* issue #82：员工侧配置指南折叠卡（接入地址/示例/档位/FAQ） */}
+        <KeyGuide />
 
         <Dialog open={applyKind !== null} onOpenChange={(open) => !open && closeDialog()}>
           <DialogContent>
