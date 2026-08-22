@@ -1,7 +1,9 @@
 /**
  * 员工「我的 Key」页（issue #74 列表 / issue #79 控制台申请通道）。
  * 背景：#68 收掉员工 key 自管权限后员工看不到自己名下的 key，也没有审批入口。
- * 本页列本人名下全部 key（名称/状态/档位/创建时间，无明文——上游本就不可取）。
+ * 本页列本人名下全部 key（名称/明文/状态/档位/创建时间）。
+ * issue #81：明文对本人可见（/self/keys 服务端 userID=me.id 过滤下发），默认掩码展示，
+ * 点「显示」查看、可复制——审批私信之外的查看兜底。
  * issue #79：两个按钮从指引对话框升级为真实发起——填用途/目标档提交 → shim 落待办申请并
  * 推管理员飞书审批卡，管理员在控制台审批页点批后自动执行；「我的申请」区展示本人
  * 申请的 pending/approved/rejected/expired 状态与结果（30s 轮询，与巡检节奏一致）。
@@ -9,15 +11,16 @@
  * 撤回置 canceled 并回执管理员（审批卡更新/群文本），状态新增 canceled 态。
  * 原飞书审批定义通道并存（飞书里直接提单仍可用，两通道共用执行体）。
  * 交付分流：飞书身份（email 为 ou_*@casdoor.oidc）→ 批准后明文私信本人；
- * 非飞书（本地/钉钉/企微账号）→ 明文只给管理员，本页显示「已通过，请联系管理员领取」。
+ * 非飞书（本地/钉钉/企微账号）→ 明文私信管理员备付；两种身份都可在本页查看明文。
  */
 import { useState } from 'react';
 import { format } from 'date-fns';
 import { useTranslation } from 'react-i18next';
-import { IconKey, IconPlus, IconTrendingUp } from '@tabler/icons-react';
+import { IconEye, IconEyeOff, IconKey, IconPlus, IconTrendingUp } from '@tabler/icons-react';
 import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { CopyButton } from '@/components/ui/copy-button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import {
@@ -50,10 +53,33 @@ function reqStatusVariant(status: string): 'default' | 'secondary' | 'destructiv
 
 function KeyRow({ k }: { k: MyKey }) {
   const { t } = useTranslation();
+  const [showKey, setShowKey] = useState(false);
   const tier = k.profiles?.activeProfile || t('ai4s.myKeys.noTier');
+  // 掩码：保前缀 ah- 与尾 4 位便于辨认，中间打码（issue #81 明文本人可见，默认不裸露）
+  const masked = k.key ? `${k.key.slice(0, 3)}••••••••${k.key.slice(-4)}` : '—';
   return (
     <TableRow>
       <TableCell className='font-medium'>{k.name}</TableCell>
+      <TableCell>
+        {k.key ? (
+          <span className='flex items-center gap-1'>
+            <code className='text-xs'>{showKey ? k.key : masked}</code>
+            <Button
+              size='icon'
+              variant='ghost'
+              className='h-6 w-6'
+              title={t(showKey ? 'ai4s.myKeys.key.hide' : 'ai4s.myKeys.key.show')}
+              onClick={() => setShowKey((v) => !v)}
+            >
+              {showKey ? <IconEyeOff className='h-3.5 w-3.5' /> : <IconEye className='h-3.5 w-3.5' />}
+            </Button>
+            {/* 复制走仓库既有 CopyButton（useCopyToClipboard：成功/失败 toast + 已复制态翻转） */}
+            <CopyButton content={k.key} />
+          </span>
+        ) : (
+          '—'
+        )}
+      </TableCell>
       <TableCell>
         <Badge variant={statusVariant(k.status)}>{t(`ai4s.myKeys.status.${k.status}`, k.status)}</Badge>
       </TableCell>
@@ -185,6 +211,7 @@ export default function Ai4sMyKeysPage() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>{t('ai4s.myKeys.columns.name')}</TableHead>
+                    <TableHead>{t('ai4s.myKeys.columns.key')}</TableHead>
                     <TableHead>{t('ai4s.myKeys.columns.status')}</TableHead>
                     <TableHead>{t('ai4s.myKeys.columns.tier')}</TableHead>
                     <TableHead>{t('ai4s.myKeys.columns.createdAt')}</TableHead>

@@ -183,11 +183,56 @@ class TestResolve(_Base):
              mock.patch.object(kr, "_get_ax", return_value=object()):
             out, err = kr.resolve_request(req["id"], "approve")
         self.assertIsNone(err)
-        self.assertIn("请联系管理员领取", out["result"])
-        # 非飞书：申请人收不到私信；明文只进管理员私信
+        self.assertIn("我的 Key", out["result"])  # issue #81：页面本人可见明文，不再依赖管理员线下领取
+        # 非飞书：申请人收不到私信；明文只进管理员私信（备付）
         self.assertEqual(len(self.dms), 1)
         self.assertEqual(self.dms[0][0], "ou_admin")
         self.assertIn("ah-plain-9999", self.dms[0][1])
+        self.assertIn("备付", self.dms[0][1])
+
+    def test_approve_new_tier_override(self):
+        # issue #81：批准时管理员改定档位——覆盖默认体验档，贯穿 ensure_emp_key 与交付文案
+        req = self._create(_ME_FEISHU)
+        with mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_FEISHU), \
+             mock.patch.object(kr.alert_poller, "ensure_emp_key", return_value=("emp-x", "ah-plain-1234", "")) as ek, \
+             mock.patch.object(kr, "_get_ax", return_value=object()):
+            out, err = kr.resolve_request(req["id"], "approve", tier_override="标准档")
+        self.assertIsNone(err)
+        self.assertEqual(ek.call_args.kwargs["tier"], "标准档")
+        self.assertIn("标准档", out["result"])
+        self.assertIn("标准档", self.dms[0][1])
+        self.assertNotIn("提额", self.dms[0][1])  # 非默认档不带提额提示
+
+    def test_approve_new_default_tier_init(self):
+        # 缺省（不带 tier）= 体验档默认，行为与 #79 一致
+        req = self._create(_ME_FEISHU)
+        with mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_FEISHU), \
+             mock.patch.object(kr.alert_poller, "ensure_emp_key", return_value=("emp-x", "ah-x", "")) as ek, \
+             mock.patch.object(kr, "_get_ax", return_value=object()):
+            out, err = kr.resolve_request(req["id"], "approve")
+        self.assertIsNone(err)
+        self.assertEqual(ek.call_args.kwargs["tier"], kr.alert_poller.KEY_INIT_TIER)
+        self.assertIn("提额", self.dms[0][1])  # 默认档带提额引导
+
+    def test_approve_upgrade_tier_override(self):
+        # issue #81：提额批准时改定档覆盖所求档
+        req = self._create(_ME_FEISHU, kind="upgrade", tier="标准档")
+        with mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_FEISHU), \
+             mock.patch.object(kr.alert_poller, "apply_tier_to_user", return_value="已将 2 个 Key 换挂 高档") as at, \
+             mock.patch.object(kr, "_get_ax", return_value=object()):
+            out, err = kr.resolve_request(req["id"], "approve", tier_override="高档")
+        self.assertIsNone(err)
+        self.assertEqual(at.call_args[0][2], "高档")
+
+    def test_approve_invalid_tier_400(self):
+        # 白名单外档位直接 400，不执行、状态保持 pending
+        req = self._create(_ME_FEISHU)
+        with mock.patch.object(kr.alert_poller, "ensure_emp_key") as ek:
+            out, err = kr.resolve_request(req["id"], "approve", tier_override="超档")
+        self.assertEqual(err[0], 400)
+        self.assertIn("tier", err[1])
+        self.assertEqual(out["status"], "pending")
+        ek.assert_not_called()
 
     def test_approve_upgrade_calls_apply_tier(self):
         req = self._create(_ME_FEISHU, kind="upgrade", tier="标准档")

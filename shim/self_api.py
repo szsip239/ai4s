@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
-"""员工自助端点（issue #74）：GET /self/keys —— 本人名下 Key 列表（绝不含明文）。
+"""员工自助端点（issue #74）：GET /self/keys —— 本人名下 Key 列表（含明文，见下）。
 
 背景：issue #68 收掉员工 key 自管权限后，员工在控制台看不到自己名下的 key——上游
 UserPersonalAPIKeyReadRule 对 type≠personal 的 key 不做属主隔离，read_api_keys 下发即
 见全项目 key（looplj/axonhub#2281 挂账）；personal 类型「只能创建者修改」会断管理员
 提档/停启，不可绕行。故走 shim 自助端点：caller 身份经 me 内省确认后，用 admin token
-服务端按 userID=me.id 过滤查询，只回安全字段——绕过上游缺陷而不放开任何权限。
+服务端按 userID=me.id 过滤查询，只回白名单字段——绕过上游缺陷而不放开任何权限。
 
 鉴权：admin_api._introspect 同款（caller Bearer 透传 axonhub me 内省，无缓存）。
 任何有效登录用户即可（不要 scope——员工 users.scopes=[] 是 #68 后常态）；
-内省失败 401/axonhub 不可达 503，不降级。响应经字段白名单塑形，上游即使多返回也剥掉
-（key 明文永不出现）。本模块不进检测路径；单请求失败只影响本请求。
+内省失败 401/axonhub 不可达 503，不降级。响应经字段白名单塑形，上游即使多返回也剥掉。
+明文可见性（issue #81 拍板）：key 明文对本人可见——唯一闸门=服务端 userID=me.id 等值过滤，
+他人/未登录一律拿不到；审批私信之外的查看兜底（私信丢失地/换机场景）。
+本模块不进检测路径；单请求失败只影响本请求。
 """
 import admin_api  # _introspect/_respond 复用（issue #74 实现约定）
 import alert_poller  # Axonhub gql 客户端复用（login + 401 重登重试）；import 不起线程
@@ -18,14 +20,15 @@ import key_requests  # 控制台申请通道（issue #79）：store/校验/通�
 
 # 本人 key 查询：服务端 userID 等值过滤（APIKeyWhereInput.userID 2026-08-21 内省实证支持）。
 # 约束：first:100 硬上限——个人名下 key 数量级为个位数，超限需改 after 分页。
+# key 明文：issue #81 起对本人下发（唯一闸门=上面的 userID=me.id 过滤）。
 _SELF_KEYS_QUERY = (
     "query($uid: ID!) { apiKeys(first: 100, where: {userID: $uid}) { edges { node { "
-    "id name status createdAt profiles { activeProfile profiles { name quota { requests totalTokens cost } } }"
+    "id name key status createdAt profiles { activeProfile profiles { name quota { requests totalTokens cost } } }"
     " } } } }"
 )
 # 响应白名单字段（expiresAt 在本版上游 schema 不存在——APIKey 字段内省无此项，不落响应；
-# id 为 GID，供前端列表 React key 用——评审 P2）
-_KEY_FIELDS = ("id", "name", "status", "createdAt", "profiles")
+# id 为 GID，供前端列表 React key 用——评审 P2；key=明文，issue #81 本人可见）
+_KEY_FIELDS = ("id", "name", "key", "status", "createdAt", "profiles")
 
 _ax = None  # 模块级 Axonhub 单例（token 缓存；login 惰性）
 
@@ -38,7 +41,7 @@ def _get_ax():
 
 
 def _shape_key(node: dict) -> dict:
-    """白名单塑形：只保留安全字段（name/status/createdAt/profiles），其余一律剥掉。"""
+    """白名单塑形：只保留白名单字段（含 key 明文，issue #81 本人可见），其余一律剥掉。"""
     return {k: node.get(k) for k in _KEY_FIELDS}
 
 

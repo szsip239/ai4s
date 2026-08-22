@@ -841,16 +841,22 @@ def _kr_list(handler, _me):
 
 
 def _kr_resolve(handler, _me, rid, action):
-    """approve/reject 共用：状态门幂等（非 pending 返回现状）；approve 执行失败 502 保持 pending。"""
+    """approve/reject 共用：状态门幂等（非 pending 返回现状）；approve 执行失败 502 保持 pending。
+    issue #81：approve 可带 body {"tier": "<档名>"} 覆盖执行档位（新建默认体验档、提额默认所求档）。"""
     import key_requests
     reason = ""
-    if action == "reject":
+    tier = ""
+    if action in ("approve", "reject"):
         payload = _read_body(handler)
         if payload is None:
             return  # 413/400 已回出
-        reason = (payload.get("reason") or "") if isinstance(payload, dict) else ""
+        if isinstance(payload, dict):
+            if action == "reject":
+                reason = payload.get("reason") or ""
+            else:
+                tier = payload.get("tier") or ""
     try:
-        req, err = key_requests.resolve_request(rid, action, reason)
+        req, err = key_requests.resolve_request(rid, action, reason, tier_override=tier)
     except Exception as e:
         print(f"[admin] key 申请点批异常 {rid}: {type(e).__name__}: {e}", flush=True)
         _respond(handler, 503, {"error": "request store unavailable"})

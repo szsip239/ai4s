@@ -32,7 +32,7 @@ shim 内与检测路径完全隔离的 `/dlp-admin/*` 管理面：Bearer token �
 _Avoid_: 管理接口、后台 API
 
 **self 平面（Self Plane）**:
-shim 内员工自助面 `/self/*`（issue #74 `GET /self/keys` 查本人 Key；issue #79 `GET/POST /self/key-requests` 控制台发起新建/提额申请与查本人申请状态；issue #80 `POST /self/key-requests/<id>/cancel` 撤回本人 pending 申请）：与 admin 平面同款内省鉴权但无 scope 门槛（任何有效登录用户），服务端按本人身份过滤，响应白名单塑形绝不含 key 明文。
+shim 内员工自助面 `/self/*`（issue #74 `GET /self/keys` 查本人 Key；issue #79 `GET/POST /self/key-requests` 控制台发起新建/提额申请与查本人申请状态；issue #80 `POST /self/key-requests/<id>/cancel` 撤回本人 pending 申请）：与 admin 平面同款内省鉴权但无 scope 门槛（任何有效登录用户），服务端按本人身份过滤，响应白名单塑形；issue #81 起 `/self/keys` 对本人下发 key 明文（唯一闸门=服务端 userID=me.id 过滤，他人/未登录拿不到）。
 _Avoid_: 员工 API、自助接口
 
 **单一源（Single Source of Truth）**:

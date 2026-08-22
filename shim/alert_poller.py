@@ -17,7 +17,8 @@ axonhub 无事件源的事务靠主动轮询补齐。巡检项（状态翻转才
     → 归属申请人（createAPIKey 无 userID 入参，v1.0.0-beta6 实证；建后 SQL 直改 user_id 并
       bump updated_at，axonhub 30s 增量刷新自动跟进缓存；归申请人是提额流按 userID 找 key 的前提）
     → 挂体验档 profile → 机器人私信申请人交付明文（im:message，2026-08 实证可用）；
-    私信失败兜底=群回执只发尾号 4 位 + 找管理员领取。群回执只发摘要，绝不含明文。
+    私信失败兜底=申请人到控制台「我的 Key」页查看明文（issue #81 起 /self/keys 对本人下发明文）。
+    群回执只发摘要，绝不含明文。
   FEISHU_APP_ID/FEISHU_APP_SECRET 缺失或两个 code 都空即整体跳过（与独立容器时代一致）。
 
 新用户自动入 Default 项目（issue #73，移植 assign-default-project.sh 筛选+入项逻辑）：
@@ -202,7 +203,8 @@ USER_BY_EMAIL_QUERY = (
 )
 PROFILE_TEMPLATES_QUERY = (
     "query { apiKeyProfileTemplates(first: 50) { edges { node { id name "
-    "profile { name quota { requests totalTokens cost period { type calendarDuration { unit } } } } } } } }"
+    "profile { name modelMappings { from to } "
+    "quota { requests totalTokens cost period { type calendarDuration { unit } } } } } } } }"
 )
 UPDATE_PROFILES_MUTATION = (
     "mutation($id: ID!, $input: UpdateAPIKeyProfilesInput!) { updateAPIKeyProfiles(id: $id, input: $input) { id } }"
@@ -216,14 +218,18 @@ def find_user_by_email(ax: Axonhub, email: str):
 
 
 def load_tier_profile(ax: Axonhub, tier_name: str):
-    """Profile 模板 → updateAPIKeyProfiles 输入形状；模板不存在返回 None。"""
+    """Profile 模板 → updateAPIKeyProfiles 输入形状；模板不存在返回 None。
+    issue #81：modelMappings 必须透传（模板空则 []）——此前丢弃落库 null，前端 zod
+    必填数组解析崩（Key 管理「配置」对话框报错）。"""
     tpls = ax.gql(PROFILE_TEMPLATES_QUERY)["apiKeyProfileTemplates"]["edges"]
     tpl = next((e["node"] for e in tpls if e["node"]["name"] == tier_name), None)
     if not tpl:
         return None
     quota = (tpl["profile"] or {}).get("quota") or {}
     period = quota.get("period") or {}
-    return {"name": tier_name, "quota": {
+    return {"name": tier_name,
+            "modelMappings": (tpl["profile"] or {}).get("modelMappings") or [],
+            "quota": {
         "requests": quota.get("requests"),
         "totalTokens": quota.get("totalTokens"),
         "cost": str(quota["cost"]) if quota.get("cost") is not None else None,
@@ -358,10 +364,12 @@ def key_by_name(ax: Axonhub, name: str):
     return edges[0]["node"] if edges else None
 
 
-def ensure_emp_key(ax: Axonhub, user: dict, seed: str, purpose: str, day: str, tail: str):
+def ensure_emp_key(ax: Axonhub, user: dict, seed: str, purpose: str, day: str, tail: str, tier: str = None):
     """建 key 核心（issue #79 抽出，控制台/飞书审批两通道共用）：按名幂等找回或新建 →
-    归 user → 挂体验档。返回 (name, plain, owner_note)；模板缺失/gql 异常上抛（调用方下轮重试）。
+    归 user → 挂档（默认体验档；issue #81 控制台审批可选档覆盖经 tier 传入，飞书通道不传=原样）。
+    返回 (name, plain, owner_note)；模板缺失/gql 异常上抛（调用方下轮重试）。
     幂等：半途失败留下同名 key 时按名找回明文续走（不重复建 key）。"""
+    tier_name = tier or KEY_INIT_TIER
     name = make_key_name(seed, purpose, day, tail)
     node = key_by_name(ax, name)
     if not node:
@@ -374,11 +382,11 @@ def ensure_emp_key(ax: Axonhub, user: dict, seed: str, purpose: str, day: str, t
     except Exception as e:
         owner_note = "；归属调整失败，请管理员人工核对"
         print(f"[alert] key 归属调整失败 {name}: {type(e).__name__}: {e}", flush=True)
-    prof = load_tier_profile(ax, KEY_INIT_TIER)
+    prof = load_tier_profile(ax, tier_name)
     if not prof:
-        raise RuntimeError(f"找不到 {KEY_INIT_TIER} Profile 模板")
+        raise RuntimeError(f"找不到 {tier_name} Profile 模板")
     ax.gql(UPDATE_PROFILES_MUTATION,
-           {"id": node["id"], "input": {"activeProfile": KEY_INIT_TIER, "profiles": [prof]}})
+           {"id": node["id"], "input": {"activeProfile": tier_name, "profiles": [prof]}})
     return name, plain, owner_note
 
 
@@ -394,12 +402,12 @@ def create_emp_key(ax: Axonhub, open_id: str, purpose: str, day: str, ic: str) -
     dm_ok = feishu_dm(open_id, (
         f"[ai4s] 你的 API Key 已创建（审批 {ic}）\n"
         f"Key 名称: {name}\n档位: {KEY_INIT_TIER}（要更高档请另提「ai4s 额度提额申请」审批）\n"
-        f"明文（仅此一条消息，请立即复制保存）:\n{plain}\n"
-        "保管提醒: 明文只出现这一次，勿转发勿提交到代码仓库；丢失不补办，重新提交「ai4s API Key 申请」审批即可。"
+        f"明文（请立即复制保存）:\n{plain}\n"
+        "保管提醒: 明文勿转发勿提交代码仓库；本消息之外也可在控制台「我的 Key」页查看复制（issue #81）。"
     ))
     if dm_ok:
         return f"已建 Key {name}（{KEY_INIT_TIER}）{owner_note}，明文已私信申请人"
-    return f"已建 Key {name}（{KEY_INIT_TIER}）{owner_note}；私信未送达，Key 尾号 …{plain[-4:]}，请申请人联系管理员领取"
+    return f"已建 Key {name}（{KEY_INIT_TIER}）{owner_note}；私信未送达，申请人可在控制台「我的 Key」页查看明文"
 
 
 def _approval_day(inst: dict) -> str:

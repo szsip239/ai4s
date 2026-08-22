@@ -16,7 +16,8 @@ pin + 懒加载纪律相悖；(c) 卡片必须 app bot 发送（webhook 自定�
 本环境端到端可测，零新依赖零后台配置。
 
 交付分流：申请人 email 以 @casdoor.oidc 结尾（飞书身份）→ 明文私信申请人；
-否则（本地/钉钉/企微账号）→ 明文只私信管理员，申请人侧页面显示「已通过，请联系管理员领取」。
+否则（本地/钉钉/企微账号）→ 明文私信管理员备付。无论哪种身份，申请人都可在「我的 Key」页
+查看本人 Key 明文（issue #81 项4，/self/keys 服务端 userID=me 过滤）。
 
 幂等：状态门（非 pending 不再执行，重复回调/重复点批返回现状）+ ensure_emp_key 按名找回
 （key 名由申请 id 派生，确定性）。执行失败状态保持 pending（管理员可重试），与 #72
@@ -54,6 +55,9 @@ if not os.environ.get("KEY_REQUEST_CONSOLE_URL"):
 REQUEST_TTL = alert_poller._env_int("KEY_REQUEST_TTL", 72 * 3600)
 # 提额目标档白名单（与 alert_poller.parse_tier 可识别的两档一致）
 TIERS = ("标准档", "高档")
+# 审批可选档全集（issue #81 管理员同意时可改选）：新建初始档 + 提额两档
+# 与前端审批弹窗 web/src/ai4s/pages/key-requests/Ai4sKeyRequestsPage.tsx APPROVE_TIERS 双向同源，改动需两侧同步
+ALLOWED_TIERS = (alert_poller.KEY_INIT_TIER,) + TIERS
 MAX_PURPOSE = 200
 MAX_REASON = 200
 # 状态文件滚动上限（与 approval_done[-200:] 同款纪律）
@@ -329,37 +333,43 @@ def create_request(me: dict, kind: str, purpose: str, tier: str):
     return shape_public(req), None
 
 
-def _deliver_new_key(req: dict, name: str, plain: str, owner_note: str):
-    """明文交付分流。返回 (result 摘要[无明文], applicant_dm_text 或 None——None 表示交付步骤已自行私信）。"""
+def _deliver_new_key(req: dict, name: str, plain: str, owner_note: str, tier_name: str):
+    """明文交付分流。返回 (result 摘要[无明文], applicant_dm_text 或 None——None 表示交付步骤已自行私信）。
+    tier_name=实际挂档（issue #81 审批可改选）；明文兜底=「我的 Key」页本人可见（issue #81 项4）。"""
     open_id = (req.get("applicant") or {}).get("openId")
     email = (req.get("applicant") or {}).get("email")
+    upgrade_hint = ("（要更高档请在「我的 Key」页发起申请提额）"
+                    if tier_name == alert_poller.KEY_INIT_TIER else "")
     if open_id:
         dm_ok = alert_poller.feishu_dm(open_id, (
             f"[ai4s] 你的 API Key 已创建（控制台申请 {req['id']}）\n"
-            f"Key 名称: {name}\n档位: {alert_poller.KEY_INIT_TIER}（要更高档请在「我的 Key」页发起申请提额）\n"
-            f"明文（仅此一条消息，请立即复制保存）:\n{plain}\n"
-            "保管提醒: 明文只出现这一次，勿转发勿提交到代码仓库；丢失不补办，重新发起申请即可。"
+            f"Key 名称: {name}\n档位: {tier_name}{upgrade_hint}\n"
+            f"明文（请立即复制保存）:\n{plain}\n"
+            "保管提醒: 明文勿转发勿提交代码仓库；本消息之外也可在「我的 Key」页查看复制。"
         ))
         if dm_ok:
-            return f"已建 Key {name}（{alert_poller.KEY_INIT_TIER}）{owner_note}，明文已私信申请人", None
-        return (f"已建 Key {name}（{alert_poller.KEY_INIT_TIER}）{owner_note}；私信未送达，"
-                f"Key 尾号 …{plain[-4:]}，请联系管理员领取"), None
-    # 非飞书账号（本地/钉钉/企微）：明文只给管理员，申请人页面提示联系管理员领取
+            return f"已建 Key {name}（{tier_name}）{owner_note}，明文已私信申请人", None
+        return (f"已建 Key {name}（{tier_name}）{owner_note}；私信未送达，"
+                "可在「我的 Key」页查看明文"), None
+    # 非飞书账号（本地/钉钉/企微）：无法私信申请人——明文私信管理员备付，
+    # 申请人照常可在「我的 Key」页查看明文（issue #81 项4 后不再依赖管理员线下交付）
     admin_note = ""
     if FEISHU_ADMIN_OPEN_ID:
         dm_ok = alert_poller.feishu_dm(FEISHU_ADMIN_OPEN_ID, (
             f"[ai4s] 控制台 Key 申请已批准（{req['id']}）\n"
-            f"申请人: {email}（非飞书账号，无法私信交付）\n"
-            f"Key 名称: {name}\n档位: {alert_poller.KEY_INIT_TIER}\n"
-            f"明文（请线下交付申请人，勿群发勿入库）:\n{plain}"
+            f"申请人: {email}（非飞书账号，明文同时保留给管理员备付）\n"
+            f"Key 名称: {name}\n档位: {tier_name}\n"
+            f"明文（勿群发勿入库）:\n{plain}"
         ))
-        admin_note = "，明文已私信管理员" if dm_ok else "，管理员私信未送达"
-    return (f"已建 Key {name}（{alert_poller.KEY_INIT_TIER}）{owner_note}；申请人为非飞书账号"
-            f"{admin_note}——已通过，请联系管理员领取"), None
+        admin_note = ("，明文已私信管理员备份" if dm_ok
+                      else "，管理员私信未送达（备付失败，不影响申请人——明文可在其「我的 Key」页查看）")
+    return (f"已建 Key {name}（{tier_name}）{owner_note}；申请人为非飞书账号"
+            f"{admin_note}——已通过，请在「我的 Key」页查看明文"), None
 
 
-def _execute(req: dict):
+def _execute(req: dict, tier_override: str = ""):
     """approve 执行体（复用 #72/#19 primitives）。返回 (result 摘要, key_name 或 None, applicant_dm_text)。
+    tier_override=管理员批准时改定的档位（issue #81）：新建覆盖默认体验档、提额覆盖所求档；空串=原默认。
     异常上抛——调用方保持 pending 供重试。"""
     email = (req.get("applicant") or {}).get("email") or ""
     user = alert_poller.find_user_by_email(_get_ax(), email)
@@ -369,17 +379,21 @@ def _execute(req: dict):
         # seed：飞书身份用 open_id（与 #72 命名一致），非飞书用 u<uid>（同名幂等不受影响——tail 是申请 id）
         seed = (req.get("applicant") or {}).get("openId") or f"u{str(user['id']).rsplit('/', 1)[-1]}"
         day = time.strftime("%Y%m%d", time.gmtime(req.get("ts") or time.time()))
+        tier_name = tier_override or alert_poller.KEY_INIT_TIER
         name, plain, owner_note = alert_poller.ensure_emp_key(
-            _get_ax(), user, seed, req.get("purpose") or "", day, req["id"])
-        result, dm_text = _deliver_new_key(req, name, plain, owner_note)
+            _get_ax(), user, seed, req.get("purpose") or "", day, req["id"], tier=tier_name)
+        result, dm_text = _deliver_new_key(req, name, plain, owner_note, tier_name)
         return result, name, dm_text
-    result = alert_poller.apply_tier_to_user(_get_ax(), user, req.get("tier") or "")
+    result = alert_poller.apply_tier_to_user(
+        _get_ax(), user, tier_override or (req.get("tier") or ""))
     dm = f"[ai4s] 你的提额申请已通过（{req['id']}）\n{result}"
     return result, None, dm
 
 
-def resolve_request(rid: str, action: str, reason: str = ""):
+def resolve_request(rid: str, action: str, reason: str = "", tier_override: str = ""):
     """管理员点批：approve=执行 + 回执；reject=标记 + 回执。
+    tier_override=批准时改定的档位（issue #81）：非空必须在 ALLOWED_TIERS 白名单内，否则 400；
+    空串=默认（新建体验档/提额所求档）。
     返回 (req_public 或 None, (status, 文案) 或 None)：
       - (None, (404, ...)) 未找到；(req, None) 成功/幂等现状；执行失败 (req, (502, ...)) 保持 pending；
         目标正在执行 approve（并发点批）→ (req, (409, ...))。
@@ -395,6 +409,8 @@ def resolve_request(rid: str, action: str, reason: str = ""):
             return shape_public(req), None  # 幂等：重复点批/回调返回现状
         if rid in _executing:
             return shape_public(req), (409, "该申请正在执行通过操作，请稍后刷新查看结果")
+        if action == "approve" and tier_override and tier_override not in ALLOWED_TIERS:
+            return shape_public(req), (400, f"tier 必须是 {'/'.join(ALLOWED_TIERS)}")
         if action == "approve" and time.time() - req.get("ts", 0) > REQUEST_TTL:
             # 超时申请不可批：就地转 expired（sweep 未跑到时的兜底），回执后返回现状
             req["status"] = "expired"
@@ -426,7 +442,7 @@ def resolve_request(rid: str, action: str, reason: str = ""):
     # approve：执行在锁外（gql/飞书慢调用）；rid 已登记 _executing，并发 reject/重复 approve/sweep 让位
     try:
         try:
-            result, key_name, dm_text = _execute(req)
+            result, key_name, dm_text = _execute(req, tier_override)
         except Exception as e:
             print(f"[keyreq] 申请执行失败 {rid}: {type(e).__name__}: {e}", flush=True)
             return shape_public(req), (502, f"执行失败（状态保持待审批，可重试）: {type(e).__name__}: {str(e)[:120]}")

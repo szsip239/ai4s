@@ -250,15 +250,18 @@ class TestSelfKeyRequests(unittest.TestCase):
 
 
 class TestShapeKey(unittest.TestCase):
-    """白名单塑形：上游节点即使带 key 明文/多余字段也剥掉（纵深防御——响应永不含明文）。"""
+    """白名单塑形（issue #81 反转）：key 明文对本人保留下发；其余多余字段（userID/scopes 等）
+    仍一律剥掉——属主隔离唯一闸门=查询的 userID=me.id 服务端过滤。"""
 
-    def test_strips_plaintext_and_extra(self):
+    def test_keeps_plaintext_strips_extra(self):
         node = {"id": "gid://axonhub/APIKey/5", "name": "k1", "status": "enabled", "createdAt": "t",
                 "profiles": {"activeProfile": "体验档"},
-                "key": "ah-should-never-leak", "userID": "gid://axonhub/User/1", "scopes": ["*"]}
+                "key": "ah-plain-visible-to-owner", "userID": "gid://axonhub/User/1", "scopes": ["*"]}
         shaped = self_api._shape_key(node)
-        self.assertEqual(set(shaped), {"id", "name", "status", "createdAt", "profiles"})
-        self.assertNotIn("ah-should-never-leak", json.dumps(shaped))
+        self.assertEqual(set(shaped), {"id", "name", "key", "status", "createdAt", "profiles"})
+        self.assertEqual(shaped["key"], "ah-plain-visible-to-owner")  # 本人明文可见（issue #81）
+        self.assertNotIn("gid://axonhub/User/1", json.dumps(shaped))  # userID 仍剥
+        self.assertNotIn("scopes", shaped)
 
     def test_query_sends_me_id(self):
         # query_own_keys 把 me.id 绑进服务端过滤变量（本人边界由服务端 userID 等值保证）
@@ -273,8 +276,8 @@ class TestShapeKey(unittest.TestCase):
         with mock.patch.object(self_api, "_get_ax", return_value=FakeAx()):
             self.assertEqual(self_api.query_own_keys("gid://axonhub/User/9"), [])
         self.assertEqual(captured["v"], {"uid": "gid://axonhub/User/9"})
-        self.assertIn("userID", captured["q"])
-        self.assertNotIn(" key ", captured["q"])  # 查询本身不取明文字段
+        self.assertIn("userID", captured["q"])  # 明文下发的唯一闸门：服务端本人过滤
+        self.assertIn(" key ", captured["q"])  # issue #81：查询取明文字段，本人可见
 
 
 if __name__ == "__main__":

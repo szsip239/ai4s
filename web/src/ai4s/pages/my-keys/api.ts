@@ -1,7 +1,8 @@
 /**
  * 「我的 Key」数据层（issue #74 列表 / issue #79 控制台申请通道）。
  * 端点语义：caller Bearer 经 axonhub me 内省确认身份，admin token 服务端按 userID=me.id 过滤，
- * 只回安全字段——绝不含 key 明文，绝不含他人 key。
+ * 只回白名单字段——绝不含他人 key；issue #81 起含本人 key 明文（唯一闸门=服务端本人过滤，
+ * 页面默认掩码展示，点「显示」查看）。
  * 鉴权/错误：401=未登录或 token 失效；503=内省或查询暂不可用（不降级）。
  * issue #79：申请提交后 30s 轮询本人申请列表（状态翻转经审批卡/私信异步发生，与巡检节奏一致）。
  */
@@ -27,6 +28,8 @@ export interface MyKeyProfiles {
 export interface MyKey {
   id: string;
   name: string;
+  /** 明文（issue #81 本人可见；旧 shim 不下发时缺省，页面显示 —） */
+  key?: string;
   status: 'enabled' | 'disabled' | 'archived' | string;
   createdAt?: string | null;
   profiles?: MyKeyProfiles | null;

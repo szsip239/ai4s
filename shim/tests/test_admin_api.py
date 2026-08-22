@@ -2025,5 +2025,61 @@ class LayerSwitchTest(unittest.TestCase):
         self.assertNotIn("TESTA", self._read_config())
 
 
+class KeyRequestResolveWiringTest(unittest.TestCase):
+    """issue #81 P2：approve/reject body → key_requests.resolve_request 的 HTTP 层接线
+    （approve 带 tier 覆盖档位；空 body 安全；reject 带 reason）。store/执行细节见 test_key_requests。"""
+
+    def setUp(self):
+        _FAKE_STATE["mode"] = "ok"
+        _FAKE_STATE["tokens"] = {
+            "reader-token": {"id": "42", "isOwner": False, "scopes": ["read_channels"]},
+            "writer-token": {"id": "7", "isOwner": False, "scopes": ["read_channels", "write_channels"]},
+        }
+
+    def test_approve_body_tier_forwarded(self):
+        """approve body {"tier": "标准档"} → resolve_request(tier_override="标准档")，200 透传结果。"""
+        with mock.patch("key_requests.resolve_request",
+                        return_value=({"id": "kr-1", "status": "approved"}, None)) as rr:
+            status, body = _request("POST", "/dlp-admin/key-requests/approve/kr-1",
+                                    token="writer-token", payload={"tier": "标准档"})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["request"]["status"], "approved")
+        rr.assert_called_once_with("kr-1", "approve", "", tier_override="标准档")
+
+    def test_approve_empty_body_tier_default(self):
+        """approve 空 body（无 Content-Length）安全：tier_override 落空串=shim 端默认档位。"""
+        with mock.patch("key_requests.resolve_request",
+                        return_value=({"id": "kr-2", "status": "approved"}, None)) as rr:
+            status, _ = _request("POST", "/dlp-admin/key-requests/approve/kr-2", token="writer-token")
+        self.assertEqual(status, 200)
+        rr.assert_called_once_with("kr-2", "approve", "", tier_override="")
+
+    def test_reject_body_reason_forwarded(self):
+        """reject body {"reason": ...} → resolve_request(reason=...)；tier 不取（恒空串）。"""
+        with mock.patch("key_requests.resolve_request",
+                        return_value=({"id": "kr-3", "status": "rejected"}, None)) as rr:
+            status, _ = _request("POST", "/dlp-admin/key-requests/reject/kr-3",
+                                 token="writer-token", payload={"reason": "预算不足", "tier": "高档"})
+        self.assertEqual(status, 200)
+        rr.assert_called_once_with("kr-3", "reject", "预算不足", tier_override="")
+
+    def test_resolve_error_passthrough(self):
+        """store 层 (status, msg) 原样透传（如 tier 白名单 400）。"""
+        with mock.patch("key_requests.resolve_request",
+                        return_value=({"id": "kr-4", "status": "pending"}, (400, "tier 必须是 体验档/标准档/高档"))):
+            status, body = _request("POST", "/dlp-admin/key-requests/approve/kr-4",
+                                    token="writer-token", payload={"tier": "超档"})
+        self.assertEqual(status, 400)
+        self.assertIn("tier", body["error"])
+
+    def test_approve_read_scope_403(self):
+        """点批是写操作：仅 read scope → 403，resolve_request 不被调用。"""
+        with mock.patch("key_requests.resolve_request") as rr:
+            status, _ = _request("POST", "/dlp-admin/key-requests/approve/kr-5",
+                                 token="reader-token", payload={"tier": "标准档"})
+        self.assertEqual(status, 403)
+        rr.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

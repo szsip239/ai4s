@@ -326,7 +326,7 @@ class TestCreateEmpKey(unittest.TestCase):
         return result, gql_calls, assign, dm
 
     def _handler(self, user=True, existing_key=None):
-        tpl = {"name": "体验档", "profile": {"quota": {"requests": None, "totalTokens": 4300000,
+        tpl = {"name": "体验档", "profile": {"modelMappings": [], "quota": {"requests": None, "totalTokens": 4300000,
                "cost": 3, "period": {"type": "calendar_duration", "calendarDuration": {"unit": "month"}}}}}
 
         def handler(query, variables):
@@ -363,6 +363,23 @@ class TestCreateEmpKey(unittest.TestCase):
         # 挂体验档
         prof_vars = next(v for q, v in calls if "updateAPIKeyProfiles" in q)
         self.assertEqual(prof_vars["input"]["activeProfile"], "体验档")
+        # issue #81：modelMappings 必须落库为 []（此前丢字段落 null，前端 zod 解析崩）
+        self.assertEqual(prof_vars["input"]["profiles"][0]["modelMappings"], [])
+
+    def test_model_mappings_passthrough(self):
+        # issue #81：模板带实值 modelMappings 时原样透传（不丢字段、不改写）
+        mappings = [{"from": "gpt-4o", "to": "deepseek-v4"}]
+
+        def handler(query, variables):
+            h = self._handler()
+            if "apiKeyProfileTemplates" in query:
+                t = {"name": "体验档", "profile": {"modelMappings": mappings, "quota": {}}}
+                return {"apiKeyProfileTemplates": {"edges": [{"node": t}]}}
+            return h(query, variables)
+
+        _, calls, _, _ = self._run(handler)
+        prof_vars = next(v for q, v in calls if "updateAPIKeyProfiles" in q)
+        self.assertEqual(prof_vars["input"]["profiles"][0]["modelMappings"], mappings)
 
     def test_user_missing_no_create(self):
         result, calls, assign, dm = self._run(self._handler(user=False))
@@ -371,10 +388,12 @@ class TestCreateEmpKey(unittest.TestCase):
         assign.assert_not_called()
         dm.assert_not_called()
 
-    def test_dm_failure_fallback_tail_only(self):
+    def test_dm_failure_fallback_self_keys_page(self):
+        # issue #81：私信未送达的兜底从「尾号+联系管理员」改为「我的 Key 页查看明文」——
+        # 结果摘要仍绝不含明文
         result, _, _, _ = self._run(self._handler(), dm_ok=False)
         self.assertIn("私信未送达", result)
-        self.assertIn("…robe", result)  # 尾号 4 位
+        self.assertIn("我的 Key", result)
         self.assertNotIn("ah-plaintext-probe", result)
 
     def test_assign_failure_still_delivers(self):
