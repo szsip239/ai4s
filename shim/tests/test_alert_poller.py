@@ -327,6 +327,101 @@ class TestLoadTierProfile(unittest.TestCase):
         self.assertIsNone(ap.load_tier_profile(FakeAx(), "不存在的档"))
 
 
+class TestTierRank(unittest.TestCase):
+    """issue #85：档位秩次单一定义点（体验档<标准档<高档）+ key 档名/最高档纯函数。"""
+
+    def test_rank_order(self):
+        self.assertLess(ap.TIER_RANK["体验档"], ap.TIER_RANK["标准档"])
+        self.assertLess(ap.TIER_RANK["标准档"], ap.TIER_RANK["高档"])
+
+    def test_key_tier_name(self):
+        self.assertEqual(ap.key_tier_name({"profiles": {"activeProfile": "高档"}}), "高档")
+        self.assertIsNone(ap.key_tier_name({"profiles": {"activeProfile": None}}))
+        self.assertIsNone(ap.key_tier_name({"profiles": None}))
+        self.assertIsNone(ap.key_tier_name({}))
+
+    def test_highest_tier(self):
+        keys = [{"profiles": {"activeProfile": "体验档"}}, {"profiles": {"activeProfile": "高档"}}]
+        self.assertEqual(ap.highest_tier(keys), "高档")
+        self.assertEqual(ap.highest_tier([{"profiles": {"activeProfile": "标准档"}}]), "标准档")
+        self.assertIsNone(ap.highest_tier([]))
+        self.assertIsNone(ap.highest_tier([{"profiles": {"activeProfile": None}}]))
+        self.assertIsNone(ap.highest_tier([{"profiles": {"activeProfile": "无敌档"}}]))  # 未知档不参与秩次
+
+
+class TestApplyTierToUserGuard(unittest.TestCase):
+    """issue #85 执行侧 never-downgrade（控制台/飞书两通道同享）：目标秩 > 当前秩换挂；
+    == 同档重挂仍执行（模板数值调整后刷新存量快照的运维路径）；< 跳过并在结果文本如实列出；
+    全部跳过返回「未变更」文本。查询换按 userID 精确过滤的新查询（不再复用巡检共用查询）。"""
+
+    def _run(self, own_keys, tier_name="标准档"):
+        mutations = []
+        key_query_vars = []
+
+        class FakeAx:
+            def gql(self, query, variables=None):
+                if query.startswith("mutation"):
+                    mutations.append(variables)
+                    return {"updateAPIKeyProfiles": {"id": variables["id"]}}
+                if "apiKeyProfileTemplates" in query:
+                    tpl = {"name": tier_name, "profile": {"modelMappings": [], "quota": {}}}
+                    return {"apiKeyProfileTemplates": {"edges": [{"node": tpl}]}}
+                key_query_vars.append(variables)  # USER_ENABLED_KEYS_QUERY
+                return {"apiKeys": {"edges": [{"node": k} for k in own_keys]}}
+
+        user = {"id": "gid://axonhub/User/9", "email": "u9@x.com"}
+        text = ap.apply_tier_to_user(FakeAx(), user, tier_name)
+        return text, mutations, key_query_vars
+
+    @staticmethod
+    def _key(kid, name, tier):
+        return {"id": kid, "name": name, "userID": "gid://axonhub/User/9",
+                "profiles": {"activeProfile": tier}}
+
+    def test_mixed_tiers_skip_downgrade(self):
+        # 混档（高档 + 体验）目标标准 → 高档 key 跳过、体验档 key 升，结果文本如实列出两侧
+        keys = [self._key("k1", "k-prem", "高档"), self._key("k2", "k-trial", "体验档")]
+        text, mutations, qvars = self._run(keys)
+        self.assertEqual([m["id"] for m in mutations], ["k2"])  # 只有体验档 key 收到换挂 mutation
+        self.assertEqual(mutations[0]["input"]["activeProfile"], "标准档")
+        self.assertIn("已将 1 个 Key 换挂 标准档（k-trial）", text)
+        self.assertIn("跳过 1 个", text)
+        self.assertIn("k-prem（当前高档）", text)
+        # 按 userID 精确过滤（uid 变量下发），不再拉全量 enabled 列表
+        self.assertEqual(qvars, [{"uid": "gid://axonhub/User/9"}])
+
+    def test_same_tier_reapply_still_runs(self):
+        # 同档重挂仍执行（保留运维刷新路径）
+        text, mutations, _ = self._run([self._key("k1", "k-std", "标准档")])
+        self.assertEqual(len(mutations), 1)
+        self.assertIn("已将 1 个 Key 换挂 标准档（k-std）", text)
+
+    def test_all_skipped_returns_no_change_text(self):
+        text, mutations, _ = self._run([self._key("k1", "k-prem", "高档")])
+        self.assertEqual(mutations, [])
+        self.assertIn("未变更", text)
+        self.assertIn("k-prem（当前高档）", text)
+
+    def test_unprofiled_key_attaches_directly(self):
+        # 未挂档 key 无秩次可比，直挂目标档
+        text, mutations, _ = self._run([self._key("k1", "k-none", None)])
+        self.assertEqual(len(mutations), 1)
+        self.assertIn("换挂", text)
+
+    def test_no_enabled_key_text_unchanged(self):
+        text, mutations, _ = self._run([])
+        self.assertIn("名下无 enabled Key", text)
+        self.assertEqual(mutations, [])
+
+    def test_template_missing_text_unchanged(self):
+        class FakeAx:
+            def gql(self, query, variables=None):
+                return {"apiKeyProfileTemplates": {"edges": []}}
+
+        text = ap.apply_tier_to_user(FakeAx(), {"id": "u", "email": "u@x.com"}, "不存在的档")
+        self.assertEqual(text, "找不到 不存在的档 Profile 模板")
+
+
 class TestAssignKeyOwner(unittest.TestCase):
     """issue #72 归属步骤：GID 解析 + SQL 形状（psycopg 以假模块注入，不落真库）。"""
 

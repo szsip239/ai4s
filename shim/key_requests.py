@@ -5,6 +5,11 @@
 本模块落待办申请（状态文件原子写）→ app bot 私信管理员审批卡（link 按钮直达控制台审批页）→
 管理员在控制台点批（admin 平面 /dlp-admin/key-requests/*）→ 复用 #72/#19 执行体
 （alert_poller.ensure_emp_key / apply_tier_to_user）→ 回执（卡片更新 + 申请人私信/页面状态）。
+issue #85 提额方向守卫：申请侧 fail-closed 三拒 400（已是最高档 / 目标档秩 ≤ 当前档秩——
+防降档空转 / 名下无 enabled Key 引导先新建），当前档查询异常 fail-open 放行 + 记日志
+（执行侧兜底）；审批侧 upgrade 的 tier_override 白名单收窄为 TIERS（标准/高档，提额语义
+不含体验档），new 仍 ALLOWED_TIERS 全集；执行侧逐 key never-downgrade 守卫见
+alert_poller.apply_tier_to_user（两通道同享）。
 申请人撤回（issue #80）：POST /self/key-requests/<id>/cancel，仅本人 + 仅 pending，
 置 canceled + 管理员回执（卡片更新/无卡降级群文本），幂等不重复通知。
 
@@ -53,10 +58,12 @@ if not os.environ.get("KEY_REQUEST_CONSOLE_URL"):
           "（非本机管理员不可达，请在 deploy/.env 配置控制台地址）", flush=True)
 # 待办申请超时：超时置 expired + 回执（巡检线程 sweep_expired 每轮检查）
 REQUEST_TTL = alert_poller._env_int("KEY_REQUEST_TTL", 72 * 3600)
-# 提额目标档白名单（与 alert_poller.parse_tier 可识别的两档一致）
+# 提额目标档白名单（与 alert_poller.parse_tier 可识别的两档一致）；
+# issue #85 起审批侧提额申请的 tier_override 也收窄到此集合（提额语义不含体验档，
+# 与执行侧 apply_tier_to_user 逐 key never-downgrade 守卫双保险）
 TIERS = ("标准档", "高档")
-# 审批可选档全集（issue #81 管理员同意时可改选）：新建初始档 + 提额两档
-# 与前端审批弹窗 web/src/ai4s/pages/key-requests/Ai4sKeyRequestsPage.tsx APPROVE_TIERS 双向同源，改动需两侧同步
+# 审批可选档全集（issue #81 管理员同意时可改选）：仅新建申请用；提额申请收窄为 TIERS（issue #85）
+# 与前端审批弹窗 web/src/ai4s/pages/key-requests/Ai4sKeyRequestsPage.tsx APPROVE_TIERS/UPGRADE_TIERS 双向同源，改动需两侧同步
 ALLOWED_TIERS = (alert_poller.KEY_INIT_TIER,) + TIERS
 MAX_PURPOSE = 200
 MAX_REASON = 200
@@ -299,12 +306,43 @@ def validate_payload(payload) -> tuple:
     return kind, purpose, tier, None
 
 
+def _upgrade_direction_guard(me: dict, tier: str):
+    """issue #85 提额方向守卫（申请侧 fail-closed；执行侧 apply_tier_to_user 逐 key 守卫兜底）。
+    返回 (status, 文案) 或 None（放行）。三拒：名下无 enabled Key（引导先新建）/
+    已是最高档 / 目标档秩 ≤ 当前最高档秩（防降档、防空转）。
+    fail-open：当前档查询异常（axonhub 不可达等）→ 放行 + 记日志。"""
+    uid = me.get("id")
+    if not uid:
+        print("[keyreq] 提额守卫：caller 无 id，无从查档，放行（执行侧兜底）", flush=True)
+        return None
+    try:
+        keys = alert_poller.query_user_enabled_keys(_get_ax(), uid)
+    except Exception as e:
+        print(f"[keyreq] 提额当前档查询异常，fail-open 放行: {type(e).__name__}: {e}", flush=True)
+        return None
+    if not keys:
+        return (400, "名下无启用中的 Key，请先申请新建 Key")
+    cur = alert_poller.highest_tier(keys)
+    if cur is None:
+        return None  # enabled key 均未挂档，秩次无从比较——放行（执行侧逐 key 守卫兜底）
+    if alert_poller.TIER_RANK[tier] <= alert_poller.TIER_RANK[cur]:
+        if cur == "高档":
+            return (400, "已是最高档（高档），无需提额")
+        return (400, f"目标档位须高于当前档位（当前 {cur}，目标 {tier}）")
+    return None
+
+
 def create_request(me: dict, kind: str, purpose: str, tier: str):
     """落一条待办申请 + 通知管理员。返回 (req_public, err)；err 形如 (status, 文案)。
-    反 spam：同申请人同 kind 已有 pending → 409。"""
+    反 spam：同申请人同 kind 已有 pending → 409。
+    issue #85：kind=upgrade 先过方向守卫（锁外慢查询，不落锁）。"""
     email = me.get("email") or ""
     if not email:
         return None, (502, "caller 身份无 email，无法登记申请")
+    if kind == "upgrade":
+        err = _upgrade_direction_guard(me, tier)
+        if err:
+            return None, err
     now = time.time()
     with _lock:
         reqs = _load()
@@ -392,7 +430,8 @@ def _execute(req: dict, tier_override: str = ""):
 
 def resolve_request(rid: str, action: str, reason: str = "", tier_override: str = ""):
     """管理员点批：approve=执行 + 回执；reject=标记 + 回执。
-    tier_override=批准时改定的档位（issue #81）：非空必须在 ALLOWED_TIERS 白名单内，否则 400；
+    tier_override=批准时改定的档位（issue #81）：非空必须在白名单内，否则 400——
+    kind=new 为 ALLOWED_TIERS 全集，kind=upgrade 收窄为 TIERS（issue #85，提额语义不含体验档）；
     空串=默认（新建体验档/提额所求档）。
     返回 (req_public 或 None, (status, 文案) 或 None)：
       - (None, (404, ...)) 未找到；(req, None) 成功/幂等现状；执行失败 (req, (502, ...)) 保持 pending；
@@ -409,8 +448,12 @@ def resolve_request(rid: str, action: str, reason: str = "", tier_override: str 
             return shape_public(req), None  # 幂等：重复点批/回调返回现状
         if rid in _executing:
             return shape_public(req), (409, "该申请正在执行通过操作，请稍后刷新查看结果")
-        if action == "approve" and tier_override and tier_override not in ALLOWED_TIERS:
-            return shape_public(req), (400, f"tier 必须是 {'/'.join(ALLOWED_TIERS)}")
+        if action == "approve" and tier_override:
+            # issue #85：提额语义不含体验档——upgrade 白名单收窄为 TIERS（防审批批成降档，
+            # 与执行侧守卫双保险）；new 仍 ALLOWED_TIERS 全集（#81 语义不变）
+            allowed = ALLOWED_TIERS if req["kind"] == "new" else TIERS
+            if tier_override not in allowed:
+                return shape_public(req), (400, f"tier 必须是 {'/'.join(allowed)}")
         if action == "approve" and time.time() - req.get("ts", 0) > REQUEST_TTL:
             # 超时申请不可批：就地转 expired（sweep 未跑到时的兜底），回执后返回现状
             req["status"] = "expired"

@@ -109,6 +109,8 @@
   "ai4s.myKeys.loadError": "Failed to load. Please retry later; contact an administrator if it persists.",
   "ai4s.myKeys.applyNew": "Request New Key",
   "ai4s.myKeys.applyUpgrade": "Request Quota Upgrade",
+  "ai4s.myKeys.upgradeBlockedMaxed": "Already on the highest tier",
+  "ai4s.myKeys.upgradeBlockedNoKey": "No enabled key — apply for a new one first",
   "ai4s.myKeys.submitOk": "Submitted. Waiting for admin approval.",
   "ai4s.myKeys.dialog.newTitle": "Request New Key",
   "ai4s.myKeys.dialog.newDesc": "Once approved, the key is created automatically (trial tier by default) and its plaintext is available on this page.",
@@ -194,7 +196,7 @@
   "ai4s.keyRequests.approveConfirmTitle": "Approve this request?",
   "ai4s.keyRequests.approveConfirmDesc": "Approving runs immediately at the selected tier (create key / apply tier); the applicant and admin are notified. Clicking again won't create duplicate keys.",
   "ai4s.keyRequests.approveTierLabel": "Effective Tier",
-  "ai4s.keyRequests.approveUpgradeNote": "Any tier may be picked for an upgrade request; be careful not to pick one below the applicant's current tier, which would effectively downgrade them.",
+  "ai4s.keyRequests.approveUpgradeNote": "Upgrades can only be approved as Standard or Premium. Downgrades are hard-blocked at execution — keys already on a higher tier are skipped and listed in the result.",
   "ai4s.keyRequests.rejectTitle": "Reject Request",
   "ai4s.keyRequests.rejectReasonPlaceholder": "Reason (optional, shown to the applicant)"
 }

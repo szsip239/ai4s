@@ -111,6 +111,8 @@
   "ai4s.myKeys.loadError": "加载失败，请稍后重试；持续失败请联系管理员。",
   "ai4s.myKeys.applyNew": "申请新 Key",
   "ai4s.myKeys.applyUpgrade": "申请提额",
+  "ai4s.myKeys.upgradeBlockedMaxed": "已是最高档",
+  "ai4s.myKeys.upgradeBlockedNoKey": "名下无启用中的 Key，请先申请新建",
   "ai4s.myKeys.submitOk": "已提交，等待管理员审批",
   "ai4s.myKeys.dialog.newTitle": "申请新 Key",
   "ai4s.myKeys.dialog.newDesc": "批准后自动创建（默认体验档），明文在本页查看。",
@@ -196,7 +198,7 @@
   "ai4s.keyRequests.approveConfirmTitle": "确认通过该申请？",
   "ai4s.keyRequests.approveConfirmDesc": "通过后立即按所选档位执行（建 Key 或提档），结果通知申请人与管理员。重复点击不会重复建 Key。",
   "ai4s.keyRequests.approveTierLabel": "生效档位",
-  "ai4s.keyRequests.approveUpgradeNote": "提额申请可从全部档位中任选；注意勿选低于申请人当前档位的档位，否则等于降档。",
+  "ai4s.keyRequests.approveUpgradeNote": "提额申请只可批为标准档或高档；执行侧已硬拦降档——低于 Key 当前档的目标会被跳过并在结果中列出。",
   "ai4s.keyRequests.rejectTitle": "拒绝申请",
   "ai4s.keyRequests.rejectReasonPlaceholder": "拒绝理由（可选，将展示给申请人）"
 }

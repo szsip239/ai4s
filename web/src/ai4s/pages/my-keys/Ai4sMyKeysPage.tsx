@@ -17,8 +17,12 @@
  * issue #83：每把 key 展示当前档用量（进度条+数字：cost 点/token/请求次数），可展开看各档
  * 用量与周期/重置时间（窗口边界为北京时间自然月，issue #83 B）；数据来自 /self/keys 内嵌
  * usage（shim 代查 apiKeyQuotaUsages，与管理员侧 profiles 对话框同源），只读。
+ * issue #85：提额入口收窄——「申请提额」按本人 enabled key 当前最高档门控（已是高档/无
+ * enabled key 禁用，提示走 Tooltip：disabled 按钮 pointer-events-none，原生 title 不可达，
+ * 故包 span 作 trigger），弹窗选项只列秩次更高的档；档位秩次/门态/选项过滤抽在
+ * tier-rank.ts 纯函数（与 shim alert_poller.TIER_RANK 双向同源），组件只接线。
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { format } from 'date-fns';
 import { IconChevronDown, IconEye, IconEyeOff, IconKey, IconPlus, IconTrendingUp } from '@tabler/icons-react';
 import { useTranslation } from 'react-i18next';
@@ -44,12 +48,14 @@ import { Progress } from '@/components/ui/progress';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
+import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
 import { useMe } from '@/features/auth/data/auth';
 import { KeyGuide } from './KeyGuide';
 import { useCancelKeyRequest, useCreateKeyRequest, useMyKeyRequests, useMyKeys, type KeyRequest, type MyKey } from './api';
 import { activeUsageEntry, formatCredits, formatTokenCount, quotaProgress, type UsageEntry } from './key-usage';
+import { currentHighestTier, upgradeButtonBlock, upgradeOptions, type TierName } from './tier-rank';
 
 type ApplyKind = 'new' | 'upgrade' | null;
 
@@ -252,6 +258,25 @@ export default function Ai4sMyKeysPage() {
   const keys = myKeys.data?.keys ?? [];
   const requests = myRequests.data?.requests ?? [];
 
+  // issue #85 提额入口收窄：已是最高档/无 enabled key 时禁用按钮，提示走 Tooltip（评审 P1：
+  // shadcn Button disabled:pointer-events-none，原生 title 永不显示也不可键盘 focus——
+  // 禁用时包 span 作 TooltipTrigger）；数据未加载完成时不挡（门态只看实证数据；
+  // shim 申请侧方向守卫兜底，API 直调绕不过）
+  const upgradeBlock = myKeys.isSuccess ? upgradeButtonBlock(keys) : null;
+  const currentTier = currentHighestTier(keys);
+  const upgradeHint =
+    upgradeBlock === 'maxed'
+      ? t('ai4s.myKeys.upgradeBlockedMaxed')
+      : upgradeBlock === 'no-enabled-key'
+        ? t('ai4s.myKeys.upgradeBlockedNoKey')
+        : undefined;
+
+  // issue #85 评审 P2 边角：keys 到达/档位变化后，已选 tier 可能已被选项过滤掉（竞态）——
+  // 置空让 placeholder 出现，不携带失效选项
+  useEffect(() => {
+    if (tier && !upgradeOptions(currentTier).includes(tier as TierName)) setTier('');
+  }, [currentTier, tier]);
+
   const closeDialog = () => {
     setApplyKind(null);
     setPurpose('');
@@ -298,10 +323,24 @@ export default function Ai4sMyKeysPage() {
                   <IconPlus className='mr-1 h-4 w-4' />
                   {t('ai4s.myKeys.applyNew')}
                 </Button>
-                <Button size='sm' variant='outline' onClick={() => setApplyKind('upgrade')}>
-                  <IconTrendingUp className='mr-1 h-4 w-4' />
-                  {t('ai4s.myKeys.applyUpgrade')}
-                </Button>
+                {upgradeBlock !== null ? (
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span tabIndex={0} className='cursor-not-allowed'>
+                        <Button size='sm' variant='outline' disabled>
+                          <IconTrendingUp className='mr-1 h-4 w-4' />
+                          {t('ai4s.myKeys.applyUpgrade')}
+                        </Button>
+                      </span>
+                    </TooltipTrigger>
+                    <TooltipContent>{upgradeHint}</TooltipContent>
+                  </Tooltip>
+                ) : (
+                  <Button size='sm' variant='outline' onClick={() => setApplyKind('upgrade')}>
+                    <IconTrendingUp className='mr-1 h-4 w-4' />
+                    {t('ai4s.myKeys.applyUpgrade')}
+                  </Button>
+                )}
               </div>
             </div>
           </CardHeader>
@@ -398,8 +437,12 @@ export default function Ai4sMyKeysPage() {
                     <SelectValue placeholder={t('ai4s.myKeys.dialog.tierPlaceholder')} />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value='标准档'>{t('ai4s.myKeys.dialog.tierStandard')}</SelectItem>
-                    <SelectItem value='高档'>{t('ai4s.myKeys.dialog.tierPremium')}</SelectItem>
+                    {/* issue #85：只列秩次 > 当前档的选项（标准档用户只见高档） */}
+                    {upgradeOptions(currentTier).map((opt) => (
+                      <SelectItem key={opt} value={opt}>
+                        {t(opt === '高档' ? 'ai4s.myKeys.dialog.tierPremium' : 'ai4s.myKeys.dialog.tierStandard')}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
               )}

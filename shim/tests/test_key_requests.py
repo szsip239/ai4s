@@ -5,7 +5,10 @@ seam 纪律与 test_self_api/test_alert_poller 同款：执行体与飞书发送
 （alert_poller.find_user_by_email/ensure_emp_key/apply_tier_to_user/feishu_dm/send_feishu、
 key_requests._get_ax/_feishu_card_send/_feishu_card_update），状态文件用临时目录覆写
 模块级 REQUESTS_PATH（admin_api 测试钦定方式），不 mock 模块内部塑形/校验函数。
+issue #85：create_request 的 upgrade 方向守卫会查当前档（query_user_enabled_keys），
+_Base 默认 mock 成体验档 key（任何提额目标放行）；具体档位场景在 TestUpgradeDirectionGuard 内自行重挂。
 """
+import contextlib
 import io
 import json
 import os
@@ -49,6 +52,12 @@ class _Base(unittest.TestCase):
                               side_effect=lambda oid, card: self.cards.append((oid, card)) or "mid-1"),
             mock.patch.object(kr, "_feishu_card_update",
                               side_effect=lambda mid, card: self.card_updates.append((mid, card)) or True),
+            # issue #85：upgrade 方向守卫的当前档查询默认返回体验档 key（提额任何目标放行）；
+            # 需要特定档位的用例自行重挂本 mock
+            mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
+                              side_effect=lambda ax, uid: [
+                                  {"id": "gid://axonhub/APIKey/101", "name": "emp-k", "userID": uid,
+                                   "profiles": {"activeProfile": "体验档"}}]),
         ]
         for p in self._patchers:
             p.start()
@@ -497,6 +506,144 @@ class TestSweepExpired(_Base):
         self.assertIn("超时", self.dms[0][1])
         kr.sweep_expired()  # 幂等：不再重复通知
         self.assertEqual(len(self.dms), 1)
+
+
+class TestUpgradeDirectionGuard(_Base):
+    """issue #85 申请侧方向守卫（fail-closed 三拒 + 查询异常 fail-open）。
+    _Base 默认当前档=体验档；本类各用例按场景重挂 query_user_enabled_keys。"""
+
+    def _guard_keys(self, *tiers):
+        return [{"id": f"gid://axonhub/APIKey/1{i}", "name": f"k{i}", "userID": _ME_LOCAL["id"],
+                 "profiles": {"activeProfile": t}} for i, t in enumerate(tiers)]
+
+    def test_top_tier_rejected_400(self):
+        # 已是最高档（混档取秩次最高：标准+高档 → 高档）→ 单独文案
+        with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
+                               side_effect=lambda ax, uid: self._guard_keys("标准档", "高档")):
+            req, err = kr.create_request(_ME_LOCAL, "upgrade", "", "高档")
+        self.assertIsNone(req)
+        self.assertEqual(err[0], 400)
+        self.assertIn("已是最高档", err[1])
+
+    def test_downgrade_and_sideways_rejected_400(self):
+        # 当前高档申标准（实际降档）→ 最高档文案优先；当前标准申标准（平档空转）→ 方向文案
+        with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
+                               side_effect=lambda ax, uid: self._guard_keys("高档")):
+            _, err = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档")
+        self.assertEqual(err[0], 400)
+        self.assertIn("已是最高档", err[1])
+        with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
+                               side_effect=lambda ax, uid: self._guard_keys("标准档")):
+            _, err2 = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档")
+        self.assertEqual(err2[0], 400)
+        self.assertIn("高于当前档位", err2[1])
+
+    def test_no_enabled_key_rejected_400(self):
+        with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
+                               side_effect=lambda ax, uid: []):
+            req, err = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档")
+        self.assertIsNone(req)
+        self.assertEqual(err[0], 400)
+        self.assertIn("新建", err[1])  # 引导先申请新建
+
+    def test_trial_can_upgrade_pass(self):
+        # 体验档申标准/高档 → 放行（_Base 默认 mock 即体验档，显式重挂以自文档化）
+        with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
+                               side_effect=lambda ax, uid: self._guard_keys("体验档")):
+            req, err = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档")
+        self.assertIsNone(err)
+        self.assertEqual(req["status"], "pending")
+        kr.cancel_request(req["id"], _ME_LOCAL["email"])  # 清掉 pending 再申高档
+        req2, err2 = kr.create_request(_ME_LOCAL, "upgrade", "", "高档")
+        self.assertIsNone(err2)
+
+    def test_query_failure_fail_open(self):
+        # 当前档查询异常（axonhub 不可达）→ 放行 + 记日志（执行侧守卫兜底）
+        with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
+                               side_effect=RuntimeError("gql down")):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                req, err = kr.create_request(_ME_LOCAL, "upgrade", "", "高档")
+        self.assertIsNone(err)
+        self.assertEqual(req["status"], "pending")
+        self.assertIn("fail-open", buf.getvalue())
+
+    def test_unprofiled_key_passes(self):
+        # enabled 但未挂档（activeProfile 空）→ 秩次无从比较，放行（执行侧守卫兜底）
+        with mock.patch.object(kr.alert_poller, "query_user_enabled_keys",
+                               side_effect=lambda ax, uid: self._guard_keys(None)):
+            req, err = kr.create_request(_ME_LOCAL, "upgrade", "", "标准档")
+        self.assertIsNone(err)
+        self.assertEqual(req["status"], "pending")
+
+
+class TestResolveTierNarrowing(_Base):
+    """issue #85 审批侧收窄：kind=upgrade 的 tier_override 白名单=TIERS（标准/高档），
+    体验档 400；kind=new 仍 ALLOWED_TIERS 全集（#81 语义不变）。"""
+
+    def test_upgrade_override_trial_400(self):
+        req = self._create(_ME_LOCAL, kind="upgrade", tier="标准档")
+        with mock.patch.object(kr.alert_poller, "apply_tier_to_user") as at:
+            out, err = kr.resolve_request(req["id"], "approve", tier_override="体验档")
+        self.assertEqual(err[0], 400)
+        self.assertIn("标准档", err[1])  # 文案列出收窄后的白名单
+        self.assertEqual(out["status"], "pending")  # 不执行、保持 pending
+        at.assert_not_called()
+
+    def test_upgrade_override_standard_premium_ok(self):
+        for target in ("标准档", "高档"):
+            req = self._create(_ME_LOCAL, kind="upgrade", tier="标准档")
+            with mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_LOCAL), \
+                 mock.patch.object(kr.alert_poller, "apply_tier_to_user", return_value="ok") as at, \
+                 mock.patch.object(kr, "_get_ax", return_value=object()):
+                out, err = kr.resolve_request(req["id"], "approve", tier_override=target)
+            self.assertIsNone(err, target)
+            self.assertEqual(at.call_args[0][2], target)
+
+    def test_new_override_full_set_ok(self):
+        # 新建三档全集仍可用（含体验档）
+        for target in ("体验档", "标准档", "高档"):
+            req = self._create(_ME_LOCAL)
+            with mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_LOCAL), \
+                 mock.patch.object(kr.alert_poller, "ensure_emp_key", return_value=("emp-x", "ah-x", "")), \
+                 mock.patch.object(kr, "_get_ax", return_value=object()):
+                _, err = kr.resolve_request(req["id"], "approve", tier_override=target)
+            self.assertIsNone(err, target)
+
+
+class TestReapplyAfterTerminal(_Base):
+    """issue #85 边界：dup 只挡 pending——canceled/rejected/expired/approved 后同 kind 可再申请。"""
+
+    def test_reapply_after_each_terminal_status(self):
+        # canceled：撤回后再申
+        req = self._create(_ME_FEISHU)
+        kr.cancel_request(req["id"], _ME_FEISHU["email"])
+        _, err = kr.create_request(_ME_FEISHU, "new", "再来", "")
+        self.assertIsNone(err)
+        # rejected：拒绝后再申
+        req2 = next(r for r in kr.list_requests(_ME_FEISHU["email"]) if r["status"] == "pending")
+        kr.resolve_request(req2["id"], "reject", "预算")
+        _, err = kr.create_request(_ME_FEISHU, "new", "三来", "")
+        self.assertIsNone(err)
+        # expired：超时后再申
+        req3 = next(r for r in kr.list_requests(_ME_FEISHU["email"]) if r["status"] == "pending")
+        with kr._lock:
+            reqs = kr._load()
+            for r in reqs:
+                if r["id"] == req3["id"]:
+                    r["ts"] = time.time() - kr.REQUEST_TTL - 5
+            kr._save(reqs)
+        kr.sweep_expired()
+        _, err = kr.create_request(_ME_FEISHU, "new", "四来", "")
+        self.assertIsNone(err)
+        # approved：批完再申
+        req4 = next(r for r in kr.list_requests(_ME_FEISHU["email"]) if r["status"] == "pending")
+        with mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_FEISHU), \
+             mock.patch.object(kr.alert_poller, "ensure_emp_key", return_value=("emp-x", "ah-x", "")), \
+             mock.patch.object(kr, "_get_ax", return_value=object()):
+            kr.resolve_request(req4["id"], "approve")
+        _, err = kr.create_request(_ME_FEISHU, "new", "五来", "")
+        self.assertIsNone(err)
 
 
 if __name__ == "__main__":

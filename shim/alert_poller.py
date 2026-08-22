@@ -12,6 +12,11 @@ axonhub 无事件源的事务靠主动轮询补齐。巡检项（状态翻转才
   轮询飞书审批实例（APPROVAL_QUOTA_CODE / APPROVAL_KEY_CODE 两个定义各自轮询）：
   - 提额：APPROVED → 申请人 open_id → axonhub 用户（email = ou_*@casdoor.oidc）→ 其 enabled Key
     → 按表单"目标档位"换挂对应 Profile 模板 → 群里回执。拒绝/撤回只回执/标记。
+    issue #85：档位秩次 TIER_RANK（体验档<标准档<高档）单一定义点在本模块；apply_tier_to_user
+    带逐 key never-downgrade 守卫（目标秩>当前秩换挂 / ==同档重挂保留运维刷新路径 / <跳过并
+    在结果文本列出，绝不降档），飞书审批定义与控制台（key_requests）两通道同享；
+    per-key 当前档走 USER_ENABLED_KEYS_QUERY（按 userID 精确过滤），不复用巡检共用的
+    ENABLED_API_KEYS_QUERY（加字段影响面大）。
   - 新建：APPROVED → open_id → axonhub 用户（无用户=未首登，回执提示先登录再重新申请）
     → createAPIKey（体验档写死，命名 emp-<oid8>-<yyyymmdd>-<用途摘要>-<ic尾4>）
     → 归属申请人（createAPIKey 无 userID 入参，v1.0.0-beta6 实证；建后 SQL 直改 user_id 并
@@ -187,6 +192,11 @@ def feishu_get(path: str):
     return d.get("data") or {}
 
 
+# 档位秩次（issue #85 单一定义点）：体验档 < 标准档 < 高档。key_requests（申请/审批侧守卫）
+# 与前端 web/src/ai4s/pages/my-keys/tier-rank.ts 双向同源，改动需三侧同步。
+TIER_RANK = {"体验档": 0, "标准档": 1, "高档": 2}
+
+
 def parse_tier(text: str):
     """表单"目标档位"自由文本 → 档名（高档/标准档），识别不了返回 None。"""
     t = (text or "").lower()
@@ -254,26 +264,72 @@ def load_tier_profile(ax: Axonhub, tier_name: str):
     }}
 
 
+# issue #85：按 userID 精确查本人 enabled key 的当前挂档（profiles.activeProfile）——
+# apply_tier_to_user 逐 key 方向守卫与 key_requests 申请侧当前档查询共用。
+# 与 self_api._SELF_KEYS_QUERY 同源形状（where userID 等值），叠加 statusIn enabled；
+# 不复用 ENABLED_API_KEYS_QUERY——它是巡检/预警共用查询，加字段影响面大。
+USER_ENABLED_KEYS_QUERY = (
+    "query($uid: ID!) { apiKeys(first: 100, where: {userID: $uid, statusIn: [enabled]}) { edges { node { "
+    "id name userID profiles { activeProfile } } } } }"
+)
+
+
+def query_user_enabled_keys(ax: Axonhub, uid: str):
+    """userID 精确查 enabled key（id/name/activeProfile）。first:100 上限与 ENABLED_API_KEYS_QUERY 同款。"""
+    data = ax.gql(USER_ENABLED_KEYS_QUERY, {"uid": uid})
+    return [e["node"] for e in data["apiKeys"]["edges"]]
+
+
+def key_tier_name(key: dict):
+    """key 当前档名（profiles.activeProfile）；未挂档返回 None。"""
+    return (key.get("profiles") or {}).get("activeProfile") or None
+
+
+def highest_tier(keys):
+    """key 列表中秩次最高的档名；空列表/均未挂档（或档名不在秩次表）返回 None。"""
+    best = None
+    for k in keys:
+        name = key_tier_name(k)
+        if name in TIER_RANK and (best is None or TIER_RANK[name] > TIER_RANK[best]):
+            best = name
+    return best
+
+
 def apply_tier_to_user(ax: Axonhub, user: dict, tier_name: str):
-    """目标用户 enabled Key 全部换挂目标档（issue #79 抽出：控制台通道按已解析用户直调）。
+    """目标用户 enabled Key 换挂目标档 + 逐 key never-downgrade 守卫（issue #85，控制台/飞书
+    两通道同享）：目标秩 > key 当前秩 → 换挂（升档）；== → 换挂（同档重挂，保留模板数值调整后
+    刷新存量快照的运维路径）；< → 跳过并在结果文本如实列出（绝不降档）。未挂档 key 直挂。
     返回结果文本；模板缺失/无 enabled Key 也走文本（调用方回执/落结果），gql 异常上抛。"""
     prof = load_tier_profile(ax, tier_name)
     if not prof:
         return f"找不到 {tier_name} Profile 模板"
-    keys = ax.gql(ENABLED_API_KEYS_QUERY)["apiKeys"]["edges"]
-    own = [e["node"] for e in keys if e["node"]["userID"] == user["id"]]
+    own = query_user_enabled_keys(ax, user["id"])
     if not own:
         return f"{user.get('email')} 名下无 enabled Key"
+    target_rank = TIER_RANK.get(tier_name)
+    changed, skipped = [], []
     for k in own:
+        cur = key_tier_name(k)
+        cur_rank = TIER_RANK.get(cur) if cur else None
+        if target_rank is not None and cur_rank is not None and target_rank < cur_rank:
+            skipped.append(f"{k['name']}（当前{cur}）")
+            continue
         ax.gql(
             UPDATE_PROFILES_MUTATION,
             {"id": k["id"], "input": {"activeProfile": tier_name, "profiles": [prof]}},
         )
-    return f"已将 {len(own)} 个 Key 换挂 {tier_name}（{', '.join(k['name'] for k in own)}）"
+        changed.append(k["name"])
+    if not changed:
+        return f"未变更：名下 enabled Key 当前档均高于 {tier_name}，已跳过（绝不降档）：{', '.join(skipped)}"
+    text = f"已将 {len(changed)} 个 Key 换挂 {tier_name}（{', '.join(changed)}）"
+    if skipped:
+        text += f"；跳过 {len(skipped)} 个更高档 Key（绝不降档）：{', '.join(skipped)}"
+    return text
 
 
 def apply_tier(ax: Axonhub, open_id: str, tier_name: str):
-    """申请人 open_id → axonhub 用户 → 换挂目标档（飞书审批定义通道入口，语义不变）。"""
+    """申请人 open_id → axonhub 用户 → 换挂目标档（飞书审批定义通道入口，入口形状不变；
+    issue #85 起换挂带逐 key never-downgrade 守卫，见 apply_tier_to_user）。"""
     email = f"{open_id}@casdoor.oidc"
     user = find_user_by_email(ax, email)
     if not user:
