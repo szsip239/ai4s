@@ -9,6 +9,8 @@ axonhub 无事件源的事务靠主动轮询补齐。巡检项（状态翻转才
   3. 员工 API key 额度：apiKeys → apiKeyQuotaUsages，usage 达到 quota → 告警；≥80% → 预警（issue #18）
      issue #91 P2-3：告警/预警/恢复文本带项目名（一轮一次 myProjects 建 gid→名映射，
      名单失败回退裸 gid 不阻塞告警）
+  4. shadow 层可用率（issue #92）：judge/PG 判定持久化（shadow_log.stats）窗口内
+     异常率 ≥ SHADOW_ERR_RATE 且样本 ≥ SHADOW_ALERT_MIN → 告警（样本不足/无流量不判坏）
 
 审批同步（issue #19 提额 + issue #72 新建，approval_sync 泛化为多定义并存）：
   轮询飞书审批实例（APPROVAL_QUOTA_CODE / APPROVAL_KEY_CODE 两个定义各自轮询）：
@@ -59,6 +61,7 @@ import urllib.request
 
 import admin_api  # 原子写复用（issue #57 P2-2）：唯一 tmp + .bak 滚动 + finally 清理
 import feishu_lib  # 飞书签名共享实现（issue #70）：app.py 同一份
+import shadow_log  # shadow 判定持久化（issue #92）：stdlib-only 无环；可用率巡检消费其 stats
 
 AXONHUB_BASE = os.environ.get("AXONHUB_BASE", "http://axonhub:8090")
 ADMIN_EMAIL = os.environ.get("AXONHUB_ADMIN_EMAIL", "")
@@ -85,6 +88,25 @@ def _env_int(name: str, default: int) -> int:
 
 POLL_INTERVAL = _env_int("POLL_INTERVAL", 30)
 STATE_PATH = os.environ.get("STATE_PATH", "/state/alert-state.json")
+
+
+def _env_float(name: str, default: float) -> float:
+    """_env_int 同款宽容解析的浮点版（issue #92）：非法值落 default + warning，import 永不抛。"""
+    v = os.environ.get(name, "")
+    if v == "":
+        return default
+    try:
+        return float(v)
+    except ValueError:
+        print(f"[alert] {name} 非法值（期望数值），回退默认 {default}", flush=True)
+        return default
+
+
+# shadow 层可用率巡检（issue #92）：窗口内异常率超阈值才判坏，样本不足不判（防小样本抖动翻转）
+SHADOW_ALERT_WINDOW = _env_int("SHADOW_ALERT_WINDOW", 20)
+SHADOW_ALERT_MIN = _env_int("SHADOW_ALERT_MIN_SAMPLES", 4)
+SHADOW_ERR_RATE = _env_float("SHADOW_ERR_RATE", 0.5)
+SHADOW_LAYER_NAMES = {"judge": "语义 judge", "pg": "注入 PG"}
 FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "")
 FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "")
 APPROVAL_QUOTA_CODE = os.environ.get("APPROVAL_QUOTA_CODE", "")
@@ -751,6 +773,24 @@ def flip_actions(findings: dict, state: dict) -> list:
     return actions
 
 
+def shadow_avail_findings(layer_stats: dict) -> dict:
+    """shadow 层可用率 findings（issue #92）：{layer: shadow_log.stats 形状} → flip_actions 形状。
+    bad = 样本足够（total >= SHADOW_ALERT_MIN）且异常率 >= SHADOW_ERR_RATE——
+    样本不足不判坏（防小样本抖动）；无流量即无记录，属正常（无流量无从判定，不误报）。"""
+    findings = {}
+    for layer, s in layer_stats.items():
+        name = SHADOW_LAYER_NAMES.get(layer, layer)
+        total, errors, rate = s.get("total", 0), s.get("errors", 0), s.get("error_rate", 0.0)
+        bad = total >= SHADOW_ALERT_MIN and rate >= SHADOW_ERR_RATE
+        findings[f"shadow:{layer}"] = (
+            bad,
+            f"[ai4s 告警] {name} 异常率过高\n近 {total} 次判定失败 {errors} 次（{rate:.0%}）\n"
+            f"影响: 该层 shadow 判定停摆，观察期数据不可信（fail-open 不拦截，业务无感）\n时间: {now_str()}",
+            f"[ai4s 恢复] {name} 已恢复（异常率回落）",
+        )
+    return findings
+
+
 def check_cycle(ax: Axonhub, state: dict) -> dict:
     """一轮巡检；返回新状态。finding: key -> (bad: bool, 告警文本, 恢复文本)"""
     findings = {}
@@ -825,6 +865,14 @@ def check_cycle(ax: Axonhub, state: dict) -> dict:
                 )
     except Exception as e:
         print(f"[alert] API key 额度查询失败: {type(e).__name__}", flush=True)
+
+    # 4) shadow 层可用率（issue #92）：judge/PG 判定持久化（shadow_log）的异常率巡检——
+    # 两侧判定原本只 print  stdout，异常无感知；统计失败只记日志不阻塞巡检主流程
+    try:
+        findings.update(shadow_avail_findings(
+            {layer: shadow_log.stats(layer, window=SHADOW_ALERT_WINDOW) for layer in ("judge", "pg")}))
+    except Exception as e:
+        print(f"[alert] shadow 层统计失败: {type(e).__name__}", flush=True)
 
     # 状态翻转才发送；发送失败不更新状态（下轮自然重试）
     for k, kind, text in flip_actions(findings, state):

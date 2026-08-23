@@ -2123,5 +2123,58 @@ class KeyRequestListProjectHeaderTest(unittest.TestCase):
         self.assertEqual(status, 200)
 
 
+class TestShadowVerdictsApi(unittest.TestCase):
+    """issue #92：shadow 判定查询出口（读级路由）——stats + 近期记录（新到旧）。
+    fixture：SHADOW_LOG_PATH env 注入 tmp 文件（shadow_log 每次调用现读 env）。"""
+
+    def setUp(self):
+        _FAKE_STATE["mode"] = "ok"
+        _FAKE_STATE["tokens"] = {
+            "reader-token": {"id": "42", "isOwner": False, "scopes": ["read_channels"]},
+        }
+        self._tmp = tempfile.TemporaryDirectory()
+        self.log_path = os.path.join(self._tmp.name, "shadow.jsonl")
+        os.environ["SHADOW_LOG_PATH"] = self.log_path
+
+    def tearDown(self):
+        del os.environ["SHADOW_LOG_PATH"]
+        self._tmp.cleanup()
+
+    def test_get_returns_stats_and_records_newest_first(self):
+        import shadow_log
+        shadow_log.record("judge", hit=True, confidence=0.9, latency_ms=120, entities=2, path=self.log_path)
+        shadow_log.record("judge", error="unavailable", path=self.log_path)
+        shadow_log.record("pg", hit=False, score=0.2, latency_ms=40, path=self.log_path)
+        status, body = _get("/dlp-admin/shadow-verdicts", token="reader-token")
+        self.assertEqual(status, 200)
+        self.assertEqual(set(body["stats"].keys()), {"judge", "pg"})
+        self.assertEqual(body["stats"]["judge"]["total"], 2)
+        self.assertEqual(body["stats"]["judge"]["errors"], 1)
+        self.assertEqual(body["stats"]["judge"]["hits"], 1)
+        self.assertEqual(len(body["records"]), 3)
+        self.assertEqual(body["records"][0]["layer"], "pg")  # 新到旧
+
+    def test_layer_filter_and_n(self):
+        import shadow_log
+        for _ in range(5):
+            shadow_log.record("judge", hit=False, confidence=0.1, latency_ms=100, path=self.log_path)
+        shadow_log.record("pg", hit=True, score=0.95, latency_ms=30, path=self.log_path)
+        status, body = _get("/dlp-admin/shadow-verdicts?layer=judge&n=3", token="reader-token")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(body["records"]), 3)
+        self.assertTrue(all(r["layer"] == "judge" for r in body["records"]))
+
+    def test_empty_store_200_zeros(self):
+        status, body = _get("/dlp-admin/shadow-verdicts", token="reader-token")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["records"], [])
+        self.assertEqual(body["stats"]["judge"]["total"], 0)
+        self.assertEqual(body["stats"]["pg"]["total"], 0)
+
+    def test_no_token_401(self):
+        status, _ = _get("/dlp-admin/shadow-verdicts")
+        self.assertEqual(status, 401)
+
+
 if __name__ == "__main__":
     unittest.main()

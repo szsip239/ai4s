@@ -12,6 +12,8 @@ issue #89：多项目隔离——read_project_header 统一解析/校验 X-Proje
 平面同用）；GET /dlp-admin/key-requests 按管理员当前项目过滤申请列表（存量无项目字段
 申请视为 Default；approve/reject 不读项目头——执行按申请单记录的项目，与管理员当前
 所在项目解耦，切错项目不批错单）。
+issue #92：shadow 判定查询出口 GET /dlp-admin/shadow-verdicts（读级）——judge/PG shadow
+判定持久化（shadow_log）的 stats + 近期记录（新到旧，不落原文），供误报观察期统计。
 
 与检测路径（/request /response 调用链）完全隔离：admin 平面 fail-closed——
 内省不可达回 503，不适用检测链的 fail-open 分级（契约 docs/contracts/dlp-webhook-shim.md）。
@@ -30,6 +32,7 @@ import urllib.parse
 import urllib.request
 
 import edm_lib  # EDM 指纹算法共享库（issue #34）：入库/检测同法（契约铁律）
+import shadow_log  # shadow 判定观测闭环（issue #92）：stdlib-only 无环；/dlp-admin/shadow-verdicts 消费
 
 # axonhub 内省端点（容器内默认同栈服务名；测试经环境变量指向本地假服务）
 AXONHUB_ADMIN_URL = os.environ.get("AXONHUB_ADMIN_URL", "http://axonhub:8090/admin/graphql")
@@ -894,6 +897,28 @@ def _kr_reject_item(handler, me, rid):
     _kr_resolve(handler, me, rid, "reject")
 
 
+# ---- shadow 判定查询出口（issue #92，读级）：观测闭环数据的管理面出口 ----
+
+
+def _shadow_verdicts(handler, _me):
+    """GET /dlp-admin/shadow-verdicts：两层 stats + 近期判定记录（新到旧，不落原文）。
+    query 参数：n（默认 50，1..500 截断）、layer（judge/pg 过滤，非法值 400）。"""
+    q = urllib.parse.parse_qs(urllib.parse.urlsplit(handler.path).query)
+    try:
+        n = int((q.get("n") or ["50"])[0])
+    except ValueError:
+        n = 50
+    n = max(1, min(500, n))
+    layer = (q.get("layer") or [""])[0] or None
+    if layer not in (None, "judge", "pg"):
+        _respond(handler, 400, {"error": "layer 必须是 judge 或 pg"})
+        return
+    _respond(handler, 200, {
+        "stats": {l: shadow_log.stats(l) for l in ("judge", "pg")},
+        "records": shadow_log.tail(n, layer=layer),
+    })
+
+
 # 路由表：(方法, 路径) -> (鉴权级别 | None, 端点)
 _ROUTES = {
     ("GET", "/dlp-admin/healthz"): (None, _healthz),
@@ -911,6 +936,7 @@ _ROUTES = {
     ("GET", "/dlp-admin/settings"): ("read", _settings_get),
     ("PUT", "/dlp-admin/settings"): ("write", _settings_put),
     ("GET", "/dlp-admin/key-requests"): ("read", _kr_list),  # issue #79：控制台 Key 申请审批
+    ("GET", "/dlp-admin/shadow-verdicts"): ("read", _shadow_verdicts),  # issue #92：shadow 观测出口
 }
 
 

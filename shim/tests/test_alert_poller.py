@@ -14,6 +14,8 @@ issue #89 增补：项目参数化 helper（query_user_projects 形状、ensure_
 projectID 透传与 Default 兜底）；apply_tier 的 USER_ENABLED_KEYS_QUERY 断言随项目过滤更新。
 issue #91 增补：P2-2 飞书新建成员校验（非成员不建 Key+回执文本）；P2-3 额度告警文本带
 项目名（含 myProjects 失败回退 gid）；P2-4 自动入项按 gid 匹配（改名仍命中/缺失跳过）。
+issue #92 增补：shadow 层可用率巡检（shadow_avail_findings 纯函数阈值/样本防抖；
+check_cycle 接入的翻转/防抖/恢复与 shadow_log.stats 异常不破坏循环——stats 在线路边界 mock）。
 """
 import json
 import io
@@ -1037,6 +1039,83 @@ class TestCheckCycleProjectLabel(unittest.TestCase):
         _, sends = self._cycle({}, 150, proj_names_ok=False)
         alert = next(t for t in sends if "额度耗尽" in t)
         self.assertIn(f"项目: {self.P2}", alert)
+
+
+def _shadow_stats(total: int, errors: int) -> dict:
+    """shadow_log.stats 形状的夹具（issue #92）。"""
+    return {"total": total, "errors": errors,
+            "error_rate": (errors / total) if total else 0.0,
+            "hits": 0, "avg_latency_ms": 100, "last_ts": 1.0}
+
+
+class TestShadowAvailFindings(unittest.TestCase):
+    """issue #92：shadow 层可用率 findings 纯函数——异常率阈值 + 最小样本防抖。"""
+
+    def test_bad_when_error_rate_high(self):
+        f = ap.shadow_avail_findings({"judge": _shadow_stats(10, 6)})
+        bad, alert, recover = f["shadow:judge"]
+        self.assertTrue(bad)
+        self.assertIn("语义 judge", alert)
+        self.assertIn("6", alert)
+        self.assertIn("10", alert)
+        self.assertIn("语义 judge", recover)
+
+    def test_below_min_samples_not_bad(self):
+        # 样本不足不判坏（防小样本抖动翻转）
+        f = ap.shadow_avail_findings({"pg": _shadow_stats(2, 2)})
+        self.assertFalse(f["shadow:pg"][0])
+
+    def test_clean_not_bad_display_names(self):
+        f = ap.shadow_avail_findings({"judge": _shadow_stats(10, 0),
+                                      "pg": _shadow_stats(10, 1)})
+        self.assertFalse(f["shadow:judge"][0])
+        self.assertFalse(f["shadow:pg"][0])
+        self.assertIn("注入 PG", f["shadow:pg"][1])
+
+
+class TestCheckCycleShadowAvail(unittest.TestCase):
+    """issue #92：check_cycle 接入 shadow 可用率巡检——翻转告警/防抖/恢复
+    （shadow_log.stats 在线路边界 mock，gql 全挂聚焦 shadow 分支）。"""
+
+    def _cycle(self, state, stats_map):
+        sends = []
+        ax = mock.Mock()
+        ax.gql.side_effect = RuntimeError("gql down")
+        with mock.patch.object(ap, "http_get", return_value=True), \
+             mock.patch.object(ap.shadow_log, "stats",
+                               side_effect=lambda layer, window=0: stats_map[layer]), \
+             mock.patch.object(ap, "send_feishu",
+                               side_effect=lambda t: sends.append(t) or True):
+            new_state = ap.check_cycle(ax, state)
+        return new_state, sends
+
+    def test_alert_debounce_recover(self):
+        bad = {"judge": _shadow_stats(10, 8), "pg": _shadow_stats(10, 0)}
+        state, sends = self._cycle({}, bad)
+        self.assertEqual(len(sends), 1)
+        self.assertIn("语义 judge 异常率过高", sends[0])
+        self.assertTrue(state["shadow:judge"])
+        self.assertNotIn("shadow:pg", state)  # 正常项不落状态
+        # 仍坏 → 不重复发
+        state, sends = self._cycle(state, bad)
+        self.assertEqual(sends, [])
+        # 恢复 → 发恢复通知且状态清除
+        good = {"judge": _shadow_stats(10, 0), "pg": _shadow_stats(10, 0)}
+        state, sends = self._cycle(state, good)
+        self.assertEqual(len(sends), 1)
+        self.assertIn("已恢复", sends[0])
+        self.assertIn("语义 judge", sends[0])
+        self.assertFalse(state["shadow:judge"])
+
+    def test_stats_failure_does_not_break_cycle(self):
+        # shadow_log 自身异常：本轮跳过 shadow 分支，循环不抛
+        with mock.patch.object(ap, "http_get", return_value=True), \
+             mock.patch.object(ap.shadow_log, "stats", side_effect=RuntimeError("io err")), \
+             mock.patch.object(ap, "send_feishu", return_value=True):
+            ax = mock.Mock()
+            ax.gql.side_effect = RuntimeError("gql down")
+            state = ap.check_cycle(ax, {})
+        self.assertEqual(state, {})
 
 
 class TestImportDoesNotStartThread(unittest.TestCase):

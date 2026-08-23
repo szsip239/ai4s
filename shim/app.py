@@ -25,6 +25,7 @@ import self_api   # 员工自助平面（issue #74）：/self/*（本人 key 列
 import edm_lib    # EDM 指纹算法共享库（issue #34）：入库/检测同法（契约铁律）
 import feishu_lib  # 飞书签名共享实现（issue #70）：alert_poller 同一份
 import alert_poller  # 告警巡检+提额审批（issue #56 并入）：import 不起线程，仅 __main__ start_daemon
+import shadow_log  # shadow 判定观测闭环（issue #92）：stdlib-only；judge/PG 判定持久化供巡检/查询
 
 PRESIDIO_URL = os.environ.get("PRESIDIO_URL", "http://presidio:3000")
 WORDLIST_PATH = os.environ.get("WORDLIST_PATH", "/dlp/confidential-terms.json")
@@ -804,15 +805,33 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._json(200, {"action": {"reason": "pass"}})
         # 语义层 shadow（issue #21）：响应已定后发 judge，只记录 verdict（不含原文），不影响本请求
-        if setting_value(settings, "judge", "enabled", "JUDGE_ENABLED", False):
+        # issue #92：判定持久化 shadow_log（实体只存命中数，不存字符串）——观测闭环供巡检/统计消费；
+        # enabled 但无 verdict（prompt 缺失/API 异常等）记 error 条，可用率巡检才有数据；
+        # 空 text（纯图片/工具调用请求无可判输入）整体跳过不落条——否则误计「层不可用」污染异常率
+        if text and setting_value(settings, "judge", "enabled", "JUDGE_ENABLED", False):
+            _t0 = time.monotonic()
             v = judge_text(text)
+            _ms = int((time.monotonic() - _t0) * 1000)
             if v is not None:
+                shadow_log.record("judge", hit=v["confidential"], confidence=v["confidence"],
+                                  latency_ms=_ms, entities=len(v["entities"]))
                 print(f"[semantic.shadow] confidential={v['confidential']} entities={','.join(v['entities']) or '-'} confidence={v['confidence']:.2f}", flush=True)
+            else:
+                shadow_log.record("judge", error="unavailable", latency_ms=_ms)
         # 注入检测 shadow（issue #30）：PromptGuard 2 评分 ≥阈值记日志，不阻断
-        score = pg_guard(text)
+        # issue #92：同上持久化；调用点显式判 enabled——enabled 且 score 为 None 即本次判定不可用；
+        # 空 text 跳过不落条（同 judge 侧，code-review 修复）
         pg_threshold = setting_value(settings, "pg", "threshold", "PG_THRESHOLD", 0.7)
-        if score is not None and score >= pg_threshold:
-            print(f"[injection.shadow] malicious={score:.3f} >= {pg_threshold}", flush=True)
+        if text and setting_value(settings, "pg", "enabled", "PG_ENABLED", False):
+            _t0 = time.monotonic()
+            score = pg_guard(text)
+            _ms = int((time.monotonic() - _t0) * 1000)
+            if score is not None:
+                shadow_log.record("pg", hit=score >= pg_threshold, score=score, latency_ms=_ms)
+                if score >= pg_threshold:
+                    print(f"[injection.shadow] malicious={score:.3f} >= {pg_threshold}", flush=True)
+            else:
+                shadow_log.record("pg", error="unavailable", latency_ms=_ms)
 
     def do_PUT(self):
         # 非 admin 路径回 404 而非 BaseHTTPRequestHandler 默认 501：有意语义——
