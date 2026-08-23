@@ -11,6 +11,7 @@ issue #89 增补：多项目隔离——TestProjectScope 覆盖成员校验（40
 项目过滤、存量申请 Default 回退、list_requests 项目过滤与详情行项目显示。
 issue #90 增补：dup 判定项目维度——同项目同 kind 409（文案含项目名）、跨项目放行、
 存量无字段申请参与 Default 维度去重。
+issue #91 增补（P2-1）：审批卡按钮/降级群文本 URL 带 ?project= 参数（存量申请 Default）。
 """
 import contextlib
 import io
@@ -21,6 +22,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.parse
 from unittest import mock
 
 # 让测试可 import shim 目录下的 key_requests（discover 从 shim/tests 启动）
@@ -904,6 +906,22 @@ class TestProjectScope(_Base):
         # 存量申请无快照 → Default（与过滤/执行同口径）
         legacy = {"kind": "new", "purpose": "x"}
         self.assertIn("**项目**: Default", kr._detail_line(legacy))
+
+    def test_card_url_carries_project_param(self):
+        # issue #91 P2-1：审批卡按钮 URL 带 ?project=<urlencoded gid>，直达申请所属项目
+        req = self._create_p2()
+        url = kr._request_card(req)["elements"][1]["actions"][0]["url"]
+        self.assertTrue(url.endswith("?project=" + urllib.parse.quote(_P2, safe="")))
+        # 存量无字段申请 → Default gid（_req_project_id 口径）
+        legacy = {"kind": "new", "purpose": "x"}
+        legacy_url = kr._console_url(legacy)
+        self.assertTrue(legacy_url.endswith(
+            "?project=" + urllib.parse.quote(kr.alert_poller.KEY_PROJECT_ID, safe="")))
+
+    def test_fallback_group_text_url_carries_project_param(self):
+        # issue #91 P2-1：降级群文本（_Base 默认无管理员 open_id → 群 webhook）URL 同步带参
+        self._create_p2()
+        self.assertIn("?project=" + urllib.parse.quote(_P2, safe=""), self.group[0])
 
     def test_dup_same_project_409_with_project_name(self):
         # issue #90：同项目同 kind pending 仍 409（防 spam 不变），文案带冲突项目名

@@ -14,9 +14,12 @@
  * issue #89：多项目隔离——列表跟随顶部项目切换器（X-Project-ID 头）按项目过滤，未选项目
  * 时空态引导；表格加「项目」列、同意弹窗摘要带项目名（存量申请无快照按 Default 显示）。
  * 点批不带项目头：执行落申请单记录的项目（与管理员当前项目解耦，切错项目不批错单）。
+ * issue #91 P2-1：审批卡/降级群通知的链接带 ?project=<gid>，本页读 search 后在本人可见
+ * 项目范围内切换 projectStore 选中项——管理员点开卡片即落在申请所属项目（不越权不报错）。
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { format } from 'date-fns';
+import { useSearch } from '@tanstack/react-router';
 import { useTranslation } from 'react-i18next';
 import { IconClipboardCheck } from '@tabler/icons-react';
 import { toast } from 'sonner';
@@ -34,7 +37,8 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
-import { useSelectedProjectId } from '@/stores/projectStore';
+import { useMe } from '@/features/auth/data/auth';
+import { useProjectStore, useSelectedProjectId } from '@/stores/projectStore';
 import { usePermissions } from '@/hooks/usePermissions';
 import { useAdminKeyRequests, useResolveKeyRequest, type AdminKeyRequest } from './api';
 import { upgradeDetailLabel } from '../my-keys/api';
@@ -61,6 +65,19 @@ export default function Ai4sKeyRequestsPage() {
   const projectId = useSelectedProjectId(); // issue #89：列表按管理员当前项目过滤
   const query = useAdminKeyRequests(projectId);
   const resolve = useResolveKeyRequest();
+  // issue #91 P2-1：审批卡链接带 ?project=<gid>——gid 在本人可见项目列表内则切换选中项
+  // （不越权、不报错），不在则忽略保持当前项目；只在 search 值/可见名单变化且与当前
+  // 选中不同时才切（防循环）
+  const { project: searchProject } = useSearch({ from: '/_authenticated/key-requests/' });
+  const { data: me } = useMe();
+  const setSelectedProjectId = useProjectStore((s) => s.setSelectedProjectId);
+  useEffect(() => {
+    if (!searchProject) return;
+    const visible = me?.projects?.some((p) => p.projectID === searchProject);
+    if (visible && useProjectStore.getState().selectedProjectId !== searchProject) {
+      setSelectedProjectId(searchProject);
+    }
+  }, [searchProject, me?.projects, setSelectedProjectId]);
   // 点批是写操作（shim 端 write_channels 鉴权）：只读管理员可见列表但按钮禁用，对齐 channels 等 admin 页惯例
   const { channelPermissions } = usePermissions();
   const canResolve = channelPermissions.canWrite;

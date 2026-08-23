@@ -12,6 +12,8 @@ auto_assign_project 幂等/单用户失败不阻塞/入项群通知）。
 issue #87 增补：Default 解析 fail-closed（按名命中不依赖顺序、缺失时不加人不发通知只记日志）。
 issue #89 增补：项目参数化 helper（query_user_projects 形状、ensure_emp_key/apply_tier 的
 projectID 透传与 Default 兜底）；apply_tier 的 USER_ENABLED_KEYS_QUERY 断言随项目过滤更新。
+issue #91 增补：P2-2 飞书新建成员校验（非成员不建 Key+回执文本）；P2-3 额度告警文本带
+项目名（含 myProjects 失败回退 gid）；P2-4 自动入项按 gid 匹配（改名仍命中/缺失跳过）。
 """
 import json
 import io
@@ -524,11 +526,17 @@ class TestCreateEmpKey(unittest.TestCase):
             result = ap.create_emp_key(ax, "ou_abc12345", "项目联调", "20260820", "ic-0000abcd")
         return result, gql_calls, assign, dm
 
-    def _handler(self, user=True, existing_key=None):
+    def _handler(self, user=True, existing_key=None, member=True):
         tpl = {"name": "体验档", "profile": {"modelMappings": [], "quota": {"requests": None, "totalTokens": 150000000,
                "cost": 100, "period": {"type": "calendar_duration", "calendarDuration": {"unit": "month"}}}}}
 
         def handler(query, variables):
+            if "projects(" in query:
+                # issue #91 P2-2 成员校验（USER_PROJECTS_QUERY，users 子查 projects）：
+                # member=False 模拟申请人已被移出 Default 项目
+                projs = [{"node": {"id": ap.KEY_PROJECT_ID, "name": "Default"}}] if member else []
+                return {"users": {"edges": [{"node": {"id": "gid://axonhub/User/7",
+                                                     "projects": {"edges": projs}}}]}}
             if "users(" in query:
                 node = {"id": "gid://axonhub/User/7", "email": variables["email"], "status": "activated"}
                 return {"users": {"edges": [{"node": node}] if user else []}}
@@ -583,6 +591,16 @@ class TestCreateEmpKey(unittest.TestCase):
     def test_user_missing_no_create(self):
         result, calls, assign, dm = self._run(self._handler(user=False))
         self.assertIn("未首登", result)
+        self.assertFalse(any("createAPIKey" in q for q, _ in calls))
+        assign.assert_not_called()
+        dm.assert_not_called()
+
+    def test_non_member_no_create(self):
+        # issue #91 P2-2：申请人已被移出 Default 项目 → 不建 Key，回执说明（正常终态文本，
+        # 不抛异常 → approval_sync 标记已处理不重试），与「无用户」先例同语义
+        result, calls, assign, dm = self._run(self._handler(member=False))
+        self.assertIn("已不在 Default 项目", result)
+        self.assertIn("未建 Key", result)
         self.assertFalse(any("createAPIKey" in q for q, _ in calls))
         assign.assert_not_called()
         dm.assert_not_called()
@@ -897,13 +915,23 @@ class TestAutoAssignProject(unittest.TestCase):
         self.assertIn("自动加入 Default 项目", sends[0])
 
     def test_default_missing_fail_closed(self):
-        # issue #87：Default 被改名/删除 → 不加任何项目、不发通知、只记日志（不回退 projs[0]）
+        # issue #87：Default 被删除 → 不加任何项目、不发通知、只记日志（不回退 projs[0]）
+        # issue #91 P2-4：日志按 gid 报（匹配键从项目名改为 KEY_PROJECT_ID）
         with redirect_stdout(io.StringIO()) as buf:
             sends, adds = self._run([self._user(9, "new@x")], my_projects=[
                 {"id": "gid://axonhub/Project/2", "name": "P-Test"}])
         self.assertEqual(adds, [])
         self.assertEqual(sends, [])
-        self.assertIn("未找到 Default 项目", buf.getvalue())
+        self.assertIn(f"未找到 {ap.KEY_PROJECT_ID}", buf.getvalue())
+
+    def test_renamed_default_still_matched_by_gid(self):
+        # issue #91 P2-4：Default 改名后按 gid 仍命中（按名匹配时此处会静默停摆），
+        # 通知文本按匹配到的项目实名发出
+        sends, adds = self._run([self._user(9, "new@x")], my_projects=[
+            {"id": "gid://axonhub/Project/1", "name": "主项目（已改名）"}])
+        self.assertEqual([a["projectId"] for a in adds], ["gid://axonhub/Project/1"])
+        self.assertEqual(len(sends), 1)
+        self.assertIn("主项目（已改名）", sends[0])
 
 
 class TestCheckCycleDebounce(unittest.TestCase):
@@ -954,6 +982,61 @@ class TestCheckCycleDebounce(unittest.TestCase):
              mock.patch.object(ap, "send_feishu", return_value=True):
             state = ap.check_cycle(ax, {})
         self.assertEqual(state, {})
+
+
+class TestCheckCycleProjectLabel(unittest.TestCase):
+    """issue #91 P2-3：apikey 额度告警/预警/恢复文本带项目名（一轮一次 myProjects 建
+    gid→名映射）；名单查询失败回退裸 gid，不阻塞告警主流程。"""
+
+    P2 = "gid://axonhub/Project/2"
+
+    def _cycle(self, state, cost_used, proj_names_ok=True):
+        sends = []
+        usage = {"profileName": "体验档",
+                 "quota": {"requests": None, "totalTokens": None, "cost": 100},
+                 "usage": {"requestCount": 0, "totalTokens": 0, "totalCost": cost_used}}
+
+        def fake_gql(query, variables=None):
+            if "myProjects" in query:
+                if not proj_names_ok:
+                    raise RuntimeError("gql down")
+                return {"myProjects": [{"id": "gid://axonhub/Project/1", "name": "Default"},
+                                       {"id": self.P2, "name": "P-Test2"}]}
+            if "queryChannels" in query:
+                return {"queryChannels": {"edges": []}}
+            if "apiKeyQuotaUsages" in query:
+                return {"apiKeyQuotaUsages": [usage]}
+            if "apiKeys(" in query:
+                return {"apiKeys": {"edges": [{"node": {"id": "gid://axonhub/APIKey/9",
+                        "name": "emp-k", "userID": "gid://axonhub/User/2", "projectID": self.P2}}]}}
+            raise AssertionError(f"unexpected gql: {query[:50]}")
+
+        ax = mock.Mock()
+        ax.gql = fake_gql
+        with mock.patch.object(ap, "http_get", return_value=True), \
+             mock.patch.object(ap, "send_feishu", side_effect=lambda t: sends.append(t) or True):
+            new_state = ap.check_cycle(ax, state)
+        return new_state, sends
+
+    def test_alert_and_recover_texts_have_project_name(self):
+        # 耗尽告警 + 恢复 两类文本都带项目名
+        state, sends = self._cycle({}, 150)
+        alert = next(t for t in sends if "额度耗尽" in t)
+        self.assertIn("项目: P-Test2", alert)
+        state, sends = self._cycle(state, 10)  # 新周期用量回落 → 恢复
+        recover = next(t for t in sends if "已重置" in t)
+        self.assertIn("项目 P-Test2", recover)
+
+    def test_near_warning_text_has_project_name(self):
+        _, sends = self._cycle({}, 85)  # ≥80% 未耗尽 → 预警
+        warn = next(t for t in sends if "额度将尽" in t)
+        self.assertIn("项目: P-Test2", warn)
+
+    def test_projects_query_failure_fallback_gid(self):
+        # myProjects 查询失败：告警照发，项目位回退裸 gid
+        _, sends = self._cycle({}, 150, proj_names_ok=False)
+        alert = next(t for t in sends if "额度耗尽" in t)
+        self.assertIn(f"项目: {self.P2}", alert)
 
 
 class TestImportDoesNotStartThread(unittest.TestCase):

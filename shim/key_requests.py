@@ -22,6 +22,8 @@ issue #89 多项目隔离：申请单存 projectId/projectName 快照（self 平
 无项目字段的存量申请视为 Default；飞书审批老通道无项目上下文，维持落 Default 不变。
 issue #90：dup 判定键从（email, kind）补为（email, kind, projectId）——同项目同 kind
 仍只允许一条 pending（防 spam 不变），跨项目互不阻塞；409 文案带冲突项目名。
+issue #91 P2-1：审批卡按钮与降级群文本的 URL 追加 ?project=<urlencoded gid>
+（_console_url，存量申请按 Default）——管理员点开即切到申请所属项目，不再面对空列表。
 申请人撤回（issue #80）：POST /self/key-requests/<id>/cancel，仅本人 + 仅 pending，
 置 canceled + 管理员回执（卡片更新/无卡降级群文本），幂等不重复通知。
 
@@ -50,6 +52,7 @@ import os
 import secrets
 import threading
 import time
+import urllib.parse
 import urllib.request
 
 import admin_api  # write_json_atomic 原子写复用（唯一 tmp + .bak 滚动 + finally 清理）
@@ -62,6 +65,7 @@ REQUESTS_PATH = os.environ.get(
 # 管理员审批卡接收人（app bot 私信）；未配置降级为群 webhook 文本通知
 FEISHU_ADMIN_OPEN_ID = os.environ.get("FEISHU_ADMIN_OPEN_ID", "")
 # 审批卡 link 按钮落点（控制台审批页）；env 置空/未设都回退默认（compose 空串注入场景）
+# 约定：必须是裸路径（不含 query）——_console_url 会按申请项目追加 ?project=<gid>（issue #91）
 CONSOLE_URL = os.environ.get("KEY_REQUEST_CONSOLE_URL") or "http://localhost:3000/key-requests"
 if not os.environ.get("KEY_REQUEST_CONSOLE_URL"):
     # 评审 P2：未配置时卡片 link 落点是 localhost 默认值，管理员点按钮打到的是自己本机——
@@ -221,6 +225,13 @@ def _detail_line(req: dict) -> str:
     return f"{project}\n**目标档**: {req.get('tier') or '—'}{scope}"
 
 
+def _console_url(req: dict) -> str:
+    """审批页落点 URL 带项目参数（issue #91 P2-1）：审批卡按钮/降级群文本直达申请所属项目
+    （web 审批页 validateSearch 读 project 并切换 projectStore）；存量无字段申请按 Default
+    （_req_project_id 口径）。"""
+    return f"{CONSOLE_URL}?project={urllib.parse.quote(_req_project_id(req), safe='')}"
+
+
 def _request_card(req: dict) -> dict:
     """待审批卡：摘要 + 「前往控制台审批」link 按钮（不含任何明文）。"""
     kind_label = "新建 Key" if req["kind"] == "new" else "额度提额"
@@ -238,7 +249,7 @@ def _request_card(req: dict) -> dict:
             {"tag": "action", "actions": [{
                 "tag": "button", "type": "primary",
                 "text": {"tag": "plain_text", "content": "前往控制台审批"},
-                "url": CONSOLE_URL,
+                "url": _console_url(req),
             }]},
         ],
     }
@@ -284,7 +295,7 @@ def _notify_admin_new_request(req: dict):
         f"[ai4s Key 申请] 待审批（{kind_label}）\n"
         f"申请人: {(req.get('applicant') or {}).get('email')}\n"
         f"{_detail_line(req).replace('**', '')}\n"
-        f"申请 ID: {req['id']}\n请到控制台 Key 审批页处理: {CONSOLE_URL}"
+        f"申请 ID: {req['id']}\n请到控制台 Key 审批页处理: {_console_url(req)}"
     )
 
 

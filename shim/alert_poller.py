@@ -7,6 +7,8 @@ axonhub 无事件源的事务靠主动轮询补齐。巡检项（状态翻转才
      并入 shim 后 SHIM_URL 默认进程内自调 http://localhost:8080（issue #56）
   2. 上游渠道额度：queryChannels → providerQuotaStatus ∈ {warning, exhausted} → 告警
   3. 员工 API key 额度：apiKeys → apiKeyQuotaUsages，usage 达到 quota → 告警；≥80% → 预警（issue #18）
+     issue #91 P2-3：告警/预警/恢复文本带项目名（一轮一次 myProjects 建 gid→名映射，
+     名单失败回退裸 gid 不阻塞告警）
 
 审批同步（issue #19 提额 + issue #72 新建，approval_sync 泛化为多定义并存）：
   轮询飞书审批实例（APPROVAL_QUOTA_CODE / APPROVAL_KEY_CODE 两个定义各自轮询）：
@@ -23,6 +25,8 @@ axonhub 无事件源的事务靠主动轮询补齐。巡检项（状态翻转才
     加 project_id 参数（默认 KEY_PROJECT_ID=Default——飞书通道与存量申请零变化，其 key 均落
     Default）；控制台申请/审批按申请单记录的项目执行，不再跨项目拉齐。
   - 新建：APPROVED → open_id → axonhub 用户（无用户=未首登，回执提示先登录再重新申请）
+    → 成员校验（issue #91 P2-2：申请人须仍是 Default 项目成员，非成员不建、回执说明，
+    正常终态不重试，与「无用户」先例同语义）
     → createAPIKey（体验档写死，命名 emp-<oid8>-<yyyymmdd>-<用途摘要>-<ic尾4>）
     → 归属申请人（createAPIKey 无 userID 入参，v1.0.0-beta6 实证；建后 SQL 直改 user_id 并
       bump updated_at，axonhub 30s 增量刷新自动跟进缓存；归申请人是提额流按 userID 找 key 的前提）
@@ -37,6 +41,8 @@ axonhub 无事件源的事务靠主动轮询补齐。巡检项（状态翻转才
   幂等天然成立（已成员被筛除），单用户失败记日志下轮重试，入项成功发群通知让管理员感知。
   issue #87：Default 解析 fail-closed——只按名命中 "Default"，找不到记日志本轮跳过，
   不回退到 myProjects 首项（改名/删除时会把新用户静默加进任意项目且通知谎报 Default）。
+  issue #91 P2-4：改为按 gid（KEY_PROJECT_ID）匹配 myProjects——项目改名不再静默停摆，
+  缺失仍记日志本轮跳过（fail-closed 不变）；通知文本按匹配到的项目实名单发出。
 
 发送：飞书群机器人签名校验（与 shim /feishu-alert 同算法）；axonhub 实时事件
 （channel.auto_disabled）走 shim /feishu-alert 适配器，本模块不重复。
@@ -91,8 +97,9 @@ KEY_PROJECT_ID = os.environ.get("APPROVAL_KEY_PROJECT_ID", "gid://axonhub/Projec
 # issue #70 #6：enabled Key 列表查询单份（原 apply_tier / check_cycle 各写一遍同样的查询）。
 # 约束：first:100 硬上限——查询无 projectID 过滤，全局 enabled Key 超 100 即漏判；当前规模（十余个）远不及，
 # 超规模时需改 after 分页（users 侧同类上限已改 where 精确查，见 apply_tier）。
+# issue #91 P2-3：节点补 projectID（告警文本带项目名用；APIKey.projectID 2026-08-23 内省实证存在）。
 ENABLED_API_KEYS_QUERY = (
-    "query { apiKeys(first: 100, where: {statusIn: [enabled]}) { edges { node { id name userID } } } }"
+    "query { apiKeys(first: 100, where: {statusIn: [enabled]}) { edges { node { id name userID projectID } } } }"
 )
 
 
@@ -497,12 +504,18 @@ def ensure_emp_key(ax: Axonhub, user: dict, seed: str, purpose: str, day: str, t
 
 def create_emp_key(ax: Axonhub, open_id: str, purpose: str, day: str, ic: str) -> str:
     """新建审批 APPROVED 执行体（飞书审批定义通道）：找用户 → ensure_emp_key → 私信交付明文。
-    返回群回执用的结果摘要（绝不含明文）；抛异常=本轮失败，approval_sync 不标记、下轮重试。"""
+    返回群回执用的结果摘要（绝不含明文）；抛异常=本轮失败，approval_sync 不标记、下轮重试。
+    issue #91 P2-2：建 Key 前校验申请人仍是 Default（KEY_PROJECT_ID）项目成员——与控制台
+    通道（#89 fail-closed）同口径；非成员不建（否则建出「能用（上游 #88 U1）但员工在控制台
+    看不见」的 Key），回执说明，与「无用户」先例同语义（正常终态、标记已处理，不重试）。"""
     email = f"{open_id}@casdoor.oidc"
     user = find_user_by_email(ax, email)
     if not user:
         # 未首登无用户：不建 key、不算失败，回执引导后标记已处理（重新申请会生成新实例）
         return f"axonhub 无用户 {email}（申请人未首登平台），未建 Key；请先登录平台一次再重新申请"
+    if KEY_PROJECT_ID not in {p.get("id") for p in query_user_projects(ax, user["id"])}:
+        return (f"用户 {email} 已不在 Default 项目（已被移出），未建 Key；"
+                "请管理员重新入项后重新申请，或引导其在控制台目标项目下发起申请")
     name, plain, owner_note = ensure_emp_key(ax, user, open_id, purpose, day, ic)
     dm_ok = feishu_dm(open_id, (
         f"[ai4s] 你的 API Key 已创建（审批 {ic}）\n"
@@ -651,13 +664,16 @@ def auto_assign_project(ax: Axonhub):
     项目头实证：addUserToProject 不需要 X-Project-ID（项目由 input.projectId 决定，
     2026-08-20 与 assign-default-project.sh 不带头跑通一致），复用 Axonhub.gql 即可。"""
     projs = ax.gql(MY_PROJECTS_QUERY)["myProjects"] or []
-    # issue #87：fail-closed——只认名为 Default 的项目，找不到记日志本轮跳过；
-    # 不回退到任意项目（此前回退 projs[0]：Default 被改名/删除时会把新用户静默加进
-    # 第一个项目，且通知仍谎报「Default」，多项目场景实测发现）
-    pid = next((p["id"] for p in projs if p.get("name") == "Default"), None)
-    if not pid:
-        print("[alert] 自动入项：myProjects 中未找到 Default 项目，本轮跳过", flush=True)
+    # issue #87：fail-closed——找不到目标项目记日志本轮跳过，不回退到任意项目（此前回退
+    # projs[0]：Default 被改名/删除时会把新用户静默加进第一个项目，且通知仍谎报「Default」）。
+    # issue #91 P2-4：按 gid（KEY_PROJECT_ID）匹配，不再按名 "Default"——项目改名不再
+    # 静默停摆（按名匹配时改名后永远找不到，只能靠人工发现）；fail-closed 语义不变。
+    proj = next((p for p in projs if p.get("id") == KEY_PROJECT_ID), None)
+    if not proj:
+        print(f"[alert] 自动入项：myProjects 中未找到 {KEY_PROJECT_ID}，本轮跳过", flush=True)
         return
+    pid = proj["id"]
+    pname = proj.get("name") or KEY_PROJECT_ID
     users = ax.gql(USERS_WITH_PROJECTS_QUERY)["users"]["edges"]
     for n in pending_default_project_users(users, pid):
         try:
@@ -670,7 +686,7 @@ def auto_assign_project(ax: Axonhub):
             continue
         print(f"[alert] 新用户自动入项: {n.get('email')}", flush=True)
         send_feishu(
-            f"[ai4s 通知] 新用户已自动加入 Default 项目\n"
+            f"[ai4s 通知] 新用户已自动加入 {pname} 项目\n"
             f"用户: {n.get('email')}\n项目级能力: {'/'.join(PROJECT_MEMBER_SCOPES)}"
         )
 
@@ -772,10 +788,18 @@ def check_cycle(ax: Axonhub, state: dict) -> dict:
         print(f"[alert] 渠道额度查询失败: {type(e).__name__}", flush=True)
 
     # 3) 员工 API key 额度
+    # issue #91 P2-3：告警/预警/恢复文本带项目名——一轮一次 myProjects 建 gid→名映射；
+    # 名单查询失败回退裸 gid（不阻塞告警主流程）
+    proj_names = {}
+    try:
+        proj_names = {p["id"]: p.get("name") for p in (ax.gql(MY_PROJECTS_QUERY)["myProjects"] or [])}
+    except Exception as e:
+        print(f"[alert] 项目名单查询失败（告警文本回退 gid）: {type(e).__name__}", flush=True)
     try:
         data = ax.gql(ENABLED_API_KEYS_QUERY)
         for e in data["apiKeys"]["edges"]:
             key = e["node"]
+            proj_label = proj_names.get(key.get("projectID")) or key.get("projectID") or "未知项目"
             try:
                 usages = ax.gql(
                     "query($id: ID!) { apiKeyQuotaUsages(apiKeyId: $id) "
@@ -789,15 +813,15 @@ def check_cycle(ax: Axonhub, state: dict) -> dict:
                 hits = [f"{name} {txt}" for name, _, txt in over]
                 findings[f"quota:apikey:{key['id']}:{u.get('profileName')}"] = (
                     bool(over),
-                    f"[ai4s 告警] 员工 API Key 额度耗尽\nKey: {key['name']}（profile {u.get('profileName')}）\n用量: {'; '.join(hits)}\n时间: {now_str()}",
-                    f"[ai4s 恢复] API Key 额度已重置: {key['name']}（profile {u.get('profileName')}）",
+                    f"[ai4s 告警] 员工 API Key 额度耗尽\nKey: {key['name']}（profile {u.get('profileName')}）\n项目: {proj_label}\n用量: {'; '.join(hits)}\n时间: {now_str()}",
+                    f"[ai4s 恢复] API Key 额度已重置: {key['name']}（profile {u.get('profileName')}，项目 {proj_label}）",
                 )
                 # 80% 预警（issue #18）：赶在 403 之前提醒走提额审批
                 near_txt = "; ".join(f"{name} {txt}（{r:.0%}）" for name, r, txt in near)
                 findings[f"quota80:apikey:{key['id']}:{u.get('profileName')}"] = (
                     bool(near) and not over,
-                    f"[ai4s 预警] 员工 API Key 额度将尽（≥80%）\nKey: {key['name']}（profile {u.get('profileName')}）\n用量: {near_txt}\n请在飞书提交提额审批，避免被 403 拒载\n时间: {now_str()}",
-                    f"[ai4s 恢复] API Key 额度预警解除（新周期/提额生效）: {key['name']}（profile {u.get('profileName')}）",
+                    f"[ai4s 预警] 员工 API Key 额度将尽（≥80%）\nKey: {key['name']}（profile {u.get('profileName')}）\n项目: {proj_label}\n用量: {near_txt}\n请在飞书提交提额审批，避免被 403 拒载\n时间: {now_str()}",
+                    f"[ai4s 恢复] API Key 额度预警解除（新周期/提额生效）: {key['name']}（profile {u.get('profileName')}，项目 {proj_label}）",
                 )
     except Exception as e:
         print(f"[alert] API key 额度查询失败: {type(e).__name__}", flush=True)
