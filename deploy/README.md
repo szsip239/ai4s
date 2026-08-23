@@ -7,10 +7,10 @@
 | 组件 | 镜像 | 说明 |
 |---|---|---|
 | agentgateway | `cr.agentgateway.dev/agentgateway:v1.4.1`（digest `sha256:efd79355…`） | 最新稳定版（2026-07-29 发布） |
-| axonhub | `looplj/axonhub:v1.0.0-beta6`（digest `sha256:d41f3ca1…`） | pin 定 beta，不跟 latest/unstable |
+| axonhub | `looplj/axonhub:v1.0.0-beta6`（digest `sha256:d41f3ca1…`） | 只升稳定版（ADR-0005，2026-08-24 拍板）：beta 一律不追；重评审触发条件与 beta7 评审存档见 ADR 与 `docs/research/2026-08-24-axonhub-beta7-review.md` |
 | PostgreSQL | `postgres:16-alpine`（digest `sha256:57c72fd2…`，实为 16.14） | axonhub 官方 compose 同款主版本 |
 | casdoor | `casbin/casdoor:3.133.0` | SSO 枢纽（issue #14）：飞书 OAuth → 标准 OIDC |
-| shim | 本地构建 `../shim`（python:3.12-slim + apt tesseract-ocr/chi-sim/eng（issue #50 OCR，apt 层 +109MB）；pip pin PyMuPDF/python-docx/openpyxl/python-pptx/pytesseract/Pillow + onnxruntime/transformers/numpy（issue #67 PG 进程内推理，版本 pin 自原 promptguard 容器实测；镜像总 900MB，2026-08-19 实测）+ psycopg（issue #72 key 归属 SQL 直改，函数级懒加载）） | DLP 词表/PII 适配 + PromptGuard 2 注入检测引擎 `pg_engine`（issue #67 并入进程内，原 promptguard 容器退役；函数级懒加载，pg.enabled=false 时零加载零开销；模型卷 `./.local/promptguard-model:/models/promptguard:ro` + `HF_HUB_OFFLINE=1`）+ 飞书告警适配 `/feishu-alert`（issue #17）+ 统一配置 admin 平面 `/dlp-admin/*`（issue #31–#36）+ 告警巡检 daemon 线程（issue #56 并入原 alert-poller：fail-open 探活/渠道与 key 额度轮询/审批同步 30s，与检测路径隔离；issue #19 提额 + issue #72 新建 Key 审批并存，新建通过→自动建 key 归申请人→挂体验档→私信交付明文） |
+| shim | 本地构建 `../shim`（python:3.12-slim + apt tesseract-ocr/chi-sim/eng（issue #50 OCR，apt 层 +109MB）；pip pin PyMuPDF/python-docx/openpyxl/python-pptx/pytesseract/Pillow + onnxruntime/transformers/numpy（issue #67 PG 进程内推理，版本 pin 自原 promptguard 容器实测；镜像总 900MB，2026-08-19 实测）+ psycopg（issue #72 key 归属 SQL 直改，函数级懒加载）） | DLP 词表/PII 适配 + PromptGuard 2 注入检测引擎 `pg_engine`（issue #67 并入进程内，原 promptguard 容器退役；函数级懒加载，pg.enabled=false 时零加载零开销；模型卷 `./.local/promptguard-model:/models/promptguard:ro` + `HF_HUB_OFFLINE=1`）+ 飞书告警适配 `/feishu-alert`（issue #17）+ 统一配置 admin 平面 `/dlp-admin/*`（issue #31–#36）+ 告警巡检 daemon 线程（issue #56 并入原 alert-poller：fail-open 探活/渠道与 key 额度轮询/shadow 层可用率（issue #92）/审批同步 30s，与检测路径隔离；issue #19 提额 + issue #72 新建 Key 审批并存，新建通过→自动建 key 归申请人→挂体验档→私信交付明文）+ shadow 判定观测出口 `/dlp-admin/shadow-verdicts`（issue #92，judge/PG 判定持久化于 `alert-state/shadow-verdicts.jsonl`） |
 | mock-upstream（可选） | `python:3.12-alpine` | 仅无 OAuth 凭据时验证链路用 |
 
 ## 快速开始
@@ -38,6 +38,7 @@ cd ../shim && python3 -m venv .venv && .venv/bin/pip install -r requirements-dev
 
 - 管理面：http://localhost:3000 （经 agentgateway 反代；宿主不再单独暴露 axonhub 调试口，issue #60），用 `.env` 中的 `AXONHUB_ADMIN_EMAIL` / `AXONHUB_ADMIN_PASSWORD` 登录（本地账号；阶段 1 切 飞书 OAuth→Casdoor→OIDC）。
 - 员工入口：`http://localhost:3000/v1`（OpenAI 兼容），唯一对员工的端口。
+- **运维纪律（issue #70 + ADR-0005）**：axonhub 每次新建项目都会种子 Admin/Developer/Viewer 三角色，其中 Developer 含 `read_api_keys`/`write_api_keys`（授予即绕开 #68 员工最小集，beta6 实证存在，beta7 起 UI/API 禁删）——**每次新建项目后必须重跑** `scripts/issue-70-narrow-seed-roles.sql` 核查收窄，并抽查项目角色列表。
 - SSO（issue #14 已上线）：员工在 http://localhost:3000/sign-in 点"Casdoor SSO（飞书）"登录，JIT 自动建号。axonhub 无 JIT 默认项目机制；**issue #73 起 shim 巡检线程 30s 级自动把新员工补进 Default 项目**（`auto_assign_project`，入项发飞书群通知），手工兜底 `./scripts/assign-default-project.sh`（幂等）。
 - **公网访问（2026-08-22 起，替代 tailnet serve）**：宿主 `local-edge-nginx` 发布两条 example.com HTTPS 入口（模板 `sibling-project/.deploy/nginx-consolidation/local/templates/ai4s.conf.template`；iKuai dnat id=22/23 对齐 18999 模式）：
   - console+API：`https://example.com:8445`（→ host.docker.internal:3000；本机 localhost:3000 入口不受影响）

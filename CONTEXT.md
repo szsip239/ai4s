@@ -48,6 +48,12 @@ _Avoid_: 额度单位、积分
 **档（Tier）**:
 挂在项目上的额度 Profile（体验档 100 点 / 标准档 500 点 / 高档 2000 点，每自然月；issue #84 起）。员工 Key 的额度 = 其项目对应的档。
 
+### 基础设施
+
+**稳定版钉住（Stable-only Pinning）**:
+axonhub 升级只考虑稳定版（GA 及以上），beta 一律不追（ADR-0005，2026-08-24 拍板；现网钉住 v1.0.0-beta6）。重评审触发条件：稳定版发布 / #88 三项上游缺陷或上游 #2281 修复 / 影响 beta6 的安全补丁。beta6→beta7 评审存档 `docs/research/2026-08-24-axonhub-beta7-review.md`。
+_Avoid_: 追 latest/unstable
+
 ### 身份
 
 **JIT 用户（JIT User）**:
