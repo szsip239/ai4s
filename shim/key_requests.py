@@ -20,6 +20,8 @@ issue #89 多项目隔离：申请单存 projectId/projectName 快照（self 平
 （本人, 本项目）评估；批准执行落在申请单记录的项目（与管理员当前项目解耦），新建执行时
 复查成员资格（被移出项目不建 Key，结果文本说明）；列表（self/admin 平面）按项目过滤，
 无项目字段的存量申请视为 Default；飞书审批老通道无项目上下文，维持落 Default 不变。
+issue #90：dup 判定键从（email, kind）补为（email, kind, projectId）——同项目同 kind
+仍只允许一条 pending（防 spam 不变），跨项目互不阻塞；409 文案带冲突项目名。
 申请人撤回（issue #80）：POST /self/key-requests/<id>/cancel，仅本人 + 仅 pending，
 置 canceled + 管理员回执（卡片更新/无卡降级群文本），幂等不重复通知。
 
@@ -413,9 +415,13 @@ def create_request(me: dict, kind: str, purpose: str, tier: str, key_ids=None, p
         reqs = _load()
         dup = next((r for r in reqs
                     if r["status"] == "pending" and r["kind"] == kind
-                    and (r.get("applicant") or {}).get("email") == email), None)
+                    and (r.get("applicant") or {}).get("email") == email
+                    and _req_project_id(r) == pid), None)  # issue #90：dup 键补项目维度
         if dup:
-            return None, (409, f"已有待审批的同类申请（{dup['id']}），请等待处理或联系管理员")
+            # 文案带项目名（存量无快照回退 Default，与 _req_project_id 口径一致）——
+            # 列表按项目过滤后用户看不到别项目的冲突申请，必须指明冲突位置
+            return None, (409, f"项目 {dup.get('projectName') or 'Default'} "
+                               f"已有待审批的同类申请（{dup['id']}），请等待处理或联系管理员")
         req = {
             "id": f"kr-{time.strftime('%Y%m%d', time.gmtime(now))}-{secrets.token_hex(3)}",
             "kind": kind,

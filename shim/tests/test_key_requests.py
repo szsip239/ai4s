@@ -9,6 +9,8 @@ issue #85：create_request 的 upgrade 方向守卫会查当前档（query_user_
 _Base 默认 mock 成体验档 key（任何提额目标放行）；具体档位场景在 TestUpgradeDirectionGuard 内自行重挂。
 issue #89 增补：多项目隔离——TestProjectScope 覆盖成员校验（403/502）、项目快照、守卫/执行
 项目过滤、存量申请 Default 回退、list_requests 项目过滤与详情行项目显示。
+issue #90 增补：dup 判定项目维度——同项目同 kind 409（文案含项目名）、跨项目放行、
+存量无字段申请参与 Default 维度去重。
 """
 import contextlib
 import io
@@ -902,6 +904,41 @@ class TestProjectScope(_Base):
         # 存量申请无快照 → Default（与过滤/执行同口径）
         legacy = {"kind": "new", "purpose": "x"}
         self.assertIn("**项目**: Default", kr._detail_line(legacy))
+
+    def test_dup_same_project_409_with_project_name(self):
+        # issue #90：同项目同 kind pending 仍 409（防 spam 不变），文案带冲突项目名
+        req = self._create_p2()
+        with self._member_of_p2():
+            dup, err = kr.create_request(_ME_FEISHU, "new", "再来一个", "", project_id=_P2)
+        self.assertIsNone(dup)
+        self.assertEqual(err[0], 409)
+        self.assertIn("P-Test2", err[1])
+        self.assertIn(req["id"], err[1])
+
+    def test_dup_cross_project_allowed(self):
+        # issue #90：Default 挂 pending → P2 同 kind 放行（跨项目互不阻塞）
+        self._create(_ME_FEISHU)  # Default pending
+        req_p2, err = None, None
+        with self._member_of_p2():
+            req_p2, err = kr.create_request(_ME_FEISHU, "new", "P2 联调", "", project_id=_P2)
+        self.assertIsNone(err)
+        self.assertEqual(req_p2["projectId"], _P2)
+
+    def test_dup_legacy_request_counts_as_default(self):
+        # issue #90：存量无字段申请参与 Default 维度去重（_req_project_id 口径），
+        # 文案回退项目名 Default；但不阻塞 P2 申请
+        req = self._create(_ME_FEISHU)
+        with kr._lock:
+            reqs = kr._load()
+            del reqs[0]["projectId"]
+            del reqs[0]["projectName"]
+            kr._save(reqs)
+        _, err = kr.create_request(_ME_FEISHU, "new", "再来", "")
+        self.assertEqual(err[0], 409)
+        self.assertIn("Default", err[1])
+        with self._member_of_p2():
+            _, err2 = kr.create_request(_ME_FEISHU, "new", "P2 联调", "", project_id=_P2)
+        self.assertIsNone(err2)
 
 
 if __name__ == "__main__":
