@@ -12,11 +12,13 @@
 自包含段：EDM 段（issue #29）；admin API 段（issue #37）——词表只经 admin API 改，
 PUT 临时词→命中 451→PUT 还原→不再 451；凭据缺（env DLP_ADMIN_TOKEN 与
 deploy/.local/admin-jwt 均不可得）则 SKIP 不 fail。
+注入水位门禁段（issue #95）：主流程最前 subprocess 跑 injection-eval.py（normalize
+链路口径），不达标非零即回归失败。
 
 公共部分（常量/登录/渠道/send/classify/admin API）在 dlp_testkit.py（issue #42 提取）。
 自动准备（幂等）：起 mock-upstream（profile mock）+ 建 dlp-echo 渠道（model=echo-test）。
 用法：cd deploy && python3 scripts/dlp-regression.py [--json out.json]
-退出码：有"应拦未拦/应脱敏未脱敏/负例误伤"即 1；文档化 gap 不 fail。
+退出码：有"应拦未拦/应脱敏未脱敏/负例误伤"或注入水位门禁不达标即 1；文档化 gap 不 fail。
 """
 import json
 import os
@@ -139,9 +141,25 @@ def run_admin_section(api_key, token):
     return results
 
 
+def run_injection_gate():
+    """注入水位门禁段（issue #95）：subprocess 跑 injection-eval.py（默认 normalize 链路口径，
+    输出透传），非零即门禁失败。
+    顺序硬约束：必须在本回归 43 样本流量之前跑——injection-eval 内部已 REPL 直测先行 +
+    close 释放后再放链路流量；若 shim 主进程已被回归流量触发懒加载 PG 模型（实测容器驻留
+    ~1.66GiB），REPL 再加载一份（~1.1GiB）在默认 Docker VM（~2.8GiB）必 OOM（SIGKILL 137）。"""
+    print("==> 注入水位门禁（issue #95，injection-eval 链路口径）", flush=True)  # flush：子进程直写 stdout，不 flush 标题会乱序到子进程输出之后
+    r = subprocess.run(["python3", "scripts/injection-eval.py"], cwd=DEPLOY_DIR)
+    print(f"<== 注入水位门禁 {'PASS' if r.returncode == 0 else f'FAIL（exit {r.returncode}）'}")
+    return r.returncode == 0
+
+
 def main():
     out_json = "--json" in sys.argv
     out_path = sys.argv[sys.argv.index("--json") + 1] if out_json else None
+
+    # 注入水位门禁（issue #95）在最前：趁 shim 冷态跑（顺序原因见 run_injection_gate docstring）
+    if not run_injection_gate():
+        sys.exit(1)
 
     api_key = open(os.path.join(DEPLOY_DIR, ".local", "test-api-key")).read().strip()
     token = tk.prepare()

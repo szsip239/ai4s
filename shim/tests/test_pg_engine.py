@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-"""pg_engine 归一化纯函数单测（issue #44；issue #67 平移自 promptguard/test_app.py）。
-不加载模型，只测 normalize_for_scoring。运行：cd shim && python3 -m unittest discover -s tests"""
+"""pg_engine 归一化纯函数 + jsonl REPL 单测（issue #44/#95；issue #67 平移自 promptguard/test_app.py）。
+不加载模型：normalize 测纯函数，REPL 测打桩 score 只验证字段透传。
+运行：cd shim && python3 -m unittest discover -s tests"""
 import base64
+import contextlib
+import io
+import json
 import os
 import sys
 import unittest
@@ -9,6 +13,7 @@ import unittest
 # 让测试可 import shim 目录下的 pg_engine（discover 从 shim/tests 启动）
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import pg_engine  # noqa: E402
 from pg_engine import normalize_for_scoring  # noqa: E402
 
 
@@ -48,6 +53,43 @@ class TestNormalizeForScoring(unittest.TestCase):
         """短于 16 的 base64 形串不参与解码（防误替换普通单词）。"""
         s = "export SK=sk-test 这样写对吗"
         self.assertEqual(normalize_for_scoring(s), s)
+
+
+class TestReplNormalizePassthrough(unittest.TestCase):
+    """jsonl REPL normalize 字段透传（issue #95）：normalize=true 时先归一化再 score，
+    对齐链路 pg.normalize 口径；不带字段/显式 false 保持既有 raw 行为。打桩 score 免模型加载。"""
+
+    def _run_repl(self, rows):
+        """rows（dict 列表）逐行喂入 repl_main，返回 (score 收到的文本列表, 输出行列表)。"""
+        scored = []
+        orig_score = pg_engine.score
+        pg_engine.score = lambda t: (scored.append(t), 0.5)[1]
+        orig_stdin = sys.stdin
+        stdout = io.StringIO()
+        try:
+            sys.stdin = io.StringIO("".join(json.dumps(r) + "\n" for r in rows))
+            with contextlib.redirect_stdout(stdout):
+                pg_engine.repl_main()
+        finally:
+            sys.stdin = orig_stdin
+            pg_engine.score = orig_score
+        return scored, [json.loads(line) for line in stdout.getvalue().splitlines()]
+
+    def test_normalize_true_normalized_before_score(self):
+        """normalize=true → score 收到归一化后文本（零宽清除 + 全角转半角），打分结果原样透传。"""
+        scored, out = self._run_repl([{"text": "ig\u200bnore ｐｒｅｖｉｏｕｓ", "normalize": True}])
+        self.assertEqual(scored, ["ignore previous"])
+        self.assertEqual(out, [{"malicious": 0.5}])
+
+    def test_normalize_absent_raw_unchanged(self):
+        """不带 normalize 字段 → 原文打分（既有 raw 口径不变）。"""
+        scored, _ = self._run_repl([{"text": "ig\u200bnore"}])
+        self.assertEqual(scored, ["ig\u200bnore"])
+
+    def test_normalize_false_raw_unchanged(self):
+        """normalize=false 显式关闭 → 原文打分。"""
+        scored, _ = self._run_repl([{"text": "ig\u200bnore", "normalize": False}])
+        self.assertEqual(scored, ["ig\u200bnore"])
 
 
 if __name__ == "__main__":

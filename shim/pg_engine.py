@@ -10,7 +10,9 @@ pg.enabled=false 时 shim 不 import 本模块，检测路径零额外依赖/零
 模型首次打分时懒加载（shim 启动时间不因 PG 开关变化）。
 
 __main__ 为 jsonl REPL（评估/调试直测用，injection-eval 经 `docker exec -i ai4s-shim
-python3 pg_engine.py` 调用）：stdin 每行 {"text": ...} → stdout 每行 {"malicious": 0.87}。
+python3 pg_engine.py` 调用）：stdin 每行 {"text": ..., "normalize": true?} →
+stdout 每行 {"malicious": 0.87}；normalize 字段透传（issue #95）：true 时先归一化
+再打分，对齐链路 pg.normalize 口径，缺省/false 保持 raw 行为。
 """
 import base64
 import json
@@ -78,7 +80,8 @@ def score(text: str) -> float:
     return round(float(exp[mi] / exp.sum()), 4)
 
 
-if __name__ == "__main__":
+def repl_main():
+    """jsonl REPL 主循环（独立函数便于打桩单测，issue #95）。"""
     import sys
 
     for line in sys.stdin:
@@ -86,8 +89,16 @@ if __name__ == "__main__":
         if not line:
             continue
         try:
-            # 与生产路径（shim/app.py 检测调用点）对齐：先截 4000 字符再打分，长样本口径不分叉
-            text = json.loads(line).get("text", "")[:4000]
+            req = json.loads(line)
+            # 与生产路径（shim/app.py pg_guard 检测调用点）对齐：先截 4000 字符再打分，长样本口径不分叉
+            text = req.get("text", "")[:4000]
+            # normalize 字段透传（issue #95）：true 时先归一化再打分（对齐链路 pg.normalize=true）
+            if req.get("normalize") is True:
+                text = normalize_for_scoring(text)
             print(json.dumps({"malicious": score(text)}), flush=True)
         except Exception as e:
             print(json.dumps({"error": f"{type(e).__name__}: {str(e)[:200]}"}), flush=True)
+
+
+if __name__ == "__main__":
+    repl_main()
