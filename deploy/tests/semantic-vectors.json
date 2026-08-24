@@ -1,6 +1,6 @@
 {
-  "version": 2,
-  "_comment": "ai4s 商密语义层评估样本 v2（issue #99 样本真实化，原 issue #21 合成试探体全部换真）。semantic_novel=贴近真实业务沟通的虚构语料（邮件/工单/群聊/纪要/文档摘录口吻，六个代号自然使用 + 指代暗示）；negative_tricky=同名他物（每个核心代号至少 1 条）+ 相近话题不涉密；bypass 变形样本由评估脚本自动并自 dlp-vectors.json（expect=pass 且有 note）。内容全虚构，不含真实机密。expect: confidential/clean。运行：cd deploy && python3 scripts/semantic-eval.py",
+  "version": 3,
+  "_comment": "ai4s 商密语义层评估样本 v3（issue #107 追加 base64 正常文本负例；v2=issue #99 样本真实化，原 issue #21 合成试探体全部换真）。semantic_novel=贴近真实业务沟通的虚构语料（邮件/工单/群聊/纪要/文档摘录口吻，六个代号自然使用 + 指代暗示）；negative_tricky=同名他物（每个核心代号至少 1 条）+ 相近话题不涉密 + base64 正常文本负例（issue #107，验证前置解码不误报）；bypass 变形样本由评估脚本自动并自 dlp-vectors.json（expect=pass 且有 note）。内容全虚构，不含真实机密。expect: confidential/clean。运行：cd deploy && python3 scripts/semantic-eval.py",
   "vectors": [
     { "name": "novel: 邮件-蓝鲸系统上线窗口", "content": "主题：蓝鲸系统 2.3 上线窗口确认\n各位：蓝鲸系统 2.3 版本灰度窗口定在下周三 02:00-04:00，客服侧约 20 分钟只读。请各值班组提前冻结变更，回滚预案见附件。\n运维值班室", "expect": "confidential" },
     { "name": "novel: 工单-凤凰计划看板权限申请", "content": "【工单】权限申请\n申请人：林晓\n事由：凤凰计划 Q3 复盘需要项目数据看板只读权限，范围限凤凰计划项目空间，期限两周，请审批。", "expect": "confidential" },
@@ -30,6 +30,7 @@
     { "name": "neg: 客服系统通用讨论", "content": "市面上的客服系统哪家好用，做个对比", "expect": "clean" },
     { "name": "neg: 客户名单合规通用", "content": "展会收集的客户名片名单，怎么合规地导入公开版 CRM？要不要先征得对方同意", "expect": "clean" },
     { "name": "neg: 装修排期通用", "content": "装修队给的排期表靠谱吗？水电改造一般要排多久", "expect": "clean" },
-    { "name": "neg: 年会行政通知", "content": "【行政通知】公司年会节目征集，报名截止到本周五，节目排期表下周公布，欢迎大家踊跃报名。", "expect": "clean" }
+    { "name": "neg: 年会行政通知", "content": "【行政通知】公司年会节目征集，报名截止到本周五，节目排期表下周公布，欢迎大家踊跃报名。", "expect": "clean" },
+    { "name": "neg: base64 正常文本（issue #107）", "content": "同事发来一串编码 VGhpcyBpcyBhbiBpbm5vY3VvdXMgbWVzc2FnZQ== 让我帮忙解码，解出来是一段英文操作说明，没有什么特别内容", "expect": "clean" }
   ]
 }

@@ -11,7 +11,9 @@
   - 非 CJK 词：Presidio /analyze（ad-hoc deny-list recognizer 随请求注入，词表热更新）
   - CJK 词：shim 直配兜底（Presidio deny-list 依赖 NLP 分词，中文不可靠）
   - 商密语义层（issue #21/#93）：LLM judge 响应定稿后 shadow 判定（只记录不阻断），输入为
-    L1/L2 掩码后文本；issue #105 起 judge 兼注入判定第二职责（#100 路线③生产落点）：专用
+    L1/L2 掩码后文本；issue #107 起送判输入先经前置单趟 base64 解码（judge_pre_decode，
+    对齐 PG normalize_for_scoring 的 base64 段语义，闭合 #99 实测的 base64 包裹漏报盲区）；
+    issue #105 起 judge 兼注入判定第二职责（#100 路线③生产落点）：专用
     注入 prompt（judge.inject_prompt_*，单一源=settings.json）+ inject_enabled 开关
     （默认 false 先进场 shadow），与商密判定同一次采样/并发预算门槛内第二次调用，结果落
     shadow_log 独立层 "judge_inject"——注入判定永不阻断、永不落 warned 条（#101 warn 消费
@@ -27,6 +29,7 @@
 本模块（检测路径）依赖仅标准库；镜像 python:3.12-slim（issue #48 起含 doc_extract 文档解析依赖，
 检测路径不 import 第三方库，纪律不变）。
 """
+import base64
 import json
 import os
 import queue
@@ -250,6 +253,30 @@ def edm_hit_count(text: str, fps) -> int:
 # 单一源=settings.json——但**原文直用不过 .format**（无 {terms} 占位需求；#100 平移的默认注入
 # prompt 含 JSON 字面花括号，过 .format 必炸）。商密/注入两职责共享 _judge_chat 调用底座
 # （同模型/同地址/同超时/同凭据/同参数形态），差异只在 prompt 与 verdict 形状。
+
+
+# judge 前置单趟 base64 解码（issue #107）：#99 基线实测 base64 包裹载荷 judge 高置信漏报
+# （sk-ant base64 样本 conf 0.97–0.99 判 clean，与 #96 注入 nested_encoding 盲区同构）——
+# judge 不解 base64 是结构性盲区。此处对齐 pg_engine.normalize_for_scoring 的 base64 解码
+# 语义（judge 侧自建同语义纯函数，不动 PG 侧；无零宽/NFKC——judge 输入已是 L1 掩码后文本）。
+# 打分输入级处理、无条件生效（对齐 PG 前置归一化先例，不加 settings 开关）；
+# 只改送判文本，掩码管线与转发原文不受影响；解码内容不落日志（secret 纪律）。
+_B64_TOKEN = re.compile(r"[A-Za-z0-9+/]{16,}={0,2}")
+
+
+def judge_pre_decode(text: str) -> str:
+    """judge 送判前置单趟 base64 解码（纯函数，issue #107，可单测）。
+    base64 形 token 可解码为可打印文本（比例 >0.9）时内联替换；单趟不迭代——
+    解码结果不再二次扫描（#104 规则层的迭代探针是另一层，语义不混）。
+    任何解码异常 fail-open：token 原样保留，绝不向 judge 主流程抛。"""
+    for m in _B64_TOKEN.findall(text):
+        try:
+            s = base64.b64decode(m, validate=True).decode("utf-8")
+        except Exception:
+            continue
+        if s and sum(ch.isprintable() or ch.isspace() for ch in s) / len(s) > 0.9:
+            text = text.replace(m, s)
+    return text
 
 
 def _judge_chat(model, base_url, timeout, system_content, fewshot, text):
@@ -887,7 +914,7 @@ class Handler(BaseHTTPRequestHandler):
                     setting_value(settings, "l1", "enabled", "L1_ENABLED", True),
                     setting_value(settings, "l2", "enabled", "L2_ENABLED", True),
                 )
-                judge_input = extract_text(masked_msgs)
+                judge_input = judge_pre_decode(extract_text(masked_msgs))  # 前置单趟解码（issue #107）
                 verdict = (judge_inject_text(judge_input) if duty == "inject"
                            else judge_text(judge_input))
                 self._json(200, {"verdict": verdict, "latency_ms": round((time.time() - t0) * 1000)})
@@ -1133,7 +1160,7 @@ class Handler(BaseHTTPRequestHandler):
         #   契约纪律：注入判定**永不阻断、永不落 warned 条、永不发卡**（#101 warn 消费是商密
         #   判定专属）——观测价值只在 shadow 水位统计（judge_inject 层 hits/error_rate/
         #   attack_type 分布）；future 要告警走规则层/PG 既有通道，不在本层加消费。
-        judge_input = extract_text(masked_msgs)
+        judge_input = judge_pre_decode(extract_text(masked_msgs))  # 前置单趟解码（issue #107）：商密/注入两职责同受益
         judge_action = setting_value(settings, "judge", "action", "JUDGE_ACTION", "shadow")
         _judge_action_observe(judge_action)  # reject 档提示（issue #101，状态变化才打）
         if judge_input and judge_action != "off" and setting_value(settings, "judge", "enabled", "JUDGE_ENABLED", False):

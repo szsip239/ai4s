@@ -23,11 +23,13 @@ DEPLOY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SHIM = os.environ.get("SHIM_URL", "http://localhost:18080")
 
 # 水位门禁（issue #99）：基线见 docs/tests/2026-08-24-semantic-baseline.md，取略低于实测水位的保守值
-# novel 实测 14/14 → 线 12（留 2 条余量）；bypass 实测 3/4（sk-ant base64 结构性盲区）→ 线 2；
-# 误报实测 0/14 → 线 ≤1（judge 是 LLM，留 1 条抖动余量，稳定后可收紧为 0）；
+# novel 实测 14/14 → 线 12（留 2 条余量）；bypass 实测 3/9、可检出上限 4（issue #107 前置单趟解码后
+# base64 凤凰计划样本 conf 1.00 检出；sk-ant base64 仍 MISS——解码管线已闭合，残余根因在 judge
+# prompt 语义，挂账 follow-up；组内 5 条 #106 拼接雷负例是合并口径带入的永久 MISS）→ 线 3；
+# 误报实测 0/15 → 线 ≤1（judge 是 LLM，留 1 条抖动余量，稳定后可收紧为 0）；
 # judge 异常率 >20%（或零调用）exit 2——门禁不得因 judge 不可用而绿
 GATE_MIN_NOVEL_HIT = 12
-GATE_MIN_BYPASS_HIT = 2
+GATE_MIN_BYPASS_HIT = 3
 GATE_MAX_NEG_FP = 1
 GATE_MAX_ERR_RATE = 0.2
 
