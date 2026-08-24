@@ -12,7 +12,7 @@
         "sk-ant-[A-Za-z0-9_\\-]{20,}"
       ],
       "shim_patterns": [
-        "skant[A-Za-z0-9]{20,}"
+        "(?<![a-z0-9])skant[A-Za-z0-9]{20,}"
       ]
     },
     {
@@ -25,7 +25,7 @@
         "sk-(proj-)?[A-Za-z0-9_\\-]{20,}"
       ],
       "shim_patterns": [
-        "sk(?:proj)?[A-Za-z0-9]{20,}"
+        "(?<![a-z0-9])sk(?:proj)?[A-Za-z0-9]{20,}"
       ]
     },
     {
@@ -39,8 +39,8 @@
         "github_pat_[A-Za-z0-9_]{20,}"
       ],
       "shim_patterns": [
-        "gh[pousr][A-Za-z0-9]{20,}",
-        "githubpat[A-Za-z0-9]{20,}"
+        "(?<![a-z0-9])gh[pousr][A-Za-z0-9]{20,}",
+        "(?<![a-z0-9])githubpat[A-Za-z0-9]{20,}"
       ]
     },
     {

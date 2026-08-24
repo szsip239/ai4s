@@ -295,6 +295,41 @@
       "expect": "pass"
     },
     {
+      "name": "negative: 长英文 risks include 拼接雷",
+      "layer": "negative",
+      "content": "The risks include data breaches, compliance failures, and operational disruptions across regions",
+      "expect": "pass",
+      "note": "issue #106：归一化剔空格后 risks+include 拼出 sksinclude… 曾误中 secrets.openai_sk（#100 实测），修复后应放行"
+    },
+    {
+      "name": "negative: 长英文 asking how to 拼接雷",
+      "layer": "negative",
+      "content": "I am asking how to configure the retry policy for background workers and queues",
+      "expect": "pass",
+      "note": "issue #106：asking+how 归一化拼出 skinghowto… 曾误中 secrets.openai_sk（#100 实测第二条），修复后应放行"
+    },
+    {
+      "name": "negative: 长英文 tasks kindly 跨词拼接雷",
+      "layer": "negative",
+      "content": "The tasks kindly assigned to our team include reviewing docs and drafting summaries",
+      "expect": "pass",
+      "note": "issue #106：tasks+kindly 归一化拼出 skskindly… 变体地雷，修复后应放行"
+    },
+    {
+      "name": "negative: 长英文 ask him 拼接雷",
+      "layer": "negative",
+      "content": "Please ask him whether the deployment checklist covers rollback and monitoring steps",
+      "expect": "pass",
+      "note": "issue #106：ask+him 归一化拼出 skhim… 变体地雷，修复后应放行"
+    },
+    {
+      "name": "negative: 长英文 ask anthropic 拼接雷",
+      "layer": "negative",
+      "content": "You can ask anthropic support about rate limits and billing questions for the api",
+      "expect": "pass",
+      "note": "issue #106：ask+anthropic 归一化拼出 skanthropic… 误中 secrets.anthropic_sk（review 实测），修复后应放行"
+    },
+    {
       "name": "response: 泄漏全家族(非流式)",
       "layer": "response",
       "content": "模拟泄漏测试",
