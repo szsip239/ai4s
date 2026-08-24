@@ -14,11 +14,13 @@ PUT 临时词→命中 451→PUT 还原→不再 451；凭据缺（env DLP_ADMIN
 deploy/.local/admin-jwt 均不可得）则 SKIP 不 fail。
 注入水位门禁段（issue #95）：主流程最前 subprocess 跑 injection-eval.py（normalize
 链路口径），不达标非零即回归失败。
+语义层水位门禁段（issue #99）：紧跟注入门禁段 subprocess 跑 semantic-eval.py
+（/judge-test 直测 judge，慢调用 ~2 分钟，放前面早失败），退出码非零即回归失败。
 
 公共部分（常量/登录/渠道/send/classify/admin API）在 dlp_testkit.py（issue #42 提取）。
 自动准备（幂等）：起 mock-upstream（profile mock）+ 建 dlp-echo 渠道（model=echo-test）。
 用法：cd deploy && python3 scripts/dlp-regression.py [--json out.json]
-退出码：有"应拦未拦/应脱敏未脱敏/负例误伤"或注入水位门禁不达标即 1；文档化 gap 不 fail。
+退出码：有"应拦未拦/应脱敏未脱敏/负例误伤"或注入/语义水位门禁不达标即 1；文档化 gap 不 fail。
 """
 import json
 import os
@@ -153,12 +155,27 @@ def run_injection_gate():
     return r.returncode == 0
 
 
+def run_semantic_gate():
+    """语义层水位门禁段（issue #99）：subprocess 跑 semantic-eval.py（/judge-test 直测 judge，
+    输出透传），退出码非零即门禁失败。
+    位置：紧跟注入门禁段——judge 慢调用（~2 分钟/轮）放前面早失败；直测 shim HTTP，
+    不依赖 shim 冷态，无注入段那种 OOM 顺序硬约束。"""
+    print("\n==> 语义层水位门禁（issue #99，semantic-eval judge 直测）", flush=True)  # flush 同注入段
+    r = subprocess.run(["python3", "scripts/semantic-eval.py"], cwd=DEPLOY_DIR)
+    print(f"<== 语义层水位门禁 {'PASS' if r.returncode == 0 else f'FAIL（exit {r.returncode}）'}")
+    return r.returncode == 0
+
+
 def main():
     out_json = "--json" in sys.argv
     out_path = sys.argv[sys.argv.index("--json") + 1] if out_json else None
 
     # 注入水位门禁（issue #95）在最前：趁 shim 冷态跑（顺序原因见 run_injection_gate docstring）
     if not run_injection_gate():
+        sys.exit(1)
+
+    # 语义层水位门禁（issue #99）紧跟其后：judge 慢调用早失败；直测 HTTP 无冷态要求
+    if not run_semantic_gate():
         sys.exit(1)
 
     api_key = open(os.path.join(DEPLOY_DIR, ".local", "test-api-key")).read().strip()
