@@ -5,6 +5,10 @@
  * issue #94：置信度门槛 + 命中处置四档（关/仅记录/告警/拦截）开放配置。
  * issue #101：告警档消费落地（超阈值落 warned 条 → alert_poller 巡检发飞书，不拦截）；
  * reject 档契约「语义层永不阻断」不支持——UI 灰置不可选 + validateJudge 拒绝保存。
+ * issue #105：注入判定第二职责区（#100 路线③生产落点）——inject_enabled 开关（默认关，
+ * 进场 shadow 观察）+ 专用注入 prompt 可编辑（原文直用不过 .format，无 {terms} 占位——
+ * 与商密 prompt 的转义纪律不同，文案注明）。注入判定永不阻断、永不告警（warn 是商密专属），
+ * 观测出口在 shadow_log judge_inject 层（/dlp-admin/shadow-verdicts?layer=judge_inject）。
  * 外发警示常驻：真实员工流量启用前必须换内网模型（契约部署 checklist 硬性项）。
  */
 import { useEffect, useState } from 'react';
@@ -139,6 +143,44 @@ export function Ai4sJudgePanel({ onDirtyChange }: { onDirtyChange?: (dirty: bool
                   value={judge.prompt_fewshot}
                   onChange={(e) => mutate({ ...judge, prompt_fewshot: e.target.value })}
                 />
+              </div>
+              {/* 注入判定第二职责（issue #105）：观测-only 职责——永不阻断、永不告警（warn 是商密专属） */}
+              <div className='space-y-4 border-t pt-4'>
+                <div className='flex items-center justify-between gap-4'>
+                  <div className='space-y-1'>
+                    <div className='text-sm font-medium'>注入判定（第二职责，shadow 观测）</div>
+                    <div className='text-sm text-muted-foreground'>
+                      用同一 judge 模型加判一道提示注入/越狱（专用 prompt）。开启后每个过采样门槛的请求多一次 judge
+                      调用（API 调用量翻倍）；命中只记入观测日志分层统计（judge_inject 层），永不阻断、永不告警
+                    </div>
+                  </div>
+                  <Switch
+                    checked={judge.inject_enabled}
+                    onCheckedChange={(c) => mutate({ ...judge, inject_enabled: c })}
+                  />
+                </div>
+                {judge.inject_enabled && (
+                  <>
+                    <div className='space-y-1.5'>
+                      <Label>inject_prompt_system（注入判定系统提示；原文直用不过 .format，无 {'{terms}'} 占位）</Label>
+                      <Textarea
+                        rows={5}
+                        className='font-mono text-xs'
+                        value={judge.inject_prompt_system}
+                        onChange={(e) => mutate({ ...judge, inject_prompt_system: e.target.value })}
+                      />
+                    </div>
+                    <div className='space-y-1.5'>
+                      <Label>inject_prompt_fewshot（注入判定 few-shot 示例，同上原文直用）</Label>
+                      <Textarea
+                        rows={6}
+                        className='font-mono text-xs'
+                        value={judge.inject_prompt_fewshot}
+                        onChange={(e) => mutate({ ...judge, inject_prompt_fewshot: e.target.value })}
+                      />
+                    </div>
+                  </>
+                )}
               </div>
               <div className='flex items-center justify-end gap-3'>
                 {formError && <span className='text-sm text-destructive'>{formError}</span>}

@@ -24,6 +24,11 @@ shadow-verdicts 出现 warned=True 新条 → PUT 还原 action=shadow；shim �
 注入样本应放行且查询出口 layer=rules 出现 hit 条 → PUT 开 block=true → 同样本应
 451 → 负例应放行 → PUT 还原（双关）→ 同样本再应放行；shim 未含 #104 区块时
 （PUT 400 未知顶层键 / 查询出口 layer=rules 400）SKIP 不 fail（集成前预期态）。
+judge 注入 shadow 专项段（issue #105）：规则层段之后——PUT 开 judge.inject_enabled →
+经网关打 v3 注入样本（应放行——注入判定永不阻断）→ 查询出口 layer=judge_inject 出现
+hit=True 新条（带 attack_type 脱敏标签）→ PUT 还原（关）→ 同样本再应放行；shim 未含
+#105 区块时（PUT 400 未知字段 / 查询出口 layer=judge_inject 400）SKIP 不 fail
+（集成前预期态，对齐 #103/#101/#104 段探测纪律）。
 注入水位门禁段（issue #95）：主流程最前 subprocess 跑 injection-eval.py（normalize
 链路口径），不达标非零即回归失败。
 语义层水位门禁段（issue #99）：紧跟注入门禁段 subprocess 跑 semantic-eval.py
@@ -266,10 +271,12 @@ def run_judge_warn_section(api_key, token):
         original = doc  # 还原基准（含 version/_comment 及其余各段原样）
 
         def _judge_full(section):
-            # judge 段缺 #93/#94 键的旧 settings.json：PUT 前补默认（与 shim setting_value
-            # 缺省对齐），否则必填校验 400
+            # judge 段缺 #93/#94/#105 键的旧 settings.json：PUT 前补默认（与 shim setting_value
+            # 缺省对齐），否则必填校验 400。#105 注入三键补「关+空 prompt 占位」（校验放行口径：
+            # 关态允许空串；注入 prompt 单一源=settings.json，脚本不内置文本）
             return {"threshold": 0.8, "action": "shadow", "sample_rate": 1.0,
-                    "max_concurrency": 2, **section}
+                    "max_concurrency": 2, "inject_enabled": False,
+                    "inject_prompt_system": "", "inject_prompt_fewshot": "", **section}
 
         def restore():
             return tk._admin_api("PUT", "/dlp-admin/settings", token,
@@ -439,6 +446,117 @@ def run_rules_layer_section(api_key, token):
     return results
 
 
+# judge 注入 shadow 专项段（issue #105）样本：与规则层段同一条 v3「inj: 系统提示词提取中文」
+# ——#100 实测 judge 注入 prompt 对 extract 类 5/5 全中（稳定高置信检出组）；负例同 PG 阻断段
+JUDGE_INJECT_SAMPLE_NAME = RULES_SAMPLE_NAME
+# 重发次数上限：judge 共享端点非确定（同 judge warn 段纪律），三次全未获 hit 条才判失败
+JUDGE_INJECT_ATTEMPTS = 3
+
+
+def run_judge_inject_section(api_key, token):
+    """judge 注入 shadow 专项段（issue #105，自包含）：admin PUT 开 judge.inject_enabled →
+    经网关打 v3 注入样本（应放行——注入判定永不阻断，契约纪律）→ 轮询 admin 查询出口
+    /dlp-admin/shadow-verdicts?layer=judge_inject 出现 hit=True 新条（带 attack_type
+    脱敏标签）→ PUT 还原（inject_enabled=false）→ 同样本再应放行。
+    判定条隔离：judge 在响应后同步判定（实测 p50≈3.8s），每次发送前取逐次水位线
+    （time.time()-1），轮询至该次判定条落盘再评估——段外存量/前段迟落记录不串档。
+    能力探测：shim 未含 #105 区块时 PUT 400「未知字段」（旧 shim 必填集无 inject 三键）、
+    或查询出口 layer=judge_inject 400 → SKIP 不 fail（对齐 #103/#101/#104 段探测纪律）。
+    自清理：finally 还原 settings（judge 段缺 #105 键的旧 settings.json 补「关+空 prompt
+    占位」——与 admin 校验放行口径对齐；注入 prompt 单一源=settings.json，脚本不内置文本，
+    故本段只翻转 inject_enabled，prompt 用入库 settings.json 生效值）。
+    前置条件：回归跑在默认配置（inject_enabled=false）且 judge 链路可用（语义水位门禁段
+    已先跑）的栈上；入库 settings.json 须含 #105 注入 prompt 默认值（否则开态 verdict=null
+    属预期 fail-open，本段按「未获 hit 条」如实失败——提示配置缺失而非代码回归）。"""
+    print("\n==> judge 注入 shadow 专项段（issue #105，settings PUT 自包含）")
+    results = []
+    vectors = json.load(open(os.path.join(DEPLOY_DIR, "tests", "injection-vectors.json"),
+                             encoding="utf-8"))["vectors"]
+    sample = next((v for v in vectors if v["name"] == JUDGE_INJECT_SAMPLE_NAME), None)
+    status, doc = tk._admin_api("GET", "/dlp-admin/settings", token)
+    if sample is None or status != 200 or not isinstance(doc, dict) or not isinstance(doc.get("judge"), dict):
+        results.append(("judgeInject: 前置（v3 样本/settings GET）", False,
+                        f"http{status}" if sample is not None else "样本缺失"))
+    else:
+        original = doc  # 还原基准（含 version/_comment 及其余各段原样）
+
+        def _judge_full(section):
+            # judge 段缺 #93/#94/#105 键的旧 settings.json：PUT 前补默认（与 run_judge_warn_section
+            # 同款口径）；#105 注入三键补「关+空 prompt 占位」（开态 prompt 必须非空——用入库生效值，
+            # 本段不内置 prompt 文本）
+            return {"threshold": 0.8, "action": "shadow", "sample_rate": 1.0,
+                    "max_concurrency": 2, "inject_enabled": False,
+                    "inject_prompt_system": "", "inject_prompt_fewshot": "", **section}
+
+        def restore():
+            return tk._admin_api("PUT", "/dlp-admin/settings", token,
+                                 {**original, "judge": _judge_full(original["judge"])})
+
+        def recent_inject_recs(since_ts):
+            st, body = tk._admin_api("GET", "/dlp-admin/shadow-verdicts?layer=judge_inject&n=20", token)
+            if st == 400:
+                return None  # 旧容器无 judge_inject 层查询出口（能力探测锚点）
+            if st != 200 or not isinstance(body, dict):
+                return []
+            return [r for r in body.get("records") or [] if (r.get("ts") or 0) >= since_ts]
+
+        try:
+            trial = {**original,
+                     "judge": {**_judge_full(original["judge"]), "inject_enabled": True}}
+            status, body = tk._admin_api("PUT", "/dlp-admin/settings", token, trial)
+            if status == 400 and "未知" in str((body or {}).get("error", "")):
+                # 旧 shim 必填集无 inject 三键（待集成态）
+                print("[SKIP] judge 注入段：shim 未含 issue #105 区块（待集成），本段跳过不 fail")
+                return []
+            results.append(("judgeInject: PUT 开 inject_enabled=true", status == 200, f"http{status}"))
+            if status == 200:
+                pass_checked = False
+                hit_rec = None
+                legacy = False
+                for _attempt in range(JUDGE_INJECT_ATTEMPTS):
+                    wm = time.time() - 1  # 本次发送水位线：隔离本次判定条（-1s 吸收时钟误差）
+                    st, reply = tk.send(sample["content"], api_key)
+                    got = tk.classify(st, reply, None)
+                    if not pass_checked:
+                        results.append(("judgeInject: 注入样本应放行（shadow 永不阻断）", got == "pass", got))
+                        pass_checked = True
+                    rec = None
+                    for _poll in range(8):  # 等本次判定条落盘（16s 封顶，覆盖 judge p95≈10s）
+                        time.sleep(2)
+                        recs = recent_inject_recs(wm)
+                        if recs is None:
+                            legacy = True
+                            break
+                        rec = next((r for r in recs if not r.get("error")), None)
+                        if rec is not None:
+                            break
+                    if legacy:
+                        print("[SKIP] judge 注入段：shim 未含 issue #105 查询出口（待集成），本段跳过不 fail")
+                        return []
+                    if rec is None:
+                        continue  # 判定未落盘/异常条：重发吸收，不算证据
+                    if rec.get("hit"):
+                        hit_rec = rec
+                        break
+                    # 未命中条：judge 水位波动，重发吸收（三次全 miss 才判失败）
+                if hit_rec:
+                    results.append(("judgeInject: 查询出口出现 judge_inject hit 条", True,
+                                    f"attack_type={hit_rec.get('attack_type')} conf={hit_rec.get('confidence')}"))
+                else:
+                    results.append(("judgeInject: 查询出口出现 judge_inject hit 条", False,
+                                    f"{JUDGE_INJECT_ATTEMPTS} 次发送均未获 hit 条（judge 水位/可用性问题）"))
+                status, _ = restore()
+                results.append(("judgeInject: PUT 还原（inject_enabled=false）", status == 200, f"http{status}"))
+                st, reply = tk.send(sample["content"], api_key)
+                got = tk.classify(st, reply, None)
+                results.append(("judgeInject: 还原后同样本放行", got == "pass", got))
+        finally:
+            restore()
+    for name, ok, got in results:
+        print(f"[{'OK ' if ok else 'FAIL'}] {name}（got={got}）")
+    return results
+
+
 def run_injection_gate():
     """注入水位门禁段（issue #95）：subprocess 跑 injection-eval.py（默认 normalize 链路口径，
     输出透传），非零即门禁失败。
@@ -543,8 +661,14 @@ def main():
     if admin_token is not None:
         rules_results = run_rules_layer_section(api_key, admin_token)
 
+    # judge 注入 shadow 专项段（issue #105）：紧跟规则层段（同凭据与自还原纪律）；
+    # shim 未含 #105 区块时段内自探测 SKIP（不 fail）
+    judge_inject_results = []
+    if admin_token is not None:
+        judge_inject_results = run_judge_inject_section(api_key, admin_token)
+
     fails = [r for r in results if r["fail"]]
-    for name, ok, got in edm_fails + admin_results + pg_block_results + judge_warn_results + rules_results:
+    for name, ok, got in edm_fails + admin_results + pg_block_results + judge_warn_results + rules_results + judge_inject_results:
         if not ok:
             fails.append({"name": name, "expect": "reject", "got": got})
     print(f"\n总计 {len(results)} 样本：通过 {sum(1 for r in results if r['ok'])}，文档化 gap {sum(1 for r in results if not r['ok'] and not r['fail'])}，回归失败 {len(fails)}")

@@ -914,6 +914,69 @@ class FormatRulesLoaderTest(unittest.TestCase):
         self.assertEqual(shim_app.norm_secret_hits(norm2, [{**gw_only[0], "shim_patterns": []}]), [])
 
 
+class SecretBoundaryNormTest(unittest.TestCase):
+    """secrets 族归一化 pattern 边界断言（issue #106，#100 附带发现）。
+
+    病因：normalize_hard 剔除空格/横线等分隔符后，长英文相邻词拼接出密钥前缀形态——
+    "risks include…"→"…risksinclude…" 命中旧 openai_sk `sk(?:proj)?[A-Za-z0-9]{20,}`；
+    "asking how…"→"…askinghow…" 同命中 github_token `gh[pousr]…`（"gho" 跨词拼接）。
+    修复：openai_sk/github_token/anthropic_sk 的 shim_patterns 加前置断言 (?<![a-z0-9])（归一化文本上
+    的"词首"边界；gateway_patterns 跑原文本无此问题，不动）。
+    已知收窄（明示接受）：真 key 紧贴小写字母/数字词尾时（"task sk-abc" 归一化后前置是小写字母）
+    shim 归一化层不再命中（大写前置词仍命中，残余面更窄）——原文形态由网关 `sk-(proj-)?[A-Za-z0-9_\\-]{20,}`
+    兜底，仅"分隔符混淆 + 紧贴小写字母/数字词"的复合形态会漏（现向量集无此形态，见 issue #106 汇报）。
+    直接读仓库 deploy/dlp/format-rules.json（同 test_render_block_matches_current_gateway 先例），
+    口径即现网口径。"""
+
+    @classmethod
+    def setUpClass(cls):
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        with open(os.path.join(repo_root, "deploy", "dlp", "format-rules.json"), encoding="utf-8") as f:
+            cls.rules = json.load(f)["rules"]
+
+    def _hits(self, text):
+        norm, _ = shim_app.normalize_hard(text)
+        return shim_app.norm_secret_hits(norm, self.rules)
+
+    def test_long_english_splice_mines_pass(self):
+        """5 条拼接雷负例（与 deploy/tests/dlp-vectors.json #106 负例同文）归一化后零命中。"""
+        mines = [
+            "The risks include data breaches, compliance failures, and operational disruptions across regions",
+            "I am asking how to configure the retry policy for background workers and queues",
+            "The tasks kindly assigned to our team include reviewing docs and drafting summaries",
+            "Please ask him whether the deployment checklist covers rollback and monitoring steps",
+            "You can ask anthropic support about rate limits and billing questions for the api",
+        ]
+        for text in mines:
+            with self.subTest(text=text[:30]):
+                self.assertEqual(self._hits(text), [])
+
+    def test_clean_keys_still_hit(self):
+        """干净形态真 key 检出不变：openai sk-/sk-proj、github ghp_/gho_/github_pat_、anthropic sk-ant 归一化命中。"""
+        cases = [
+            ("sk-a1b2c3d4e5f6g7h8i9j0k1l2 失效了吗", "secrets.openai_sk"),
+            ("sk-proj-a1b2c3d4e5f6g7h8i9j0k1l2m3n4 这个怎么用", "secrets.openai_sk"),
+            ("ghp_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7 是我 PAT", "secrets.github_token"),
+            ("gho_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7", "secrets.github_token"),
+            ("github_pat_11ABCDEFG0a1b2c3d4e5_f6g7h8i9j0k1l2m3n4o5p6q7r8s9", "secrets.github_token"),
+            ("sk-ant-a1b2c3d4e5f6g7h8i9j0k1l2 这把 key 还有效吗", "secrets.anthropic_sk"),
+        ]
+        for text, code in cases:
+            with self.subTest(code=code, text=text[:20]):
+                self.assertIn(code, self._hits(text))
+
+    def test_key_after_colon_or_cjk_boundary_hits(self):
+        """前置为非字母数字（冒号/CJK/引号）时边界断言放行检测：归一化层仍兜住。"""
+        hits = self._hits("密钥：sk-a1b2c3d4e5f6g7h8i9j0k1l2m3n4")
+        self.assertIn("secrets.openai_sk", hits)
+
+    def test_key_glued_after_letter_word_documented_gap(self):
+        """已知收窄钉档：key 紧贴字母词尾（"task sk-…"）归一化层不命中（网关原文规则兜底）。
+        若后续加强归一化层口径（如双口径管线），本用例需同步翻转到命中。"""
+        hits = self._hits("check task sk-a1b2c3d4e5f6g7h8i9j0k1l2m3n4 please")
+        self.assertNotIn("secrets.openai_sk", hits)
+
+
 # EDM fixture（issue #34）：三条目覆盖三种形态——带 added_at、无 added_at（旧文档）、旧格式纯 shingle 数组
 _EDM_FP_FIXTURE = {
     "version": 1,
@@ -1395,6 +1458,10 @@ _SETTINGS_FIXTURE = {
         "action": "shadow",
         "sample_rate": 1.0,
         "max_concurrency": 2,
+        # issue #105：judge 注入第二职责三键（默认关=先进场 shadow；prompt 关态允许空串占位）
+        "inject_enabled": False,
+        "inject_prompt_system": "注入判定系统提示",
+        "inject_prompt_fewshot": "注入判定示例",
     },
     "edm": {"enabled": True, "min_hits": 2},
     # issue #103：pg 段加阻断两键（block_enabled 默认关 / block_threshold 默认 0.9）
@@ -1567,6 +1634,53 @@ class AdminSettingsTest(unittest.TestCase):
         # 全部 400：落盘文件保持 fixture 原样（未被任何非法写污染）
         with open(self.settings_path, encoding="utf-8") as f:
             self.assertEqual(json.load(f), _SETTINGS_FIXTURE)
+
+    def test_put_settings_judge_inject_validation(self):
+        """judge 注入第二职责键（issue #105）：inject_enabled/inject_prompt_system/inject_prompt_fewshot
+        入必填集——缺键 400；inject_enabled 必填布尔；prompt 必填字符串（默认关态允许空串占位，
+        开态必须非空——校验只允许「关+空」或「开+非空」，不给「开+空」运行时必 error 的配置放行）。"""
+        def with_inject(fn=None):
+            d = json.loads(json.dumps(_SETTINGS_FIXTURE))
+            d["judge"].update({"inject_enabled": False,
+                               "inject_prompt_system": "注入判定系统提示",
+                               "inject_prompt_fewshot": "注入判定示例"})
+            if fn:
+                fn(d)
+            return d
+        # 合法：关态（含空 prompt 占位）/开态非空 prompt → 200
+        status, body = self._put(with_inject())
+        self.assertEqual(status, 200, f"关态合法配置应 200，实际 {status} {body}")
+        status, body = self._put(with_inject(lambda d: d["judge"].update(
+            {"inject_prompt_system": "", "inject_prompt_fewshot": ""})))
+        self.assertEqual(status, 200, f"关态空 prompt 占位应 200，实际 {status} {body}")
+        status, body = self._put(with_inject(lambda d: d["judge"].update({"inject_enabled": True})))
+        self.assertEqual(status, 200, f"开态+非空 prompt 应 200，实际 {status} {body}")
+        # 非法变体 → 400 带原因
+        cases = [
+            ("缺 inject_enabled", with_inject(lambda d: d["judge"].pop("inject_enabled"))),
+            ("缺 inject_prompt_system", with_inject(lambda d: d["judge"].pop("inject_prompt_system"))),
+            ("缺 inject_prompt_fewshot", with_inject(lambda d: d["judge"].pop("inject_prompt_fewshot"))),
+            ("inject_enabled 非布尔", with_inject(lambda d: d["judge"].update({"inject_enabled": 1}))),
+            ("inject_prompt_system 非字符串", with_inject(lambda d: d["judge"].update({"inject_prompt_system": 1}))),
+            ("inject_prompt_fewshot 非字符串", with_inject(lambda d: d["judge"].update({"inject_prompt_fewshot": ["x"]}))),
+            ("开态 prompt_system 空串", with_inject(lambda d: d["judge"].update(
+                {"inject_enabled": True, "inject_prompt_system": ""}))),
+            ("开态 prompt_fewshot 空串", with_inject(lambda d: d["judge"].update(
+                {"inject_enabled": True, "inject_prompt_fewshot": ""}))),
+        ]
+        for label, payload in cases:
+            with self.subTest(case=label):
+                status, body = self._put(payload)
+                self.assertEqual(status, 400, f"{label}: 期望 400，实际 {status} {body}")
+                self.assertIn("error", body)
+        # judge 段缺 inject 三键的旧 settings.json（#105 前写入）整体 PUT → 400 缺字段
+        # （必填集语义同 #93/#94 键；读侧 normalizeJudge 补默认，运行侧 setting_value 缺省关）
+        old = json.loads(json.dumps(_SETTINGS_FIXTURE))
+        for k in ("inject_enabled", "inject_prompt_system", "inject_prompt_fewshot"):
+            del old["judge"][k]
+        status, body = self._put(old)
+        self.assertEqual(status, 400)
+        self.assertIn("缺字段", body["error"])
 
 
 class AppSettingsTest(unittest.TestCase):
@@ -2881,7 +2995,7 @@ class TestShadowVerdictsApi(unittest.TestCase):
         shadow_log.record("pg", hit=False, score=0.2, latency_ms=40, path=self.log_path)
         status, body = _get("/dlp-admin/shadow-verdicts", token="reader-token")
         self.assertEqual(status, 200)
-        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules"})  # issue #104：rules 层 stats 同槽透出
+        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject"})  # #104 rules / #105 judge_inject 层 stats 同槽透出
         self.assertEqual(body["stats"]["judge"]["total"], 2)
         self.assertEqual(body["stats"]["judge"]["errors"], 1)
         self.assertEqual(body["stats"]["judge"]["hits"], 1)
@@ -2927,6 +3041,23 @@ class TestShadowVerdictsApi(unittest.TestCase):
         self.assertEqual(body["stats"]["rules"]["hits"], 1)
         status, _ = _get("/dlp-admin/shadow-verdicts?layer=bogus", token="reader-token")
         self.assertEqual(status, 400)
+
+    def test_layer_judge_inject_accepted(self):
+        """issue #105：layer 过滤接受 judge_inject（judge 注入第二职责判定条，独立于商密 judge 层
+        分层统计）——records 带 attack_type 判定类型标签；stats 聚合四层同槽透出。"""
+        import shadow_log
+        shadow_log.record("judge_inject", hit=True, confidence=0.95, latency_ms=3800,
+                          attack_type="extract", path=self.log_path)
+        shadow_log.record("judge", hit=True, confidence=0.9, latency_ms=120, entities=1, path=self.log_path)
+        status, body = _get("/dlp-admin/shadow-verdicts?layer=judge_inject", token="reader-token")
+        self.assertEqual(status, 200)
+        self.assertEqual([r["layer"] for r in body["records"]], ["judge_inject"])
+        self.assertEqual(body["records"][0]["attack_type"], "extract")
+        self.assertEqual(body["stats"]["judge_inject"]["hits"], 1)
+        self.assertEqual(body["stats"]["judge"]["hits"], 1)  # 商密层独立聚合不串档
+        status, body = _get("/dlp-admin/shadow-verdicts", token="reader-token")
+        self.assertEqual(status, 200)
+        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject"})
 
     def test_empty_store_200_zeros(self):
         status, body = _get("/dlp-admin/shadow-verdicts", token="reader-token")

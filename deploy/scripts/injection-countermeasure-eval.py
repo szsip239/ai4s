@@ -22,12 +22,18 @@ truncation 0/3、nested_encoding 0/3、invisible 1/3、multilingual 2/4、respon
     不动 settings.json），同 judge_text 调用形态（system+fewshot user+text[:4000]，max_tokens
     1500、temperature 0），经 agentgateway :3000/v1 反代调 gpt-5.6-luna（与生产 judge 同模型）。
     逐条记录 verdict/confidence/延迟/token 用量；超时重试 1 次，错误计数。
+  judge-prod（issue #105）：路线③的生产落点复测——经 shim /judge-test（duty="inject"）
+    直测端点跑 v3 全量，量的即生产判定路径（settings.json 注入 prompt 单一源 + #93 掩码
+    管线 + judge_inject_text）。与 #100 route_judge 口径差异：输入过 L1/L2 掩码管线（生产
+    外发口径）、延迟为端点口径（含 shim 端内处理）、prompt 来自 settings.json 而非脚本内置。
+    前置：栈运行中且 settings judge.inject_enabled=true（关态 verdict=null 全部算不可用）。
 
 用法：
   python3 deploy/scripts/injection-countermeasure-eval.py rules                 # 秒级
   python3 deploy/scripts/injection-countermeasure-eval.py rules-probe           # 路线②泛化探针（8 条手写非样本集）
   python3 deploy/scripts/injection-countermeasure-eval.py model [--only NAME] [--pretruncate]
   python3 deploy/scripts/injection-countermeasure-eval.py judge [--limit N]     # ~68×3-4s
+  python3 deploy/scripts/injection-countermeasure-eval.py judge-prod [--limit N]  # issue #105 生产路径复测
   公共参数：--out PATH 落原始结果 JSON（建议指向 deploy/.local/，不进 git）
 样本集只读 deploy/tests/injection-vectors.json（v3），不修改。secret 不落日志。
 退出码：测量工具恒 0；未知路线名 / 环境缺失（缺包、缺模型权重）退出 2。
@@ -365,6 +371,67 @@ def route_judge(limit=None, out=None):
                   open(out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
 
 
+# ---- judge-prod（issue #105）：路线③生产落点复测——经 shim /judge-test（duty="inject"）----
+# 量的即生产判定路径：settings.json 注入 prompt 单一源 + #93 掩码管线 + judge_inject_text。
+# 端点直测不走采样/并发预算（既有纪律）；inject_enabled=false 时 verdict=null（判不可用）。
+SHIM_URL = os.environ.get("SHIM_URL", "http://localhost:18080")  # 同 semantic-eval 口径
+
+
+def judge_inject_prod(text):
+    """shim /judge-test duty="inject" 直测。返回 (verdict dict|None, 延迟 ms, error str|None)；
+    verdict=None 且 error=None 表示端点正常但判定不可用（inject 关/prompt 缺/API 异常——
+    shim fail-open 返回 null）。"""
+    body = json.dumps({"text": text, "duty": "inject"}, ensure_ascii=False).encode()
+    req = urllib.request.Request(SHIM_URL + "/judge-test", data=body,
+                                 headers={"Content-Type": "application/json"})
+    t0 = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=JUDGE_TIMEOUT + 10) as r:
+            d = json.load(r)
+    except Exception as e:
+        return None, round((time.time() - t0) * 1000), type(e).__name__
+    return d.get("verdict"), int(d.get("latency_ms") or 0), None
+
+
+def route_judge_prod(limit=None, out=None):
+    """issue #105 生产路径复测：v3 全量经 shim /judge-test duty="inject"（注入 prompt 取
+    settings.json 生效值）。逐条调用，不可用/超时重试 1 次，错误计数。verdict 形状
+    {injection, confidence, attack_type}（shim judge_inject_text）。"""
+    vectors = load_vectors()
+    if limit:
+        vectors = vectors[:limit]
+    print(f"===== judge-prod 生产路径复测（{SHIM_URL}/judge-test duty=inject，n={len(vectors)}）=====")
+    verdicts, lat, rows = {}, [], []
+    errors = 0
+    for v in vectors:
+        verdict, ms, err = judge_inject_prod(v["content"])
+        if verdict is None:  # 不可用/超时重试 1 次（同 route_judge 口径）
+            verdict2, ms2, err2 = judge_inject_prod(v["content"])
+            if verdict2 is not None:
+                verdict, ms, err = verdict2, ms2, None
+            else:
+                errors += 1
+                err = f"{err}/{err2}"
+        hit = bool(verdict and verdict.get("injection"))
+        verdicts[v["name"]] = hit
+        lat.append(ms)
+        rows.append({"name": v["name"], "category": v.get("category"), "expect": v["expect"],
+                     "hit": hit, "verdict": verdict, "ms": ms, "error": err})
+        conf = (f" conf={verdict['confidence']:.2f} {verdict['attack_type']}" if verdict
+                else f" ERR={err or 'verdict null'}")
+        print(f"{v['name']}: expect={v['expect']} {'HIT' if hit else '---'}{conf} {ms}ms", flush=True)
+    print("-- 分类水位（verdict.injection=true 即检出）--")
+    agg = category_table(vectors, lambda n: verdicts[n])
+    latency_line(lat)
+    print(f"错误计数：{errors}/{len(vectors)}（重试后仍不可用；逐条已标 ERR）")
+    if out:
+        json.dump({"rows": rows, "agg": {"inj_hit": agg[0], "inj_total": agg[1],
+                                         "neg_fp": agg[2], "neg_total": agg[3]},
+                   "per_cat": {c: list(ht) for c, ht in agg[4].items()}, "lat": lat,
+                   "errors": errors},
+                  open(out, "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+
+
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     opts = sys.argv[1:]
@@ -387,7 +454,10 @@ def main():
     if route in ("judge", "all"):
         route_judge(limit=None if "--limit" not in opts else int(opts[opts.index("--limit") + 1]),
                     out=out if route == "judge" else None)
-    if route not in ("model", "rules", "rules-probe", "judge", "all"):
+    if route == "judge-prod":  # issue #105：生产路径复测（shim /judge-test duty=inject）
+        route_judge_prod(limit=None if "--limit" not in opts else int(opts[opts.index("--limit") + 1]),
+                         out=out)
+    if route not in ("model", "rules", "rules-probe", "judge", "judge-prod", "all"):
         print(__doc__)
         sys.exit(2)
 

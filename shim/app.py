@@ -10,6 +10,12 @@
 检测职责划分：
   - 非 CJK 词：Presidio /analyze（ad-hoc deny-list recognizer 随请求注入，词表热更新）
   - CJK 词：shim 直配兜底（Presidio deny-list 依赖 NLP 分词，中文不可靠）
+  - 商密语义层（issue #21/#93）：LLM judge 响应定稿后 shadow 判定（只记录不阻断），输入为
+    L1/L2 掩码后文本；issue #105 起 judge 兼注入判定第二职责（#100 路线③生产落点）：专用
+    注入 prompt（judge.inject_prompt_*，单一源=settings.json）+ inject_enabled 开关
+    （默认 false 先进场 shadow），与商密判定同一次采样/并发预算门槛内第二次调用，结果落
+    shadow_log 独立层 "judge_inject"——注入判定永不阻断、永不落 warned 条（#101 warn 消费
+    是商密专属），观测价值只在 shadow 水位统计（检出/误报/延迟对账 #100 基线）
   - 注入 PG：PromptGuard 2 进程内打分，默认 shadow 仅记录不阻断（fail-open）；issue #103
     高分档阻断试点——pg.block_enabled 开 → /request 应答前同步判定（推理延迟回请求路径
     是试点明示代价），score ≥ pg.block_threshold（默认 0.9）返回 451，低于阈值维持 shadow
@@ -73,7 +79,9 @@ _SETTINGS_SCHEMA = {
     "judge": {"enabled": "bool", "model": "str", "base_url": "str", "timeout": "number",
               "prompt_system": "str", "prompt_fewshot": "str",
               "threshold": "number", "action": "str",  # 阈值/动作分级（issue #94 schema；#101 消费落地 /request 链路）
-              "sample_rate": "number", "max_concurrency": "int"},  # 采样率/并发预算（issue #93）
+              "sample_rate": "number", "max_concurrency": "int",  # 采样率/并发预算（issue #93）
+              # 注入判定第二职责（issue #105）：开关三级取值；prompt 单一源=settings.json（同商密 prompt 纪律）
+              "inject_enabled": "bool", "inject_prompt_system": "str", "inject_prompt_fewshot": "str"},
     "edm": {"enabled": "bool", "min_hits": "int"},
     "pg": {"enabled": "bool", "threshold": "number", "normalize": "bool",
            "block_enabled": "bool", "block_threshold": "number"},  # 阻断试点（issue #103）
@@ -238,6 +246,39 @@ def edm_hit_count(text: str, fps) -> int:
 # judge prompt 单一源 = settings.json（issue #35 review #2，AC：代码内不留默认 prompt）——
 # JSON 缺失或 prompt 键缺失/类型不符时 judge 不可用，judge_text 返回 None 降级纯词表（既有 fail-open）。
 # 现网生效 prompt 见 deploy/dlp/settings.json；{{ }}/{terms} 为 .format 转义/占位，改 prompt 时须保留。
+# issue #105：注入判定第二职责的 prompt（judge.inject_prompt_system/inject_prompt_fewshot）同纪律
+# 单一源=settings.json——但**原文直用不过 .format**（无 {terms} 占位需求；#100 平移的默认注入
+# prompt 含 JSON 字面花括号，过 .format 必炸）。商密/注入两职责共享 _judge_chat 调用底座
+# （同模型/同地址/同超时/同凭据/同参数形态），差异只在 prompt 与 verdict 形状。
+
+
+def _judge_chat(model, base_url, timeout, system_content, fewshot, text):
+    """judge HTTP 调用底座（issue #105 从 judge_text 抽出，商密/注入两职责共享）：
+    system + fewshot user + text[:4000]，max_tokens 1500、temperature 0（#61：推理模型
+    300 会被 reasoning 烧尽）；返回解析后的 verdict JSON dict，HTTP/解析异常返回 None
+    （fail-open 语义与 judge_text 一致）。凭据 JUDGE_API_KEY 永远只走 env。"""
+    body = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": fewshot},
+            {"role": "user", "content": text[:4000]},
+        ],
+        "max_tokens": 1500,  # issue #61：deepseek-v4-flash 是推理模型，300 会被 reasoning 烧尽（finish_reason=length、content 空 → ERR）；1500 实测够用
+        "temperature": 0,
+    }).encode()
+    req = urllib.request.Request(
+        base_url + "/chat/completions", data=body,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {JUDGE_API_KEY}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            d = json.load(r)
+        content = (d["choices"][0]["message"].get("content") or "").strip()
+        content = content.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        return json.loads(content)
+    except Exception:
+        return None
 
 
 def judge_text(text: str):
@@ -264,31 +305,52 @@ def judge_text(text: str):
         system_content = prompt_system.format(terms=terms)
     except Exception:
         return None  # settings 里 prompt 占位损坏 → fail-open（与 judge 其余异常同语义）
-    body = json.dumps({
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": prompt_fewshot},
-            {"role": "user", "content": text[:4000]},
-        ],
-        "max_tokens": 1500,  # issue #61：deepseek-v4-flash 是推理模型，300 会被 reasoning 烧尽（finish_reason=length、content 空 → ERR）；1500 实测够用
-        "temperature": 0,
-    }).encode()
-    req = urllib.request.Request(
-        base_url + "/chat/completions", data=body,
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {JUDGE_API_KEY}"},
-    )
+    v = _judge_chat(model, base_url, timeout, system_content, prompt_fewshot, text)
+    if v is None:
+        return None
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
-            d = json.load(r)
-        content = (d["choices"][0]["message"].get("content") or "").strip()
-        content = content.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
-        v = json.loads(content)
         return {"confidential": bool(v.get("confidential")),
                 "entities": [str(e) for e in v.get("entities") or []],
                 "confidence": float(v.get("confidence") or 0)}
     except Exception:
+        return None  # verdict 形状损坏（confidence 非数等）→ fail-open（同其余异常语义）
+
+
+def judge_inject_text(text: str):
+    """注入判定（judge 第二职责，issue #105，#100 路线③ shadow 观测落点）。
+    返回 {"injection": bool, "confidence": float, "attack_type": str}；异常/未启用返回 None（fail-open）。
+    门控：judge.enabled（服务级总开关，商密判定同键）且 judge.inject_enabled（三级取值，
+    默认 false 进场 shadow）——inject_enabled 只是第二职责开关，不能绕过服务级开关单独外发。
+    prompt 单一源=settings.json judge.inject_prompt_system/inject_prompt_fewshot（同 #35
+    review #2 纪律，无 env/代码默认），**原文直用不过 .format**（无 {terms} 占位需求；
+    默认注入 prompt 含 JSON 字面花括号）。模型/地址/超时/凭据与商密判定共享（judge.* 键
+    + JUDGE_API_KEY）——#100 实测口径即「与生产 judge 同模型 gpt-5.6-luna」。"""
+    if not text:
         return None
+    s = load_settings()
+    enabled = setting_value(s, "judge", "enabled", "JUDGE_ENABLED", False)
+    inject_on = setting_value(s, "judge", "inject_enabled", "JUDGE_INJECT_ENABLED", False)
+    if not (enabled and inject_on and JUDGE_API_KEY):
+        return None
+    model = setting_value(s, "judge", "model", "JUDGE_MODEL", "deepseek-v4-flash")
+    base_url = setting_value(s, "judge", "base_url", "JUDGE_BASE_URL", "http://axonhub:8090/v1")
+    timeout = setting_value(s, "judge", "timeout", "JUDGE_TIMEOUT", 8)
+    prompt_system = setting_value(s, "judge", "inject_prompt_system", None, None)
+    prompt_fewshot = setting_value(s, "judge", "inject_prompt_fewshot", None, None)
+    if not prompt_system or not prompt_fewshot:
+        # 注入 prompt 无源（键缺失/类型不符/空串——含绕过 admin 校验的「开+空」手改文件）→
+        # 注入判定不可用返回 None（fail-open；/request 链路落 error 条，巡检项 4 有数据）
+        print("[settings] judge 注入 prompt 缺失（settings.json judge.inject_prompt_system/inject_prompt_fewshot），注入判定跳过", flush=True)
+        return None
+    v = _judge_chat(model, base_url, timeout, prompt_system, prompt_fewshot, text)
+    if v is None:
+        return None
+    try:
+        return {"injection": bool(v.get("injection")),
+                "confidence": float(v.get("confidence") or 0),
+                "attack_type": str(v.get("attack_type") or "")}
+    except Exception:
+        return None  # verdict 形状损坏 → fail-open（同其余异常语义）
 
 
 def send_feishu_text(text: str) -> bool:
@@ -808,9 +870,16 @@ class Handler(BaseHTTPRequestHandler):
             # 语义层直测端点（issue #21）：不进请求链，供回归脚本测 judge 准确率/延迟
             # issue #93：与 /request 链路同口径——text 包成单条 messages 过同一掩码管线再送 judge
             # （semantic-eval 量的即生产输入）；直测显式触发，不走采样/并发预算
+            # issue #105：可选 duty="inject" 走注入第二职责判定（judge_inject_text，同一掩码
+            # 管线同口径；受 inject_enabled 门控——关态 verdict=null，与商密 duty 受 enabled
+            # 门控同语义），缺省/省略 duty=商密判定（既有形状不变）；非法 duty 显式 400
             try:
                 length = min(int(self.headers.get("Content-Length") or 0), MAX_BODY)
                 payload = json.loads(self.rfile.read(length) or b"{}")
+                duty = payload.get("duty") or "commercial"
+                if duty not in ("commercial", "inject"):
+                    self._json(400, {"error": "duty 必须是 inject 或缺省（commercial 商密判定）"})
+                    return
                 t0 = time.time()
                 settings = load_settings()
                 masked_msgs, _, _ = mask_pipeline(
@@ -818,7 +887,9 @@ class Handler(BaseHTTPRequestHandler):
                     setting_value(settings, "l1", "enabled", "L1_ENABLED", True),
                     setting_value(settings, "l2", "enabled", "L2_ENABLED", True),
                 )
-                verdict = judge_text(extract_text(masked_msgs))
+                judge_input = extract_text(masked_msgs)
+                verdict = (judge_inject_text(judge_input) if duty == "inject"
+                           else judge_text(judge_input))
                 self._json(200, {"verdict": verdict, "latency_ms": round((time.time() - t0) * 1000)})
             except Exception as e:
                 self._json(500, {"error": str(e)[:200]})
@@ -1052,6 +1123,16 @@ class Handler(BaseHTTPRequestHandler):
         #   reject=schema 存在（#94）但契约不支持消费：按 shadow 同等处理 + 状态变化 print
         #       提示（_judge_action_observe），绝不阻断。契约门槛（换内网模型+观察期误报
         #       可控+回归达标三者齐）满足前 reject 档不实现阻断语义，头注记账。
+        # issue #105 注入判定第二职责（#100 路线③生产落点，judge_inject 层 shadow 观测）：
+        #   inject_enabled=true 时在同一门槛内追加第二次调用（judge_inject_text，同一份脱敏
+        #   输入 judge_input）——采样率/并发预算与商密判定**共享一次门槛**（judge API 总预算
+        #   语义：未中采样/预算占满/action=off/enabled=false → 两个判定都跳过，不独立采样，
+        #   否则 sample_rate 总预算语义翻倍失真）；一次预算占位覆盖两次串行调用。
+        #   成本口径：注入判定使每请求 judge API 调用 ×2——#100 实测 ≈$0.00021/次
+        #   （gpt-5.6-luna 刊例），sample_rate=1.0 双职责全开时 ≈$0.00042/请求，头注记账。
+        #   契约纪律：注入判定**永不阻断、永不落 warned 条、永不发卡**（#101 warn 消费是商密
+        #   判定专属）——观测价值只在 shadow 水位统计（judge_inject 层 hits/error_rate/
+        #   attack_type 分布）；future 要告警走规则层/PG 既有通道，不在本层加消费。
         judge_input = extract_text(masked_msgs)
         judge_action = setting_value(settings, "judge", "action", "JUDGE_ACTION", "shadow")
         _judge_action_observe(judge_action)  # reject 档提示（issue #101，状态变化才打）
@@ -1080,6 +1161,20 @@ class Handler(BaseHTTPRequestHandler):
                             print(f"[semantic.warn] confidence={v['confidence']:.2f} >= {judge_threshold}（告警巡检消费，未拦截）", flush=True)
                     else:
                         shadow_log.record("judge", error="unavailable", latency_ms=_ms)
+                    # 注入第二职责（issue #105）：商密判定完成后同门槛内追加；异常/未启用返回
+                    # None → error 条（fail-open，绝不影响上面的商密结果与本请求响应——
+                    # 响应早已定稿发回）。落独立层 judge_inject 与商密分层统计。
+                    if setting_value(settings, "judge", "inject_enabled", "JUDGE_INJECT_ENABLED", False):
+                        _t1 = time.monotonic()
+                        iv = judge_inject_text(judge_input)
+                        _ims = int((time.monotonic() - _t1) * 1000)
+                        if iv is not None:
+                            shadow_log.record("judge_inject", hit=iv["injection"],
+                                              confidence=iv["confidence"], latency_ms=_ims,
+                                              attack_type=iv["attack_type"] or None)
+                            print(f"[injection.judge.shadow] injection={iv['injection']} attack_type={iv['attack_type'] or '-'} confidence={iv['confidence']:.2f}", flush=True)
+                        else:
+                            shadow_log.record("judge_inject", error="unavailable", latency_ms=_ims)
                 finally:
                     judge_budget_exit()
         # 注入检测 shadow（issue #30）：PromptGuard 2 评分 ≥阈值记日志，不阻断

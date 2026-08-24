@@ -14,6 +14,11 @@ alert_poller 新增 warn 巡检 tail 消费；stats 聚合 warned 数供观察�
 issue #104：注入规则层（layer="rules"）判定同槽落条——groups 存命中模式组名列表
 （模式标识非原文，脱敏安全），阻断条复用 blocked=True + model 字段（无 score 语义），
 alert_poller 阻断巡检（巡检项 5）复用 pg 游标通道消费。
+issue #105：judge 注入第二职责判定以独立层名 layer="judge_inject" 落条（与商密 judge 层
+分层统计——stats/tail/巡检项 4/查询出口 layer 参数天然分层），attack_type 存判定类型
+标签（extract/override/.../none——类型标签非原文，同 #104 groups 脱敏先例）；
+注入判定永不阻断永不 warn（契约纪律：warn/blocked 是商密/PG/规则层专属消费），
+judge_inject 条绝不带 warned/blocked 键。
 
 纪律：
 - record 永不抛（检测路径纪律，与 pg_guard fail-open 同语义）——持久化失败只 print；
@@ -42,7 +47,7 @@ def _max_bytes() -> int:
 
 def record(layer: str, hit=None, score=None, confidence=None, latency_ms=None,
            error=None, entities=None, path=None, blocked=None, block_threshold=None, model=None,
-           warned=None, groups=None):
+           warned=None, groups=None, attack_type=None):
     """追加一条 shadow 判定。entities 只存命中数（不存字符串——不落原文）；
     error 非 None 表示该次判定不可用（hit/score/confidence 应为 None）。永不抛。
     issue #103：blocked=True 表示该次判定触发了 451 阻断（PG 高分试点；语义层永不阻断），
@@ -53,7 +58,10 @@ def record(layer: str, hit=None, score=None, confidence=None, latency_ms=None,
     confidential 超阈值；不拦截——契约「语义层永不阻断」），model 随告警条落盘
     （同款脱敏字段）；只在非 None 时写入，消费方 .get() 兜底。
     issue #104：groups 存注入规则层命中模式组名列表（如 ["extract-zh","authority"]——
-    模式标识非原文，脱敏安全）；只在非 None 时写入（未命中条不带——体积纪律）。"""
+    模式标识非原文，脱敏安全）；只在非 None 时写入（未命中条不带——体积纪律）。
+    issue #105：attack_type 存 judge 注入判定（judge_inject 层）的攻击类型标签
+    （extract/override/roleplay/emotion/encoding/delimiter/indirect/none——类型标签
+    非原文，同 groups 脱敏先例）；只在非 None 时写入。"""
     rec = {
         "ts": time.time(),
         "layer": layer,
@@ -66,7 +74,8 @@ def record(layer: str, hit=None, score=None, confidence=None, latency_ms=None,
     }
     for k, v in (("blocked", blocked), ("block_threshold", block_threshold), ("model", model),
                  ("warned", warned),  # warned：issue #101 judge warn 事件条
-                 ("groups", groups)):  # groups：issue #104 规则层命中模式组
+                 ("groups", groups),  # groups：issue #104 规则层命中模式组
+                 ("attack_type", attack_type)):  # attack_type：issue #105 judge 注入判定类型标签
         if v is not None:
             rec[k] = v
     p = path or _default_path()

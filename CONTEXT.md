@@ -28,7 +28,7 @@ DLP 检测链中 shim 内嵌 LLM judge 的一层，负责词表层覆盖不了�
 _Avoid_: LangExtract 路线、内网 7b+ 路线（均已废止）
 
 **judge**:
-语义层的 LLM 判定器（shim 内 `judge_text`），现网 gpt-5.6-luna 经 axonhub 中转；响应定稿后异步判定，只记 verdict 不含原文。action 四档：off / shadow / warn / reject。
+语义层的 LLM 判定器（shim 内 `judge_text`），现网 gpt-5.6-luna 经 axonhub 中转；响应定稿后异步判定，只记 verdict 不含原文。action 四档：off / shadow / warn / reject。issue #105 起兼**注入判定第二职责**（#100 路线③生产落点）：专用注入 prompt（`judge.inject_prompt_system/inject_prompt_fewshot`，单一源=settings.json，原文直用不过 .format）+ `judge.inject_enabled` 开关（默认 false 进场 shadow），与商密判定同一次采样/并发预算门槛内第二次调用（judge API 总预算语义，调用量 ×2），结果落 shadow_log 独立层 `judge_inject`（带 attack_type 类型标签）——永不阻断、永不 warn（告警走规则层/PG 既有通道），观测价值只在 shadow 水位统计。直测通道：`/judge-test` 带 `duty="inject"`。
 
 **shadow（影子模式）**:
 judge 默认档：照常判定、照常记录，对链路零动作。判定持久化 `alert-state/shadow-verdicts.jsonl`。

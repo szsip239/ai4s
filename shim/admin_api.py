@@ -28,6 +28,12 @@ stats 加 rules 层（判定条带 groups 命中模式组名脱敏字段）。
 issue #101：judge action 消费落地（app.py /request 链路：off 不判定 / shadow 现状 /
 warn 超阈值落 warned=True 条不拦截 / reject 契约不支持按 shadow）；shadow-verdicts
 stats 聚合透出 warned 数（观察期误报对账口径），warn 事件由 alert_poller 巡检项 6 发飞书。
+issue #105：judge 注入第二职责 schema——settings judge 段加 inject_enabled（布尔开关，
+默认关=先进场 shadow 观察）/inject_prompt_system/inject_prompt_fewshot（注入判定专用
+prompt，单一源=settings.json 同 #35 review #2 纪律；关态允许空串占位，开态必须非空——
+不给「开+空」运行必 error 的配置放行）三键必填校验；shadow-verdicts 出口 layer 过滤
+接受 judge_inject、stats 加 judge_inject 层（判定条带 attack_type 类型标签脱敏字段，
+与商密 judge 层分层统计）。
 
 与检测路径（/request /response 调用链）完全隔离：admin 平面 fail-closed——
 内省不可达回 503，不适用检测链的 fail-open 分级（契约 docs/contracts/dlp-webhook-shim.md）。
@@ -258,7 +264,8 @@ def _settings_get(handler, _me):
 _SETTINGS_TOP_KEYS = {"version", "_comment", "judge", "edm", "pg", "rules", "l1", "l2", "response"}
 _SETTINGS_JUDGE_KEYS = {"enabled", "model", "base_url", "timeout", "prompt_system", "prompt_fewshot",
                         "threshold", "action",  # threshold/action：issue #94 置信度门槛与动作分级
-                        "sample_rate", "max_concurrency"}  # issue #93 判定采样率与并发预算
+                        "sample_rate", "max_concurrency",  # issue #93 判定采样率与并发预算
+                        "inject_enabled", "inject_prompt_system", "inject_prompt_fewshot"}  # issue #105 注入第二职责
 _SETTINGS_EDM_KEYS = {"enabled", "min_hits"}
 _SETTINGS_PG_KEYS = {"enabled", "threshold", "normalize",  # normalize：issue #44 打分前置归一化开关
                      "block_enabled", "block_threshold"}  # 阻断试点（issue #103）：开关 + 阻断阈值
@@ -325,6 +332,16 @@ def _validate_settings(data) -> str | None:
         return "judge.sample_rate 必须是 0~1 数值"
     if not isinstance(judge["max_concurrency"], int) or isinstance(judge["max_concurrency"], bool) or judge["max_concurrency"] < 1:
         return "judge.max_concurrency 必须是 ≥1 整数"
+    # issue #105：注入第二职责三键——inject_enabled 必填布尔；注入 prompt 必填字符串，
+    # 关态允许空串占位（旧文件 normalize 补默认后能存），开态必须非空
+    # （「开+空」运行侧 judge_inject_text 必返 None 落 error 条，不给这种配置放行）
+    if not isinstance(judge["inject_enabled"], bool):
+        return "judge.inject_enabled 必须是布尔值"
+    for k in ("inject_prompt_system", "inject_prompt_fewshot"):
+        if not isinstance(judge[k], str):
+            return f"judge.{k} 必须是字符串"
+        if judge["inject_enabled"] and not judge[k]:
+            return f"judge.{k} 在 inject_enabled=true 时必须非空"
     if not isinstance(edm["enabled"], bool):
         return "edm.enabled 必须是布尔值"
     if not isinstance(edm["min_hits"], int) or isinstance(edm["min_hits"], bool) or edm["min_hits"] < 1:
@@ -947,11 +964,13 @@ def _kr_reject_item(handler, me, rid):
 
 
 def _shadow_verdicts(handler, _me):
-    """GET /dlp-admin/shadow-verdicts：三层 stats + 近期判定记录（新到旧，不落原文）。
-    query 参数：n（默认 50，1..500 截断）、layer（judge/pg/rules 过滤，非法值 400）。
+    """GET /dlp-admin/shadow-verdicts：各层 stats + 近期判定记录（新到旧，不落原文）。
+    query 参数：n（默认 50，1..500 截断）、layer（judge/pg/rules/judge_inject 过滤，非法值 400）。
     issue #101：stats 透出 warned 聚合数（judge warn 试点观察期误报对账口径：
     warned/hits 同窗可比），records 逐条带 warned/model 脱敏字段供核对。
-    issue #104：rules 层（注入规则层）判定条同槽透出，records 带 groups 命中模式组名。"""
+    issue #104：rules 层（注入规则层）判定条同槽透出，records 带 groups 命中模式组名。
+    issue #105：judge_inject 层（judge 注入第二职责）判定条同槽透出，records 带
+    attack_type 攻击类型标签；与商密 judge 层分层统计（独立层名，天然不串档）。"""
     q = urllib.parse.parse_qs(urllib.parse.urlsplit(handler.path).query)
     try:
         n = int((q.get("n") or ["50"])[0])
@@ -959,11 +978,11 @@ def _shadow_verdicts(handler, _me):
         n = 50
     n = max(1, min(500, n))
     layer = (q.get("layer") or [""])[0] or None
-    if layer not in (None, "judge", "pg", "rules"):
-        _respond(handler, 400, {"error": "layer 必须是 judge、pg 或 rules"})
+    if layer not in (None, "judge", "pg", "rules", "judge_inject"):
+        _respond(handler, 400, {"error": "layer 必须是 judge、pg、rules 或 judge_inject"})
         return
     _respond(handler, 200, {
-        "stats": {l: shadow_log.stats(l) for l in ("judge", "pg", "rules")},
+        "stats": {l: shadow_log.stats(l) for l in ("judge", "pg", "rules", "judge_inject")},
         "records": shadow_log.tail(n, layer=layer),
     })
 

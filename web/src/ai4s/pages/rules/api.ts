@@ -110,6 +110,12 @@ export interface JudgeSettings {
   action: JudgeAction; // issue #94 动作分级；后端 PUT 必填（shim _SETTINGS_JUDGE_KEYS）
   sample_rate: number; // issue #93 判定采样率（0~1）；后端 PUT 必填，面板无控件
   max_concurrency: number; // issue #93 judge 并发上限（≥1）；后端 PUT 必填，面板无控件
+  /** issue #105 注入判定第二职责（#100 路线③生产落点）：开关默认 false 先进场 shadow；
+   * 专用注入 prompt 单一源=settings.json（web 不内置文本；关态允许空串占位）；
+   * 注入判定永不阻断/不告警——观测价值只在 shadow 水位统计（shadow_log judge_inject 层） */
+  inject_enabled: boolean;
+  inject_prompt_system: string;
+  inject_prompt_fewshot: string;
 }
 export interface EdmSettings {
   enabled: boolean;
@@ -149,9 +155,11 @@ export function normalizePg(pg: Partial<PgSettings> | undefined): PgSettings {
     block_threshold: pg?.block_threshold ?? 0.9,
   };
 }
-/** judge 段读侧缺键补默认（issue #94/#93）：旧 settings.json（两票前写入）可能缺
- * threshold/action/sample_rate/max_concurrency，不补则面板整体 PUT 时后端必填校验 400；
- * 缺省值与 shim setting_value 缺省对齐（0.8 / shadow / 1.0 / 2） */
+/** judge 段读侧缺键补默认（issue #94/#93/#105）：旧 settings.json（两票前写入）可能缺
+ * threshold/action/sample_rate/max_concurrency；#105 前写入的缺 inject_* 三键，
+ * 不补则面板整体 PUT 时后端必填校验 400；
+ * 缺省值与 shim setting_value 缺省对齐（0.8 / shadow / 1.0 / 2 / 注入关+空 prompt 占位——
+ * prompt 单一源=settings.json，web 不内置 prompt 文本） */
 export function normalizeJudge(judge: Partial<JudgeSettings> | undefined): JudgeSettings {
   return {
     enabled: judge?.enabled ?? false,
@@ -164,6 +172,9 @@ export function normalizeJudge(judge: Partial<JudgeSettings> | undefined): Judge
     action: judge?.action ?? 'shadow',
     sample_rate: judge?.sample_rate ?? 1.0,
     max_concurrency: judge?.max_concurrency ?? 2,
+    inject_enabled: judge?.inject_enabled ?? false, // issue #105：缺省关=维持商密单职责现状
+    inject_prompt_system: judge?.inject_prompt_system ?? '',
+    inject_prompt_fewshot: judge?.inject_prompt_fewshot ?? '',
   };
 }
 /** 分层总开关（issue #40）：单键段；旧 settings.json 可能缺段（shim 侧缺段默认 true），

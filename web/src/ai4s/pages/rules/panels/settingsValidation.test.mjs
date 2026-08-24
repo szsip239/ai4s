@@ -94,3 +94,25 @@ test('validateInjectRules: 布尔两键合法放行、非布尔拒绝（issue #1
   assert.match(validateInjectRules({ enabled: 1, block: false }), /enabled/);
   assert.match(validateInjectRules({ enabled: true, block: 'yes' }), /block/);
 });
+
+test('validateJudge: 注入第二职责键预检（issue #105）——关态空 prompt 占位放行，开态空 prompt 拒绝', () => {
+  // 关态 + 空 prompt 占位（normalizeJudge 对旧文件补的默认态）：合法——prompt 单一源=settings.json，
+  // web 不内置 prompt 文本；开态 + 空 prompt：拒绝（否则运行侧必 error 条，巡检项 4 误报层不可用）
+  const off = { ...validJudge, inject_enabled: false, inject_prompt_system: '', inject_prompt_fewshot: '' };
+  assert.equal(validateJudge(off), null);
+  const on = { ...off, inject_enabled: true };
+  assert.match(validateJudge(on), /inject_prompt/);
+  assert.match(validateJudge({ ...on, inject_prompt_system: '注入系统提示' }), /inject_prompt/);
+  const ok = { ...on, inject_prompt_system: '注入系统提示', inject_prompt_fewshot: '注入示例' };
+  assert.equal(validateJudge(ok), null);
+  // 非布尔 inject_enabled 运行时防御（后端 admin_api 类型校验兜底同款）
+  assert.match(validateJudge({ ...ok, inject_enabled: 1 }), /inject_enabled/);
+});
+
+test('JudgePanel: 注入第二职责区存在且 prompt 控件对齐既有编辑风格（issue #105，源码级断言）', () => {
+  const panel = readFileSync(join(srcRoot, 'ai4s/pages/rules/panels/JudgePanel.tsx'), 'utf8');
+  assert.match(panel, /inject_enabled/, '注入职责开关须绑定 inject_enabled');
+  assert.match(panel, /inject_prompt_system/, '注入 prompt_system 编辑控件须存在');
+  assert.match(panel, /inject_prompt_fewshot/, '注入 prompt_fewshot 编辑控件须存在');
+  assert.match(panel, /永不阻断/, '注入区须注明契约纪律（注入判定只观测不阻断）');
+});

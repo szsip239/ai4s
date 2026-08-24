@@ -18,7 +18,7 @@ const transpiled = ts.transpileModule(source, {
   .replaceAll("import { apiRequest } from '@/lib/api-client';", 'const apiRequest = () => Promise.resolve({});')
   .replaceAll("import { getTokenFromStorage } from '@/stores/authStore';", 'const getTokenFromStorage = () => "";');
 
-const { normalizePg, normalizeInjectRules } = await import(
+const { normalizePg, normalizeInjectRules, normalizeJudge } = await import(
   `data:text/javascript;base64,${Buffer.from(transpiled).toString('base64')}`
 );
 
@@ -68,4 +68,30 @@ test('normalizeInjectRules: 显式两档原样保留（面板整体 PUT 必填�
   const off = normalizeInjectRules({ enabled: false, block: false });
   assert.equal(off.enabled, false);
   assert.equal(off.block, false);
+});
+
+test('normalizeJudge: 旧 settings.json 缺注入三键补默认（issue #105 judge 注入第二职责）', () => {
+  // 缺省与 shim setting_value 缺省对齐：inject_enabled=false（新职责先进场 shadow 观察）；
+  // prompt 补空串占位（单一源=settings.json，web 不内置 prompt 文本——开态保存由 validateJudge 拦）
+  const n = normalizeJudge({
+    enabled: true, model: 'm0', base_url: 'http://judge/v1', timeout: 8,
+    prompt_system: 'ps', prompt_fewshot: 'pf', threshold: 0.8, action: 'shadow',
+    sample_rate: 1.0, max_concurrency: 2,
+  });
+  assert.equal(n.inject_enabled, false);
+  assert.equal(n.inject_prompt_system, '');
+  assert.equal(n.inject_prompt_fewshot, '');
+  assert.deepEqual(normalizeJudge(undefined).inject_enabled, false);
+});
+
+test('normalizeJudge: 注入三键显式值原样保留（面板整体 PUT 必填，读侧不得吞档/吞 prompt）', () => {
+  const on = normalizeJudge({
+    inject_enabled: true, inject_prompt_system: '注入系统提示', inject_prompt_fewshot: '注入示例',
+  });
+  assert.equal(on.inject_enabled, true);
+  assert.equal(on.inject_prompt_system, '注入系统提示');
+  assert.equal(on.inject_prompt_fewshot, '注入示例');
+  const off = normalizeJudge({ inject_enabled: false, inject_prompt_system: '', inject_prompt_fewshot: '' });
+  assert.equal(off.inject_enabled, false);
+  assert.equal(off.inject_prompt_system, '');
 });

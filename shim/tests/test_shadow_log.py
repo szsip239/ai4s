@@ -101,6 +101,39 @@ class TestRecordTail(unittest.TestCase):
         s = shadow_log.stats("judge", window=10, path=self.path)
         self.assertEqual(s["warned"], 0)
 
+    def test_record_attack_type_roundtrip(self):
+        """judge 注入第二职责（issue #105）：attack_type 判定类型标签随条落盘并读回
+        （脱敏安全——类型标签非原文，同 #104 groups 模式组名先例）；未带键不落盘
+        （旧形状逐字节一致，消费方 .get() 兜底）。"""
+        shadow_log.record("judge_inject", hit=True, confidence=0.95, latency_ms=3800,
+                          attack_type="extract", path=self.path)
+        shadow_log.record("judge_inject", hit=False, confidence=0.92, latency_ms=2100,
+                          path=self.path)  # 未带 attack_type：普通条不写入该键
+        recs = shadow_log.tail(10, path=self.path)
+        self.assertEqual(len(recs), 2)
+        h = recs[1]  # 新到旧：命中条先落盘，是较旧一条
+        self.assertEqual(h["layer"], "judge_inject")
+        self.assertEqual(h["attack_type"], "extract")
+        self.assertNotIn("attack_type", recs[0])
+
+    def test_stats_layer_separation_judge_inject(self):
+        """分层统计（issue #105 AC：商密 vs 注入判定可分层）：judge_inject 层 stats 独立聚合，
+        不混入 judge 商密层——同窗口两层各自 total/hits/error_rate。"""
+        shadow_log.record("judge", hit=True, confidence=0.9, latency_ms=100, path=self.path)
+        shadow_log.record("judge", hit=False, confidence=0.2, latency_ms=100, path=self.path)
+        shadow_log.record("judge_inject", hit=True, confidence=0.95, latency_ms=3800,
+                          attack_type="extract", path=self.path)
+        shadow_log.record("judge_inject", hit=True, confidence=0.9, latency_ms=4000,
+                          attack_type="emotion", path=self.path)
+        shadow_log.record("judge_inject", error="unavailable", path=self.path)
+        sj = shadow_log.stats("judge", window=20, path=self.path)
+        si = shadow_log.stats("judge_inject", window=20, path=self.path)
+        self.assertEqual((sj["total"], sj["hits"], sj["errors"]), (2, 1, 0))
+        self.assertEqual((si["total"], si["hits"], si["errors"]), (3, 2, 1))
+        self.assertAlmostEqual(si["error_rate"], 1 / 3)
+        self.assertEqual(si["avg_latency_ms"], 3900)  # 仅计有 latency 的正常记录
+        self.assertEqual(si["warned"], 0)  # 注入层无 warned 语义归零（形状各层对齐）
+
 
 class TestStats(unittest.TestCase):
     def setUp(self):
