@@ -20,6 +20,8 @@ issue #103 增补：PG 阻断事件巡检（pg_block_pending 纯函数游标过�
 脱敏；check_cycle 游标推进——发送成功才推进、失败下轮重试；tail 在线路边界 mock）。
 issue #101 增补：judge warn 事件巡检（judge_warn_pending 纯函数同款四件套；check_cycle
 judge_warn_cursor 推进/重试）。
+issue #111 增补：渠道额度告警明细（channel_quota_detail 两实网形态/未知形态不炸、
+check_cycle 告警/恢复文本接线）、Key 耗尽告警百分比断言。
 """
 import json
 import io
@@ -1038,6 +1040,12 @@ class TestCheckCycleProjectLabel(unittest.TestCase):
         warn = next(t for t in sends if "额度将尽" in t)
         self.assertIn("项目: P-Test2", warn)
 
+    def test_exhausted_alert_has_percentage(self):
+        """issue #111：耗尽告警各维度补百分比（预警本有，耗尽此前只有裸 用量/配额）。"""
+        _, sends = self._cycle({}, 150)
+        alert = next(t for t in sends if "额度耗尽" in t)
+        self.assertIn("credit 150/100（150%）", alert)
+
     def test_projects_query_failure_fallback_gid(self):
         # myProjects 查询失败：告警照发，项目位回退裸 gid
         _, sends = self._cycle({}, 150, proj_names_ok=False)
@@ -1466,6 +1474,105 @@ class TestSaveState(unittest.TestCase):
                 ap.save_state({"ok": True})
             with open(path, encoding="utf-8") as f:
                 self.assertEqual(json.load(f), {"ok": True})
+
+
+class TestChannelQuotaDetail(unittest.TestCase):
+    """issue #111：上游渠道额度告警带 quotaData 具体数字——rows（kimi_code）与
+    _limits+rate_limit（codex）两实网形态渲染；未知形态 fail-open 返回串不炸。"""
+
+    # 2026-08-25 实网抓取的 kimi warning 态原样（数字即告警当时真值）
+    KIMI_QS = {"status": "warning", "ready": True, "providerType": "kimi_code",
+               "nextResetAt": "2026-08-24T19:18:57.085269Z",
+               "quotaData": {
+                   "_limits": [{"nextResetAt": "2026-08-26T13:18:57Z", "ready": True,
+                                "status": "warning", "type": "token", "usageRatio": 0.98},
+                               {"nextResetAt": "2026-08-24T19:18:57Z", "ready": True,
+                                "status": "available", "type": "token", "usageRatio": 0.37}],
+                   "rows": [{"label": "Weekly limit", "limit": 100,
+                             "resetAt": "2026-08-26T13:18:57.085269Z", "used": 98},
+                            {"label": "5h limit", "limit": 100,
+                             "resetAt": "2026-08-24T19:18:57.085269Z", "used": 37}]}}
+
+    # 同日 codex available 态原样（无 rows，数字在 _limits/rate_limit）
+    CODEX_QS = {"status": "available", "ready": True, "providerType": "codex",
+                "nextResetAt": "2026-08-31T02:13:49Z",
+                "quotaData": {
+                    "_limits": [{"nextResetAt": "2026-08-31T02:13:49Z", "ready": True,
+                                 "status": "available", "type": "token", "usageRatio": 0.29}],
+                    "plan_type": "pro",
+                    "rate_limit": {"allowed": True, "limit_reached": False,
+                                   "primary_window": {"limit_window_seconds": 604800,
+                                                      "reset_after_seconds": 548929,
+                                                      "reset_at": 1788142429,
+                                                      "used_percent": 29}}}}
+
+    def test_rows_shape(self):
+        """rows 形态：每档 用量/上限（百分比）+ 重置时间；rows 存在时不重复渲染 _limits。"""
+        d = ap.channel_quota_detail(self.KIMI_QS)
+        self.assertIn("Weekly limit 98/100（98%）", d)
+        self.assertIn("5h limit 37/100（37%）", d)
+        self.assertIn("重置 2026-08-26 13:18Z", d)
+
+    def test_limits_shape(self):
+        """_limits 形态（无 rows）：usageRatio 百分比 + 重置时间；附 plan_type 与主窗口用量。"""
+        d = ap.channel_quota_detail(self.CODEX_QS)
+        self.assertIn("token 用量 29%", d)
+        self.assertIn("套餐 pro", d)
+        self.assertIn("主窗口用量 29%", d)
+
+    def test_no_detail_falls_back_next_reset(self):
+        """rows/_limits 都没有：至少带下次重置时间；什么都没有 → 空串。"""
+        d = ap.channel_quota_detail({"status": "warning", "ready": True,
+                                     "nextResetAt": "2026-08-31T02:13:49Z", "quotaData": {}})
+        self.assertIn("下次重置 2026-08-31 02:13Z", d)
+        self.assertEqual(ap.channel_quota_detail({"status": "warning", "ready": True}), "")
+        self.assertEqual(ap.channel_quota_detail(None), "")
+
+    def test_malformed_fragments_never_raise(self):
+        """畸形字段（非数 used/limit、quotaData 非 dict）不炸——fail-open 渲染纪律。"""
+        weird = {"quotaData": {"rows": [{"label": "x", "limit": "abc", "used": None},
+                                        "not-a-dict"],
+                               "_limits": "junk", "plan_type": 42},
+                 "nextResetAt": 12345}
+        self.assertIsInstance(ap.channel_quota_detail(weird), str)
+
+
+class TestCheckCycleChannelQuotaAlertText(unittest.TestCase):
+    """issue #111：渠道额度告警/恢复文本带 quotaData 数字（check_cycle 接线）。"""
+
+    def _cycle(self, state, qs):
+        sends = []
+
+        def fake_gql(query, variables=None):
+            if "queryChannels" in query:
+                return {"queryChannels": {"edges": [
+                    {"node": {"name": "kimi", "providerQuotaStatus": qs}}]}}
+            if "myProjects" in query:
+                return {"myProjects": []}
+            if "apiKeys(" in query:
+                return {"apiKeys": {"edges": []}}
+            raise AssertionError(f"unexpected gql: {query[:50]}")
+
+        ax = mock.Mock()
+        ax.gql = fake_gql
+        with mock.patch.object(ap, "http_get", return_value=True), \
+             mock.patch.object(ap, "send_feishu", side_effect=lambda t: sends.append(t) or True), \
+             mock.patch.object(ap.shadow_log, "stats", return_value={"total": 0, "errors": 0, "error_rate": 0.0}):
+            new_state = ap.check_cycle(ax, state)
+        return new_state, sends
+
+    def test_alert_text_has_numbers(self):
+        _, sends = self._cycle({}, TestChannelQuotaDetail.KIMI_QS)
+        alert = next(t for t in sends if "上游渠道额度异常" in t)
+        self.assertIn("Weekly limit 98/100（98%）", alert)
+        self.assertIn("warning", alert)
+
+    def test_recover_text_has_numbers(self):
+        # 轮 1：warning → 告警；轮 2：恢复为 available（codex 形态）→ 恢复文本带当前用量
+        state, _ = self._cycle({}, TestChannelQuotaDetail.KIMI_QS)
+        _, sends = self._cycle(state, TestChannelQuotaDetail.CODEX_QS)
+        recover = next(t for t in sends if "上游渠道额度恢复" in t)
+        self.assertIn("token 用量 29%", recover)
 
 
 if __name__ == "__main__":

@@ -6,6 +6,8 @@ axonhub 无事件源的事务靠主动轮询补齐。巡检项（状态翻转才
      （agentgateway failureMode=failOpen，组件挂掉流量静默直传，必须有人喊）；
      并入 shim 后 SHIM_URL 默认进程内自调 http://localhost:8080（issue #56）
   2. 上游渠道额度：queryChannels → providerQuotaStatus ∈ {warning, exhausted} → 告警
+     （issue #111：告警/恢复文本带 quotaData 具体用量数字——rows/_limits 两实网形态，
+     channel_quota_detail 纯函数 fail-open 渲染）
   3. 员工 API key 额度：apiKeys → apiKeyQuotaUsages，usage 达到 quota → 告警；≥80% → 预警（issue #18）
      issue #91 P2-3：告警/预警/恢复文本带项目名（一轮一次 myProjects 建 gid→名映射，
      名单失败回退裸 gid 不阻塞告警）
@@ -758,6 +760,64 @@ def now_str() -> str:
 # ---- 巡检判定纯函数（issue #56：借迁移给核心分支补单测）----
 
 
+def _short_ts(ts) -> str:
+    """ISO 时间串压缩展示（"2026-08-26T13:18:57.085269Z" → "2026-08-26 13:18Z"）；
+    非串/过短原样 str 化（fail-open，永不抛）。"""
+    s = str(ts or "")
+    return (s[:16].replace("T", " ") + "Z") if len(s) >= 16 else s
+
+
+def channel_quota_detail(qs: dict) -> str:
+    """providerQuotaStatus → 告警明细行（issue #111，纯函数 fail-open：任一字段畸形只丢
+    该片段，永不抛）。实网两形态（2026-08-25 抓取）：
+      - kimi_code：quotaData.rows[{label,used,limit,resetAt}]（rows 优先，_limits 同信息不重复渲染）
+      - codex：quotaData._limits[{type,usageRatio,nextResetAt}] + plan_type +
+        rate_limit.primary_window.used_percent
+    rows/_limits 都没有时至少带顶层 nextResetAt；全部缺失 → ""（告警文本只少一行明细）。"""
+    if not isinstance(qs, dict):
+        return ""
+    qd = qs.get("quotaData")
+    if not isinstance(qd, dict):
+        qd = {}
+    parts = []
+    rows = qd.get("rows")
+    if isinstance(rows, list) and rows:
+        for r in rows:
+            if not isinstance(r, dict):
+                continue
+            try:
+                pct = f"{r['used'] / r['limit']:.0%}" if r.get("limit") else "-"
+            except Exception:
+                pct = "-"
+            frag = f"{r.get('label', '-')} {r.get('used', '-')}/{r.get('limit', '-')}（{pct}）"
+            if r.get("resetAt"):
+                frag += f"，重置 {_short_ts(r['resetAt'])}"
+            parts.append(frag)
+    else:
+        limits = qd.get("_limits")
+        if isinstance(limits, list):
+            for lim in limits:
+                if not isinstance(lim, dict):
+                    continue
+                try:
+                    pct = f"{float(lim['usageRatio']):.0%}"
+                except Exception:
+                    continue
+                frag = f"{lim.get('type', '-')} 用量 {pct}"
+                if lim.get("nextResetAt"):
+                    frag += f"，重置 {_short_ts(lim['nextResetAt'])}"
+                parts.append(frag)
+        rl = qd.get("rate_limit")
+        win = rl.get("primary_window") if isinstance(rl, dict) else None
+        if isinstance(win, dict) and win.get("used_percent") is not None:
+            parts.append(f"主窗口用量 {win['used_percent']}%")
+        if qd.get("plan_type"):
+            parts.append(f"套餐 {qd['plan_type']}")
+        if not parts and qs.get("nextResetAt"):
+            parts.append(f"下次重置 {_short_ts(qs['nextResetAt'])}")
+    return "；".join(parts)
+
+
 def quota_dims(quota: dict, usage: dict) -> list:
     """API key 单 profile 各维度用量比率：[(维度名, ratio, "用量/配额" 文本)]。
     维度缺失或配额为 0（含 cost 为 None/"0"）不参与判定（与独立容器时代一致）。"""
@@ -892,10 +952,12 @@ def check_cycle(ax: Axonhub, state: dict) -> dict:
     )
 
     # 2) 上游渠道额度
+    # issue #111：providerQuotaStatus 补 providerType/quotaData/nextResetAt——告警/恢复文本
+    # 渲染具体用量数字（channel_quota_detail 纯函数 fail-open，未知形态只少明细行不炸）
     try:
         data = ax.gql(
             "query { queryChannels(input: {first: 100, where: {statusIn: [enabled]}}) "
-            "{ edges { node { name providerQuotaStatus { status ready } } } } }"
+            "{ edges { node { name providerQuotaStatus { status ready providerType quotaData nextResetAt } } } } }"
         )
         for e in data["queryChannels"]["edges"]:
             n = e["node"]
@@ -903,10 +965,13 @@ def check_cycle(ax: Axonhub, state: dict) -> dict:
             if not qs or not qs.get("ready"):
                 continue
             st = qs.get("status")
+            detail = channel_quota_detail(qs)
+            detail_line = f"\n额度明细: {detail}" if detail else ""
+            provider = qs.get("providerType") or "-"
             findings[f"quota:channel:{n['name']}"] = (
                 st in ("warning", "exhausted"),
-                f"[ai4s 告警] 上游渠道额度异常\n渠道: {n['name']}\n状态: {st}\n时间: {now_str()}",
-                f"[ai4s 恢复] 上游渠道额度恢复: {n['name']}",
+                f"[ai4s 告警] 上游渠道额度异常\n渠道: {n['name']}（{provider}）\n状态: {st}{detail_line}\n时间: {now_str()}",
+                f"[ai4s 恢复] 上游渠道额度恢复: {n['name']}（{provider}）{detail_line}",
             )
     except Exception as e:
         print(f"[alert] 渠道额度查询失败: {type(e).__name__}", flush=True)
@@ -934,7 +999,8 @@ def check_cycle(ax: Axonhub, state: dict) -> dict:
                 continue
             for u in usages:
                 over, near = classify_quota(quota_dims(u.get("quota") or {}, u.get("usage") or {}))
-                hits = [f"{name} {txt}" for name, _, txt in over]
+                # issue #111：耗尽告警各维度补百分比（与 80% 预警同款口径）
+                hits = [f"{name} {txt}（{r:.0%}）" for name, r, txt in over]
                 findings[f"quota:apikey:{key['id']}:{u.get('profileName')}"] = (
                     bool(over),
                     f"[ai4s 告警] 员工 API Key 额度耗尽\nKey: {key['name']}（profile {u.get('profileName')}）\n项目: {proj_label}\n用量: {'; '.join(hits)}\n时间: {now_str()}",
