@@ -1379,7 +1379,7 @@ class EdmLibParityTest(unittest.TestCase):
 
 
 # 合法 settings fixture（issue #35）：结构对齐 deploy/dlp/settings.json 首版
-# judge.threshold/action（issue #94）：置信度门槛与动作分级（schema/校验 only，消费在 #101）
+# judge.threshold/action（issue #94）：置信度门槛与动作分级（schema/校验；#101 起 /request 链路消费）
 # judge.sample_rate/max_concurrency（issue #93）：判定采样率与并发预算（/request 链路消费）
 _SETTINGS_FIXTURE = {
     "version": 1,
@@ -1648,7 +1648,7 @@ class AppSettingsTest(unittest.TestCase):
             # 字符串字段拒绝非 str
             self.assertEqual(
                 shim_app.setting_value({"judge": {"model": 123}}, "judge", "model", "JUDGE_MODEL", "m0"), "m0")
-            # judge.threshold/action（issue #94）：number/str 护栏（schema 覆盖，暂无消费方）
+            # judge.threshold/action（issue #94）：number/str 护栏（#101 起 /request 链路消费）
             self.assertEqual(
                 shim_app.setting_value({"judge": {"threshold": "0.8"}}, "judge", "threshold", "JUDGE_THRESHOLD", 0.8), 0.8)
             self.assertEqual(
@@ -1934,6 +1934,183 @@ class JudgeShadowMaskTest(unittest.TestCase):
         sent = _FakeJudge.captured["messages"][2]["content"]
         self.assertIn("【PII:手机号】", sent)
         self.assertNotIn("13800138000", sent)
+
+
+class _FakeJudgeTunable(_FakeJudge):
+    """可调 verdict 的假 judge（issue #101 action 消费测试）：verdict 类属性由用例覆写。"""
+
+    verdict = '{"confidential": true, "entities": ["项目代号"], "confidence": 0.9}'
+
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length") or 0)
+        _FakeJudge.captured = json.loads(self.rfile.read(length) or b"{}")
+        body = json.dumps({"choices": [{"message": {"content": _FakeJudgeTunable.verdict}}]}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class JudgeActionConsumeTest(unittest.TestCase):
+    """judge action 四档消费（issue #101，/request 链路 HTTP 级 seam，fixture 对齐 JudgeShadowMaskTest）：
+    off=链路不送判定（enabled=true 也跳过不落条——档位语义 ≡ enabled=false，只管链路消费）；
+    shadow=现状仅记录（绝不带 warned 键）；warn=shadow 全部 + confidential 且 confidence≥threshold
+    时落 warned=True 条（带请求模型名，告警巡检消费；请求照常放行——契约「语义层永不阻断」）；
+    reject=schema 存在但契约不支持消费，按 shadow 同等处理 + 状态变化 print 一行提示（绝不阻断）。
+    /judge-test 直测不受 action 档位影响（显式人肉调试通道）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._judge_srv = _start_server(_FakeJudgeTunable)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._judge_srv.shutdown()
+
+    def setUp(self):
+        _FakeJudge.captured = {}
+        _FakeJudgeTunable.verdict = '{"confidential": true, "entities": ["项目代号"], "confidence": 0.9}'
+        self._tmp = tempfile.TemporaryDirectory()
+        d = self._tmp.name
+        self.wordlist_path = os.path.join(d, "wordlist.json")
+        with open(self.wordlist_path, "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "terms": []}, f, ensure_ascii=False)
+        self.format_rules_path = os.path.join(d, "format-rules.json")
+        with open(self.format_rules_path, "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "rules": []}, f, ensure_ascii=False)
+        self.log_path = os.path.join(d, "shadow.jsonl")
+        self.settings_path = os.path.join(d, "settings.json")
+        self._fixture = json.loads(json.dumps(_SETTINGS_FIXTURE))
+        j = self._fixture["judge"]
+        j["enabled"] = True
+        j["base_url"] = f"http://127.0.0.1:{self._judge_srv.server_address[1]}"
+        j["model"] = "json-model"
+        j["prompt_system"] = "自定义系统提示：{terms}"
+        j["prompt_fewshot"] = "自定义示例"
+        self._fixture["pg"]["enabled"] = False  # 隔离注入 shadow，只验 judge 链路
+        self._write_settings()
+        self._saved = (shim_app.SETTINGS_PATH, shim_app.WORDLIST_PATH,
+                       shim_app.FORMAT_RULES_PATH, shim_app.JUDGE_API_KEY)
+        shim_app.SETTINGS_PATH = self.settings_path
+        shim_app.WORDLIST_PATH = self.wordlist_path
+        shim_app.FORMAT_RULES_PATH = self.format_rules_path
+        shim_app.JUDGE_API_KEY = "test-key"
+        shim_app._JUDGE_ACTION_STATE.clear()  # reject 提示的状态记忆用例间隔离
+        # env 隔离（对齐 JudgeShadowMaskTest 纪律）：开发机导出的 action/threshold env 会顶替 JSON 缺键级
+        self._saved_env = {k: os.environ.pop(k, None) for k in ("JUDGE_ACTION", "JUDGE_THRESHOLD")}
+        self._saved_env["SHADOW_LOG_PATH"] = os.environ.get("SHADOW_LOG_PATH")
+        os.environ["SHADOW_LOG_PATH"] = self.log_path
+
+    def tearDown(self):
+        shim_app.SETTINGS_PATH, shim_app.WORDLIST_PATH, shim_app.FORMAT_RULES_PATH, shim_app.JUDGE_API_KEY = self._saved
+        for k, v in self._saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        self._tmp.cleanup()
+
+    def _write_settings(self):
+        with open(self.settings_path, "w", encoding="utf-8") as f:
+            json.dump(self._fixture, f, ensure_ascii=False)
+
+    def _set_action(self, action):
+        self._fixture["judge"]["action"] = action
+        self._write_settings()
+
+    def _post_request(self):
+        return _request("POST", "/request",
+                        payload={"body": {"model": "echo-test",
+                                          "messages": [{"role": "user", "content": "普通业务咨询，请帮我写周报"}]}})
+
+    def _judge_records(self):
+        import shadow_log
+        return shadow_log.tail(10, layer="judge", path=self.log_path)
+
+    def test_action_off_skips_judgement(self):
+        """action=off：即使 enabled=true 也跳过判定——假 judge 零调用、不落 shadow_log 条。"""
+        self._set_action("off")
+        status, body = self._post_request()
+        time.sleep(0.5)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["action"].get("reason"), "pass")
+        self.assertEqual(_FakeJudge.captured, {})
+        self.assertFalse(os.path.exists(self.log_path))
+
+    def test_action_off_judge_test_unaffected(self):
+        """action=off 只管链路消费：/judge-test 直测（显式人肉调试通道）照常判定。"""
+        self._set_action("off")
+        status, body = _request("POST", "/judge-test", payload={"text": "任意文本"})
+        self.assertEqual(status, 200)
+        self.assertIsNotNone(body["verdict"])
+        self.assertNotEqual(_FakeJudge.captured, {})
+
+    def test_action_shadow_records_without_warned(self):
+        """action=shadow（现状）：判定落条但绝不带 warned 键（warn 事件条只属 warn 档超阈值）。"""
+        self._set_action("shadow")
+        status, _ = self._post_request()
+        time.sleep(0.5)
+        self.assertEqual(status, 200)
+        recs = self._judge_records()
+        self.assertEqual(len(recs), 1)
+        self.assertTrue(recs[0]["hit"])
+        self.assertNotIn("warned", recs[0])
+
+    def test_action_warn_over_threshold_records_warned_no_block(self):
+        """action=warn 核心 AC：confidential 且 confidence≥threshold（0.9≥0.8）→ 落 warned=True 条
+        （带请求模型名脱敏字段，alert_poller 巡检项 6 消费）；请求照常放行（告警不拦截）。"""
+        self._set_action("warn")
+        status, body = self._post_request()
+        time.sleep(0.5)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["action"].get("reason"), "pass")
+        recs = self._judge_records()
+        self.assertEqual(len(recs), 1)
+        self.assertTrue(recs[0]["hit"])
+        self.assertIs(recs[0]["warned"], True)
+        self.assertEqual(recs[0]["model"], "echo-test")
+
+    def test_action_warn_under_threshold_not_warned(self):
+        """action=warn 但 confidence 未达 threshold（0.5<0.8）→ 普通命中条，无 warned 键。"""
+        _FakeJudgeTunable.verdict = '{"confidential": true, "entities": ["项目代号"], "confidence": 0.5}'
+        self._set_action("warn")
+        status, _ = self._post_request()
+        time.sleep(0.5)
+        self.assertEqual(status, 200)
+        recs = self._judge_records()
+        self.assertEqual(len(recs), 1)
+        self.assertTrue(recs[0]["hit"])
+        self.assertNotIn("warned", recs[0])
+
+    def test_action_warn_clean_verdict_not_warned(self):
+        """action=warn 但判 clean（confidential=false 高置信）→ 无 warned 键（warn 只管涉密超阈值）。"""
+        _FakeJudgeTunable.verdict = '{"confidential": false, "entities": [], "confidence": 0.99}'
+        self._set_action("warn")
+        status, _ = self._post_request()
+        time.sleep(0.5)
+        self.assertEqual(status, 200)
+        recs = self._judge_records()
+        self.assertEqual(len(recs), 1)
+        self.assertFalse(recs[0]["hit"])
+        self.assertNotIn("warned", recs[0])
+
+    def test_action_reject_behaves_shadow_never_blocks(self):
+        """action=reject（契约不支持消费，头注记账）：按 shadow 同等处理——高置信涉密也放行
+        （契约「语义层永不阻断」）、落条无 warned 键、状态变化 print 一行提示。"""
+        _FakeJudgeTunable.verdict = '{"confidential": true, "entities": ["项目代号"], "confidence": 0.99}'
+        self._set_action("reject")
+        with mock.patch("builtins.print") as m:
+            status, body = self._post_request()
+            time.sleep(0.5)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["action"].get("reason"), "pass")  # 永不阻断
+        recs = self._judge_records()
+        self.assertEqual(len(recs), 1)
+        self.assertNotIn("warned", recs[0])  # 按 shadow 同等处理，不落 warn 事件条
+        printed = "\n".join(str(c.args[0]) for c in m.call_args_list if c.args)
+        self.assertIn("reject", printed)
+        self.assertIn("契约", printed)
 
 
 class InjectionShadowSettingsTest(unittest.TestCase):
@@ -2691,6 +2868,23 @@ class TestShadowVerdictsApi(unittest.TestCase):
         self.assertEqual(body["stats"]["judge"]["hits"], 1)
         self.assertEqual(len(body["records"]), 3)
         self.assertEqual(body["records"][0]["layer"], "pg")  # 新到旧
+
+    def test_stats_expose_warned_count(self):
+        """issue #101：stats 聚合输出 warned 数（观察期误报对账口径）——judge 层 warned=True 条
+        计入 stats.judge.warned；records 原样带出 warned 字段供逐条核对。"""
+        import shadow_log
+        shadow_log.record("judge", hit=True, confidence=0.92, latency_ms=1800, entities=2,
+                          warned=True, model="echo-test", path=self.log_path)
+        shadow_log.record("judge", hit=True, confidence=0.5, latency_ms=1500, entities=1, path=self.log_path)
+        shadow_log.record("judge", hit=False, confidence=0.1, latency_ms=900, entities=0, path=self.log_path)
+        status, body = _get("/dlp-admin/shadow-verdicts?layer=judge", token="reader-token")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["stats"]["judge"]["warned"], 1)
+        self.assertEqual(body["stats"]["judge"]["hits"], 2)  # warned/hits 同窗可比=对账口径
+        self.assertEqual(body["stats"]["pg"]["warned"], 0)  # 形状两层对齐（pg 无 warned 语义归零）
+        warned_recs = [r for r in body["records"] if r.get("warned")]
+        self.assertEqual(len(warned_recs), 1)
+        self.assertEqual(warned_recs[0]["model"], "echo-test")
 
     def test_layer_filter_and_n(self):
         import shadow_log

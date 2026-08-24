@@ -3,6 +3,7 @@
 
 seam 纪律：shadow_log 为纯模块 seam（record/tail/stats 公开函数，path 显式注入 tmp 文件）；
 不触内部行格式——断言只走 tail/stats 读回的字段语义。
+issue #101 增补：judge warn 事件字段（warned）round-trip 与 stats 聚合。
 """
 import os
 import sys
@@ -75,6 +76,30 @@ class TestRecordTail(unittest.TestCase):
         self.assertNotIn("model", recs[0])
         s = shadow_log.stats("pg", window=10, path=self.path)
         self.assertEqual((s["total"], s["hits"], s["errors"]), (2, 1, 0))
+
+    def test_record_warned_roundtrip(self):
+        """judge warn 事件字段（issue #101）：warned=True 随 judge 条落盘并读回
+        （alert_poller 巡检项 6 消费）；未带键不落盘（旧形状逐字节一致，消费方 .get()）；
+        stats 聚合 warned 数（观察期误报对账口径：warned/hits 同窗可比）。"""
+        shadow_log.record("judge", hit=True, confidence=0.92, latency_ms=1800, entities=2,
+                          warned=True, model="echo-test", path=self.path)
+        shadow_log.record("judge", hit=True, confidence=0.5, latency_ms=1500, entities=1,
+                          path=self.path)  # 超阈值未达/未开 warn：普通命中条不带 warned 键
+        recs = shadow_log.tail(10, path=self.path)
+        self.assertEqual(len(recs), 2)
+        w = recs[1]  # 新到旧：warn 条先落盘，是较旧一条
+        self.assertIs(w["warned"], True)
+        self.assertEqual(w["model"], "echo-test")
+        self.assertNotIn("warned", recs[0])
+        s = shadow_log.stats("judge", window=10, path=self.path)
+        self.assertEqual((s["total"], s["hits"], s["warned"]), (2, 2, 1))
+
+    def test_stats_warned_zero_by_default(self):
+        """stats warned 聚合缺省为 0（issue #101）：无 warned 键的旧记录/异常条不计入。"""
+        shadow_log.record("judge", hit=True, confidence=0.9, latency_ms=100, path=self.path)
+        shadow_log.record("judge", error="unavailable", path=self.path)
+        s = shadow_log.stats("judge", window=10, path=self.path)
+        self.assertEqual(s["warned"], 0)
 
 
 class TestStats(unittest.TestCase):

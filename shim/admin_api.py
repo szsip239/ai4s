@@ -15,13 +15,16 @@ issue #89：多项目隔离——read_project_header 统一解析/校验 X-Proje
 issue #92：shadow 判定查询出口 GET /dlp-admin/shadow-verdicts（读级）——judge/PG shadow
 判定持久化（shadow_log）的 stats + 近期记录（新到旧，不落原文），供误报观察期统计。
 issue #94：judge 阈值与动作分级 schema——settings judge 段加 threshold（0~1 置信度门槛）
-/action（off/shadow/warn/reject 四档）校验；本票仅 schema/校验，消费执行在 #101。
+/action（off/shadow/warn/reject 四档）校验；消费执行在 #101 落地（/request 链路）。
 issue #93：judge 采样/并发预算 schema——settings judge 段加 sample_rate（0~1 判定采样率）
 /max_concurrency（≥1 judge HTTP 并发上限）校验；/request 链路消费（app.py），
 采样/预算 skip 不落 shadow_log 条（非层异常，不污染 #92 error_rate）。
 issue #103：PG 高分阻断 schema——settings pg 段加 block_enabled（布尔开关，默认关=纯 shadow
 现状）/block_threshold（0~1 阻断阈值，默认 0.9）校验；/request 链路消费（app.py 应答前
 同步判定 451），阻断事件落 shadow_log（blocked=True）由 alert_poller 巡检发飞书（脱敏）。
+issue #101：judge action 消费落地（app.py /request 链路：off 不判定 / shadow 现状 /
+warn 超阈值落 warned=True 条不拦截 / reject 契约不支持按 shadow）；shadow-verdicts
+stats 聚合透出 warned 数（观察期误报对账口径），warn 事件由 alert_poller 巡检项 6 发飞书。
 
 与检测路径（/request /response 调用链）完全隔离：admin 平面 fail-closed——
 内省不可达回 503，不适用检测链的 fail-open 分级（契约 docs/contracts/dlp-webhook-shim.md）。
@@ -262,7 +265,8 @@ _SETTINGS_L2_KEYS = {"enabled"}
 _SETTINGS_RESPONSE_KEYS = {"enabled"}
 
 
-# judge 动作分级（issue #94）：off 关 / shadow 仅记录 / warn 告警 / reject 拦截；消费执行在 #101
+# judge 动作分级（issue #94）：off 关 / shadow 仅记录 / warn 告警 / reject 拦截；
+# issue #101 消费落地：warn=告警不拦截，reject 契约「语义层永不阻断」不支持（按 shadow 处理）
 _SETTINGS_JUDGE_ACTIONS = {"off", "shadow", "warn", "reject"}
 
 
@@ -303,7 +307,7 @@ def _validate_settings(data) -> str | None:
             return f"judge.{k} 必须是非空字符串"
     if not _is_number(judge["timeout"]) or judge["timeout"] <= 0:
         return "judge.timeout 必须是 >0 数值"
-    # issue #94：threshold 0~1 置信度门槛 + action 四档（仅校验，消费在 #101）
+    # issue #94：threshold 0~1 置信度门槛 + action 四档（#101 起 /request 链路消费）
     if not _is_number(judge["threshold"]) or not 0 <= judge["threshold"] <= 1:
         return "judge.threshold 必须是 0~1 数值"
     # 先 str 再查档位集合：list/dict 等 unhashable 值直接 not in 会抛 TypeError 断连（#94 评审）
@@ -933,7 +937,9 @@ def _kr_reject_item(handler, me, rid):
 
 def _shadow_verdicts(handler, _me):
     """GET /dlp-admin/shadow-verdicts：两层 stats + 近期判定记录（新到旧，不落原文）。
-    query 参数：n（默认 50，1..500 截断）、layer（judge/pg 过滤，非法值 400）。"""
+    query 参数：n（默认 50，1..500 截断）、layer（judge/pg 过滤，非法值 400）。
+    issue #101：stats 透出 warned 聚合数（judge warn 试点观察期误报对账口径：
+    warned/hits 同窗可比），records 逐条带 warned/model 脱敏字段供核对。"""
     q = urllib.parse.parse_qs(urllib.parse.urlsplit(handler.path).query)
     try:
         n = int((q.get("n") or ["50"])[0])

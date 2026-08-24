@@ -28,9 +28,19 @@ const validJudge = {
 
 test('validateJudge: 合法配置（含 threshold/action，issue #94）通过', () => {
   assert.equal(validateJudge(validJudge), null);
-  for (const action of ['off', 'shadow', 'warn', 'reject']) {
+  for (const action of ['off', 'shadow', 'warn']) {
     assert.equal(validateJudge({ ...validJudge, action }), null, `action=${action} 应合法`);
   }
+});
+
+test('validateJudge: reject 档拒绝保存（issue #101 契约纪律——语义层永不阻断，schema 档位存在但面板不可选/不保存）', () => {
+  assert.match(validateJudge({ ...validJudge, action: 'reject' }), /契约|阻断|永不/);
+});
+
+test('JudgePanel: reject 档 UI 灰置不可选（issue #101 契约纪律，源码级断言——无组件测试基建的最小锚点）', () => {
+  const panel = readFileSync(join(srcRoot, 'ai4s/pages/rules/panels/JudgePanel.tsx'), 'utf8');
+  assert.match(panel, /SelectItem value='reject' disabled/, 'reject 选项须 disabled 灰置');
+  assert.match(panel, /语义层永不阻断/, '灰置选项须注明契约依据');
 });
 
 test('validateJudge: threshold 越界/非数拒绝（issue #94）', () => {

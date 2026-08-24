@@ -18,6 +18,8 @@ issue #92 增补：shadow 层可用率巡检（shadow_avail_findings 纯函数�
 check_cycle 接入的翻转/防抖/恢复与 shadow_log.stats 异常不破坏循环——stats 在线路边界 mock）。
 issue #103 增补：PG 阻断事件巡检（pg_block_pending 纯函数游标过滤/旧到新排序/批量封顶/卡片
 脱敏；check_cycle 游标推进——发送成功才推进、失败下轮重试；tail 在线路边界 mock）。
+issue #101 增补：judge warn 事件巡检（judge_warn_pending 纯函数同款四件套；check_cycle
+judge_warn_cursor 推进/重试）。
 """
 import json
 import io
@@ -1225,6 +1227,111 @@ class TestCheckCyclePgBlockCursor(unittest.TestCase):
             state = ap.check_cycle(ax, {})
         self.assertEqual(state, {})
         s.assert_not_called()
+
+
+class TestJudgeWarnPending(unittest.TestCase):
+    """issue #101：judge warn 事件巡检 judge_warn_pending 纯函数——游标过滤（> 游标才发）、
+    旧到新排序（先发生先告警）、批量封顶（风暴防刷，剩余下轮续发）、卡片脱敏
+    （项目/confidence/实体命中数/模型名/时间，无原文无 key 无实体字符串）。"""
+
+    def _rec(self, ts, conf=0.92, warned=True, model="echo-test", entities=2):
+        return {"ts": ts, "layer": "judge", "hit": True, "confidence": conf,
+                "latency_ms": 1800, "error": None, "entities": entities,
+                "warned": warned, "model": model}
+
+    def test_new_entries_oldest_first(self):
+        # tail 返回新到旧；待发卡按旧到新排序
+        recs = [self._rec(300.0), self._rec(100.0), self._rec(200.0)]
+        out = ap.judge_warn_pending(recs, 0.0)
+        self.assertEqual([ts for ts, _ in out], [100.0, 200.0, 300.0])
+
+    def test_cursor_filters_seen(self):
+        recs = [self._rec(300.0), self._rec(200.0), self._rec(100.0)]
+        out = ap.judge_warn_pending(recs, 200.0)
+        self.assertEqual([ts for ts, _ in out], [300.0])  # > 游标才发（== 不重发）
+
+    def test_unwarned_records_ignored(self):
+        recs = [self._rec(100.0, warned=False), self._rec(200.0, warned=None),
+                {"ts": 300.0, "layer": "judge", "hit": True, "confidence": 0.95}]  # 旧记录无 warned 键
+        self.assertEqual(ap.judge_warn_pending(recs, 0.0), [])
+
+    def test_batch_cap_keeps_oldest(self):
+        recs = [self._rec(float(i)) for i in range(20)]
+        out = ap.judge_warn_pending(recs, -1.0)
+        self.assertEqual(len(out), ap.JUDGE_WARN_ALERT_BATCH)
+        # 截最旧一批先发；剩余条 ts 仍在游标后，下轮续发
+        self.assertEqual(out[-1][0], float(ap.JUDGE_WARN_ALERT_BATCH - 1))
+
+    def test_card_text_sanitized(self):
+        out = ap.judge_warn_pending([self._rec(1787184000.0, conf=0.92, model="gpt-x", entities=3)], 0.0)
+        self.assertEqual(len(out), 1)
+        text = out[0][1]
+        self.assertIn("语义 judge", text)
+        self.assertIn("0.92", text)  # confidence
+        self.assertIn("3", text)  # 实体命中数
+        self.assertIn("gpt-x", text)  # 请求模型名
+        self.assertIn("项目", text)  # 项目字段在卡（口径：链路无标识，标未知）
+        self.assertIn("2026-", text)  # ts 格式化为 UTC 时间
+        self.assertIn("未拦截", text)  # warn 语义明示：不阻断（契约）
+        self.assertNotIn("项目代号", text)  # 无实体字符串（记录本不落，卡片亦不引入）
+        self.assertNotIn("凤皇计划", text)  # 无原文
+
+    def test_card_missing_fields_dash(self):
+        # 记录缺 model/entities/confidence（极端旧形状）→ 占位 '-'，不抛
+        out = ap.judge_warn_pending([{"ts": 100.0, "layer": "judge", "hit": True, "warned": True}], 0.0)
+        self.assertEqual(len(out), 1)
+
+
+class TestCheckCycleJudgeWarnCursor(unittest.TestCase):
+    """issue #101：check_cycle 接入 judge warn 巡检（巡检项 6）——发送成功才推进游标；
+    失败不推进、下轮重试；tail 异常不破坏巡检主循环。"""
+
+    def _rec(self, ts, conf):
+        return {"ts": ts, "layer": "judge", "hit": True, "confidence": conf,
+                "latency_ms": 1800, "error": None, "entities": 2,
+                "warned": True, "model": "m"}
+
+    def _cycle(self, state, recs, send_results):
+        sends = []
+        ax = mock.Mock()
+        ax.gql.side_effect = RuntimeError("gql down")
+        send_iter = iter(send_results)
+
+        def fake_send(text):
+            sends.append(text)
+            return next(send_iter, True)
+
+        with mock.patch.object(ap, "http_get", return_value=True), \
+             mock.patch.object(ap.shadow_log, "tail",
+                               side_effect=lambda n, layer=None: recs if layer == "judge" else []), \
+             mock.patch.object(ap.shadow_log, "stats",
+                               side_effect=lambda layer, window=0: _shadow_stats(0, 0)), \
+             mock.patch.object(ap, "send_feishu", side_effect=fake_send):
+            new_state = ap.check_cycle(ax, state)
+        return new_state, sends
+
+    def test_success_advances_cursor_no_repeat(self):
+        recs = [self._rec(100.0, 0.92)]
+        state, sends = self._cycle({}, recs, [True])
+        self.assertEqual(len(sends), 1)
+        self.assertIn("语义 judge", sends[0])
+        self.assertEqual(state["judge_warn_cursor"], 100.0)
+        # 下轮同记录 → 游标过滤不重发（防抖）
+        state, sends = self._cycle(state, recs, [True])
+        self.assertEqual(sends, [])
+        self.assertEqual(state["judge_warn_cursor"], 100.0)
+
+    def test_send_failure_keeps_cursor_for_retry(self):
+        recs = [self._rec(100.0, 0.92), self._rec(200.0, 0.97)]
+        # 第一条成功、第二条失败 → 游标只推进到 100
+        state, sends = self._cycle({}, recs, [True, False])
+        self.assertEqual(len(sends), 2)
+        self.assertEqual(state["judge_warn_cursor"], 100.0)
+        # 下轮重试：只补发第二条
+        state, sends = self._cycle(state, recs, [True])
+        self.assertEqual(len(sends), 1)
+        self.assertIn("0.97", sends[0])
+        self.assertEqual(state["judge_warn_cursor"], 200.0)
 
 
 class TestImportDoesNotStartThread(unittest.TestCase):

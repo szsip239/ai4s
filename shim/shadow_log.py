@@ -8,6 +8,9 @@
 可用率告警消费。
 issue #103：PG 高分阻断试点的阻断事件同槽落条（blocked=True + block_threshold/model
 脱敏字段——告警卡片只需这些，绝无原文/key），alert_poller 新增阻断巡检 tail 消费。
+issue #101：judge warn 试点的告警事件同槽落条（warned=True + model 脱敏字段，
+对齐 #103 blocked 模式——只在超阈值告警条写入，普通判定条形状逐字节不变），
+alert_poller 新增 warn 巡检 tail 消费；stats 聚合 warned 数供观察期误报对账。
 
 纪律：
 - record 永不抛（检测路径纪律，与 pg_guard fail-open 同语义）——持久化失败只 print；
@@ -35,13 +38,17 @@ def _max_bytes() -> int:
 
 
 def record(layer: str, hit=None, score=None, confidence=None, latency_ms=None,
-           error=None, entities=None, path=None, blocked=None, block_threshold=None, model=None):
+           error=None, entities=None, path=None, blocked=None, block_threshold=None, model=None,
+           warned=None):
     """追加一条 shadow 判定。entities 只存命中数（不存字符串——不落原文）；
     error 非 None 表示该次判定不可用（hit/score/confidence 应为 None）。永不抛。
     issue #103：blocked=True 表示该次判定触发了 451 阻断（PG 高分试点；语义层永不阻断），
     block_threshold/model 随阻断条落盘——告警卡片脱敏字段（阈值/请求模型名，无原文无 key）。
     三个阻断字段只在非 None 时写入（未阻断条保持旧形状逐字节一致——jsonl 体积纪律，
-    消费方一律 rec.get()）。"""
+    消费方一律 rec.get()）。
+    issue #101：warned=True 表示该次 judge 判定触发了 warn 告警（action=warn 且
+    confidential 超阈值；不拦截——契约「语义层永不阻断」），model 随告警条落盘
+    （同款脱敏字段）；只在非 None 时写入，消费方 .get() 兜底。"""
     rec = {
         "ts": time.time(),
         "layer": layer,
@@ -52,7 +59,8 @@ def record(layer: str, hit=None, score=None, confidence=None, latency_ms=None,
         "error": error,
         "entities": entities,
     }
-    for k, v in (("blocked", blocked), ("block_threshold", block_threshold), ("model", model)):
+    for k, v in (("blocked", blocked), ("block_threshold", block_threshold), ("model", model),
+                 ("warned", warned)):  # warned：issue #101 judge warn 事件条
         if v is not None:
             rec[k] = v
     p = path or _default_path()
@@ -118,10 +126,13 @@ def tail(n: int, layer: str = None, path=None) -> list:
 
 def stats(layer: str, window: int = 50, path=None) -> dict:
     """最近 window 条该层判定的聚合：total/errors/error_rate/hits/avg_latency_ms/last_ts。
-    供 alert_poller 可用率告警与 admin 查询出口消费。无记录时数值归零、时间为 None。"""
+    供 alert_poller 可用率告警与 admin 查询出口消费。无记录时数值归零、时间为 None。
+    issue #101：warned=窗口内 warned=True 条数（judge warn 试点观察期误报对账口径：
+    warned/hits 同窗可比；pg 层无 warned 语义归零，两层形状对齐）。"""
     recs = tail(window, layer=layer, path=path)
     errors = sum(1 for r in recs if r.get("error"))
     hits = sum(1 for r in recs if r.get("hit"))
+    warned = sum(1 for r in recs if r.get("warned"))
     lats = [r["latency_ms"] for r in recs
             if r.get("latency_ms") is not None and not r.get("error")]
     return {
@@ -129,6 +140,7 @@ def stats(layer: str, window: int = 50, path=None) -> dict:
         "errors": errors,
         "error_rate": (errors / len(recs)) if recs else 0.0,
         "hits": hits,
+        "warned": warned,
         "avg_latency_ms": int(sum(lats) / len(lats)) if lats else None,
         "last_ts": recs[0]["ts"] if recs else None,
     }

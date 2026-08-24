@@ -16,6 +16,10 @@ PG 阻断专项段（issue #103）：admin 段之后——PUT 开阻断（block_
 block_threshold=0.9）→ v3 高分注入样本应 451 → 负例应放行 → PUT 还原（关阻断）→
 同高分样本再应放行；shim 未含 #103 阻断区块时（PUT 400 未知字段）SKIP 不 fail
 （集成前预期态）。
+judge warn 专项段（issue #101）：PG 阻断段之后——PUT action=warn → 经网关打一条
+semantic-vectors novel 涉密样本（应放行——契约「语义层永不阻断」）→ admin 查询出口
+shadow-verdicts 出现 warned=True 新条 → PUT 还原 action=shadow；shim 未含 #101 消费时
+（judge 判定超阈值落条但无 warned 键）SKIP 不 fail（对齐 #103 段探测纪律）。
 注入水位门禁段（issue #95）：主流程最前 subprocess 跑 injection-eval.py（normalize
 链路口径），不达标非零即回归失败。
 语义层水位门禁段（issue #99）：紧跟注入门禁段 subprocess 跑 semantic-eval.py
@@ -217,6 +221,108 @@ def run_pg_block_section(api_key, token):
     return results
 
 
+# judge warn 专项段（issue #101）样本：semantic-vectors novel 指代样本——词表外（整链路过
+# L1/L2 不拦，契约「语义层永不阻断」下应放行）；内部系统切流+排期语义信号强，
+# semantic-baseline 实测三轮稳定高置信检出（非低置信边界组）
+JUDGE_WARN_SAMPLE_NAME = "novel: 指代-蓝色大鱼切流"
+# 能力探测口径：judge 判定 confidential 且置信度达档（settings judge.threshold 现值 0.8）
+# 却零 warned 条 → 旧容器无 #101 消费 → SKIP（对齐 #103 段探测纪律）
+JUDGE_WARN_PROBE_CONF = 0.8
+# 重发次数上限：judge 共享端点非确定（实测同样本 temperature=0 下 conf 0.98 涉密 ↔ 0.99 clean
+# 翻转过一次）——重发吸收偶发翻转（同既有段 retry 纪律），三次全未达档才判失败
+JUDGE_WARN_ATTEMPTS = 3
+
+
+def run_judge_warn_section(api_key, token):
+    """judge warn 专项段（issue #101，自包含）：admin PUT action=warn（judge 其余键原样）→
+    经网关打一条 semantic-vectors novel 涉密样本（应放行——warn 不拦截）→ 轮询 admin
+    查询出口 /dlp-admin/shadow-verdicts?layer=judge 出现 warned=True 新条 → PUT 还原
+    （action=shadow）→ 同样本再应放行。
+    判定条隔离：judge 在响应后同步判定（实测 p50≈2.8s/p95≈7s），每次发送前取逐次水位线
+    （time.time()-1），轮询至该次判定条落盘再评估——段外存量/前段迟落记录不串档。
+    能力探测：shim 未含 #101 消费时（旧容器）judge 仍判定落条但无 warned 键——任一次
+    hit 且置信度达档却无 warned 条即判旧容器 → SKIP 不 fail（对齐 #103 段探测纪律）。
+    自清理：finally 还原 settings（judge 段缺 #93/#94 键的旧 settings.json 直 PUT 会被必填
+    校验 400——PUT 前补默认，与 shim setting_value/normalizeJudge 缺省对齐）。
+    前置条件：回归跑在默认配置（action=shadow）且 judge 链路可用（语义水位门禁段已先跑）。"""
+    print("\n==> judge warn 专项段（issue #101，settings PUT 自包含）")
+    results = []
+    vectors = json.load(open(os.path.join(DEPLOY_DIR, "tests", "semantic-vectors.json"),
+                             encoding="utf-8"))["vectors"]
+    sample = next((v for v in vectors if v["name"] == JUDGE_WARN_SAMPLE_NAME), None)
+    status, doc = tk._admin_api("GET", "/dlp-admin/settings", token)
+    if sample is None or status != 200 or not isinstance(doc, dict) or not isinstance(doc.get("judge"), dict):
+        results.append(("judgeWarn: 前置（novel 样本/settings GET）", False,
+                        f"http{status}" if sample is not None else "样本缺失"))
+    else:
+        original = doc  # 还原基准（含 version/_comment 及其余各段原样）
+
+        def _judge_full(section):
+            # judge 段缺 #93/#94 键的旧 settings.json：PUT 前补默认（与 shim setting_value
+            # 缺省对齐），否则必填校验 400
+            return {"threshold": 0.8, "action": "shadow", "sample_rate": 1.0,
+                    "max_concurrency": 2, **section}
+
+        def restore():
+            return tk._admin_api("PUT", "/dlp-admin/settings", token,
+                                 {**original, "judge": _judge_full(original["judge"])})
+
+        def recent_judge_recs(since_ts):
+            st, body = tk._admin_api("GET", "/dlp-admin/shadow-verdicts?layer=judge&n=50", token)
+            if st != 200 or not isinstance(body, dict):
+                return []
+            return [r for r in body.get("records") or [] if (r.get("ts") or 0) >= since_ts]
+
+        try:
+            trial = {**original,
+                     "judge": {**_judge_full(original["judge"]), "action": "warn"}}
+            status, body = tk._admin_api("PUT", "/dlp-admin/settings", token, trial)
+            results.append(("judgeWarn: PUT action=warn", status == 200, f"http{status}"))
+            if status == 200:
+                pass_checked = False
+                hit_rec = None  # 首条 hit 达档判定条（旧容器能力探测锚点）
+                warned_rec = None
+                for _attempt in range(JUDGE_WARN_ATTEMPTS):
+                    wm = time.time() - 1  # 本次发送水位线：隔离本次判定条（-1s 吸收时钟误差）
+                    st, reply = tk.send(sample["content"], api_key)
+                    got = tk.classify(st, reply, None)
+                    if not pass_checked:
+                        results.append(("judgeWarn: novel 涉密样本应放行（warn 不拦截）", got == "pass", got))
+                        pass_checked = True
+                    rec = None
+                    for _poll in range(6):  # 等本次判定条落盘（12s 封顶，覆盖 p95≈7s）
+                        time.sleep(2)
+                        rec = next((r for r in recent_judge_recs(wm)), None)
+                        if rec is not None:
+                            break
+                    if rec is None or rec.get("error"):
+                        continue  # 判定未落盘/judge 异常条：重发吸收，不算探测证据
+                    if rec.get("warned"):
+                        warned_rec = rec
+                        break
+                    if rec.get("hit") and (rec.get("confidence") or 0) >= JUDGE_WARN_PROBE_CONF:
+                        hit_rec = rec  # hit 达档但无 warned 键——旧容器特征；继续重发排除偶发
+                if warned_rec:
+                    results.append(("judgeWarn: 查询出口出现 warned=True 条", True,
+                                    f"conf={warned_rec.get('confidence')}"))
+                elif hit_rec is not None:
+                    print("[SKIP] judge warn 段：shim 未含 issue #101 消费（待集成），本段跳过不 fail")
+                    return []
+                else:
+                    results.append(("judgeWarn: 查询出口出现 warned=True 条", False,
+                                    f"{JUDGE_WARN_ATTEMPTS} 次发送均未获 hit 达档判定条（judge 水位/可用性问题）"))
+                status, _ = restore()
+                results.append(("judgeWarn: PUT 还原（action=shadow）", status == 200, f"http{status}"))
+                st, reply = tk.send(sample["content"], api_key)
+                got = tk.classify(st, reply, None)
+                results.append(("judgeWarn: 还原后同样本放行", got == "pass", got))
+        finally:
+            restore()
+    for name, ok, got in results:
+        print(f"[{'OK ' if ok else 'FAIL'}] {name}（got={got}）")
+    return results
+
+
 def run_injection_gate():
     """注入水位门禁段（issue #95）：subprocess 跑 injection-eval.py（默认 normalize 链路口径，
     输出透传），非零即门禁失败。
@@ -309,8 +415,14 @@ def main():
     if admin_token is not None:
         pg_block_results = run_pg_block_section(api_key, admin_token)
 
+    # judge warn 专项段（issue #101）：紧跟 PG 阻断段（同凭据与自还原纪律）；
+    # shim 未含 #101 消费时段内自探测 SKIP（不 fail）
+    judge_warn_results = []
+    if admin_token is not None:
+        judge_warn_results = run_judge_warn_section(api_key, admin_token)
+
     fails = [r for r in results if r["fail"]]
-    for name, ok, got in edm_fails + admin_results + pg_block_results:
+    for name, ok, got in edm_fails + admin_results + pg_block_results + judge_warn_results:
         if not ok:
             fails.append({"name": name, "expect": "reject", "got": got})
     print(f"\n总计 {len(results)} 样本：通过 {sum(1 for r in results if r['ok'])}，文档化 gap {sum(1 for r in results if not r['ok'] and not r['fail'])}，回归失败 {len(fails)}")

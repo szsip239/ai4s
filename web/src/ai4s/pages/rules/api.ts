@@ -95,7 +95,9 @@ export interface EdmDocSummary {
 }
 
 /** 统一 settings（issue #35）：PUT 整体替换（六段必填且字段齐全） */
-/** judge 动作分级（issue #94）：off 关 / shadow 仅记录 / warn 告警 / reject 拦截；消费执行在 #101 */
+/** judge 动作分级（issue #94）：off 关 / shadow 仅记录 / warn 告警 / reject 拦截；
+ * issue #101 消费落地：warn=超阈值告警不拦截；reject 契约「语义层永不阻断」不支持——
+ * 面板灰置不可选、validateJudge 拒绝保存，后端对存量 reject 值按 shadow 处理 */
 export type JudgeAction = 'off' | 'shadow' | 'warn' | 'reject';
 export interface JudgeSettings {
   enabled: boolean;

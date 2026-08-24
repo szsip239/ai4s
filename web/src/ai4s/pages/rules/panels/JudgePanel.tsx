@@ -2,8 +2,9 @@
  * 语义 judge 面板（issue #38）：独立面板消灭焦点移动（原 SettingsPanel focus 滚动定位）。
  * 只编辑 judge 段；保存时与最新 useSettings 缓存合并（edm/pg 段与 version/_comment 原样）整体 PUT，
  * 写后 invalidate——三面板读写同一份 settings.json 且不互相覆盖。
- * issue #94：置信度门槛 + 命中处置四档（关/仅记录/告警/拦截）开放配置；本票仅配置面，
- * 告警/拦截的执行在 #101 落地，当前实际行为等同「仅记录」。
+ * issue #94：置信度门槛 + 命中处置四档（关/仅记录/告警/拦截）开放配置。
+ * issue #101：告警档消费落地（超阈值落 warned 条 → alert_poller 巡检发飞书，不拦截）；
+ * reject 档契约「语义层永不阻断」不支持——UI 灰置不可选 + validateJudge 拒绝保存。
  * 外发警示常驻：真实员工流量启用前必须换内网模型（契约部署 checklist 硬性项）。
  */
 import { useEffect, useState } from 'react';
@@ -53,8 +54,8 @@ export function Ai4sJudgePanel({ onDirtyChange }: { onDirtyChange?: (dirty: bool
       <CardHeader>
         <CardTitle>语义 judge</CardTitle>
         <CardDescription>
-          用大模型判断一段话是否在变相提及公司商密（谐音、暗示这类精确词表抓不住的变形）。命中后按「命中处置」分级处理，当前实际执行为仅记录（告警、拦截的执行将在后续试点落地）；judge
-          服务不可用时自动退回纯词表检测，不影响正常请求
+          用大模型判断一段话是否在变相提及公司商密（谐音、暗示这类精确词表抓不住的变形）。命中后按「命中处置」分级处理：告警档超阈值时飞书通知管理员（不拦截，issue
+          #101 试点）；拦截档因契约「语义层永不阻断」不开放。judge 服务不可用时自动退回纯词表检测，不影响正常请求
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -113,8 +114,10 @@ export function Ai4sJudgePanel({ onDirtyChange }: { onDirtyChange?: (dirty: bool
                     <SelectContent>
                       <SelectItem value='off'>关（不送判定）</SelectItem>
                       <SelectItem value='shadow'>仅记录（记入日志，不影响使用）</SelectItem>
-                      <SelectItem value='warn'>告警（记录并通知管理员）</SelectItem>
-                      <SelectItem value='reject'>拦截（拒绝该次请求）</SelectItem>
+                      <SelectItem value='warn'>告警（记录并飞书通知管理员，不拦截）</SelectItem>
+                      <SelectItem value='reject' disabled>
+                        拦截（契约：语义层永不阻断，不开放）
+                      </SelectItem>
                     </SelectContent>
                   </Select>
                 </div>

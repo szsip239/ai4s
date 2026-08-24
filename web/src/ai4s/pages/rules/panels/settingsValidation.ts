@@ -6,14 +6,17 @@
  */
 import type { JudgeSettings, PgSettings } from '../api';
 
-/** judge 段预检：model/base_url 非空、timeout > 0、两段 prompt 非空、threshold 0~1、action 四档（issue #94） */
+/** judge 段预检：model/base_url 非空、timeout > 0、两段 prompt 非空、threshold 0~1、action 档位（issue #94）。
+ * issue #101 契约纪律：reject 档 schema 存在但「语义层永不阻断」不支持消费——面板拒绝保存，
+ * 用户须选 off/shadow/warn（后端 schema 仍兼容存量 reject 值，按 shadow 处理） */
 export function validateJudge(judge: JudgeSettings): string | null {
   if (!judge.model.trim() || !judge.base_url.trim()) return 'judge model/base_url 不能为空';
   if (!(judge.timeout > 0)) return 'judge timeout 须 > 0';
   if (!judge.prompt_system.trim() || !judge.prompt_fewshot.trim())
     return 'judge prompt_system/prompt_fewshot 不能为空';
   if (!(judge.threshold >= 0 && judge.threshold <= 1)) return 'judge threshold 须在 0~1';
-  if (!['off', 'shadow', 'warn', 'reject'].includes(judge.action)) return 'judge action 须为 关/仅记录/告警/拦截 之一';
+  if (judge.action === 'reject') return 'judge action 不可选拦截：契约约定语义层永不阻断（issue #101）';
+  if (!['off', 'shadow', 'warn'].includes(judge.action)) return 'judge action 须为 关/仅记录/告警 之一';
   return null;
 }
 

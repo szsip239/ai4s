@@ -15,6 +15,10 @@ axonhub 无事件源的事务靠主动轮询补齐。巡检项（状态翻转才
      （脱敏：层名/score/阻断阈值/请求模型名/时间，绝无原文无 key）——事件型告警非状态翻转，
      游标（alert-state.json pg_block_cursor=已告警条 ts）防抖，发送成功才推进、失败下轮重试；
      单轮条数封顶 PG_BLOCK_ALERT_BATCH（防阻断风暴刷屏，剩余下轮续发）
+  6. judge warn 事件（issue #101）：tail 消费 shadow_log judge 层 warned=True 条目，发现即发卡
+     （脱敏：项目/confidence/实体命中数/请求模型名/时间，绝无原文无 key 无实体字符串）——
+     同款事件型游标模型（judge_warn_cursor），发送成功才推进、失败下轮重试；
+     单轮条数封顶 JUDGE_WARN_ALERT_BATCH。warn 只告警不拦截（契约「语义层永不阻断」）
 
 审批同步（issue #19 提额 + issue #72 新建，approval_sync 泛化为多定义并存）：
   轮询飞书审批实例（APPROVAL_QUOTA_CODE / APPROVAL_KEY_CODE 两个定义各自轮询）：
@@ -114,6 +118,9 @@ SHADOW_LAYER_NAMES = {"judge": "语义 judge", "pg": "注入 PG"}
 # PG 阻断事件巡检（issue #103）：单轮发卡封顶（防风暴）+ tail 窗口（须覆盖两轮间积压）
 PG_BLOCK_ALERT_BATCH = _env_int("PG_BLOCK_ALERT_BATCH", 10)
 PG_BLOCK_ALERT_TAIL = _env_int("PG_BLOCK_ALERT_TAIL", 100)
+# judge warn 事件巡检（issue #101）：同款封顶/窗口（judge 同步在响应后判定，两轮间积压同量级）
+JUDGE_WARN_ALERT_BATCH = _env_int("JUDGE_WARN_ALERT_BATCH", 10)
+JUDGE_WARN_ALERT_TAIL = _env_int("JUDGE_WARN_ALERT_TAIL", 100)
 FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "")
 FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "")
 APPROVAL_QUOTA_CODE = os.environ.get("APPROVAL_QUOTA_CODE", "")
@@ -820,6 +827,34 @@ def pg_block_pending(recs: list, cursor: float) -> list:
     return out[:PG_BLOCK_ALERT_BATCH]
 
 
+def judge_warn_pending(recs: list, cursor: float) -> list:
+    """judge warn 事件待发卡列表（issue #101，纯函数，严格对齐 pg_block_pending 模型）：
+    judge 层 tail 记录（新到旧形状）+ 游标（上次已告警条 ts）→ [(ts, 告警文本)]（旧到新）。
+    只取 warned=True 且 ts > cursor 的条目（== 不重发）；单轮封顶 JUDGE_WARN_ALERT_BATCH
+    （截最旧一批先发，剩余条 ts 仍在游标后，下轮续发）。
+    卡片脱敏纪律：只带项目/confidence/实体命中数/请求模型名/时间——记录本身不落原文
+    不落 key 不落实体字符串（shadow_log #92/#101 字段设计），此处亦不引入任何文本字段。
+    项目名口径（查实记录）：/request webhook 线路格式仅 body.messages/model
+    （契约 docs/contracts/dlp-webhook-shim.md L21 + #103 阻断条同实证），无 gid/key
+    项目标识——#91 gid→名映射无从映射，卡片项目字段标「未知（请求链路无项目标识）」；
+    后续链路带上项目标识再补映射。"""
+    out = []
+    for r in sorted((r for r in recs if r.get("warned") and (r.get("ts") or 0) > cursor),
+                    key=lambda r: r["ts"]):
+        conf = r.get("confidence")
+        conf_txt = f"{conf:.2f}" if isinstance(conf, (int, float)) else "-"
+        entities = r.get("entities")
+        out.append((r["ts"], (
+            f"[ai4s 告警] 语义 judge 疑似涉密（warn 试点，告警未拦截）\n"
+            f"项目: 未知（请求链路无项目标识）\n"
+            f"confidence: {conf_txt}\n"
+            f"实体命中数: {entities if entities is not None else '-'}\n"
+            f"请求模型: {r.get('model') or '-'}\n"
+            f"时间: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(r['ts']))}"
+        )))
+    return out[:JUDGE_WARN_ALERT_BATCH]
+
+
 def check_cycle(ax: Axonhub, state: dict) -> dict:
     """一轮巡检；返回新状态。finding: key -> (bad: bool, 告警文本, 恢复文本)"""
     findings = {}
@@ -922,6 +957,20 @@ def check_cycle(ax: Axonhub, state: dict) -> dict:
             print(f"[alert] 已告警: pg 阻断 ts={ts}", flush=True)
     except Exception as e:
         print(f"[alert] PG 阻断巡检失败: {type(e).__name__}: {e}", flush=True)
+
+    # 6) judge warn 事件（issue #101）：严格对齐巡检项 5 模型——事件型告警（warn 无「恢复」语义），
+    # 独立游标 judge_warn_cursor 防抖（发送成功才推进、失败即止下轮重试）；
+    # tail/发送异常只记日志，不阻塞巡检主流程。warn 只告警不拦截（契约「语义层永不阻断」）
+    try:
+        pending = judge_warn_pending(shadow_log.tail(JUDGE_WARN_ALERT_TAIL, layer="judge"),
+                                     state.get("judge_warn_cursor") or 0.0)
+        for ts, text in pending:
+            if not send_feishu(text):
+                break
+            state["judge_warn_cursor"] = ts
+            print(f"[alert] 已告警: judge warn ts={ts}", flush=True)
+    except Exception as e:
+        print(f"[alert] judge warn 巡检失败: {type(e).__name__}: {e}", flush=True)
     return state
 
 

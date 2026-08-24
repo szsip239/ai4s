@@ -66,7 +66,7 @@ def load_settings() -> dict:
 _SETTINGS_SCHEMA = {
     "judge": {"enabled": "bool", "model": "str", "base_url": "str", "timeout": "number",
               "prompt_system": "str", "prompt_fewshot": "str",
-              "threshold": "number", "action": "str",  # 阈值/动作分级（issue #94）：schema 先行，消费在 #101
+              "threshold": "number", "action": "str",  # 阈值/动作分级（issue #94 schema；#101 消费落地 /request 链路）
               "sample_rate": "number", "max_concurrency": "int"},  # 采样率/并发预算（issue #93）
     "edm": {"enabled": "bool", "min_hits": "int"},
     "pg": {"enabled": "bool", "threshold": "number", "normalize": "bool",
@@ -174,6 +174,22 @@ def judge_budget_exit() -> None:
     global _JUDGE_INFLIGHT
     with _JUDGE_LOCK:
         _JUDGE_INFLIGHT = max(0, _JUDGE_INFLIGHT - 1)
+
+
+# judge action 档位可观测（issue #101）：reject 档在 schema 存在（#94）但契约不支持消费
+# （语义层永不阻断）——/request 按 shadow 同等处理并打一行提示。模块级记忆上次档位，
+# 状态变化才打（同 _layer_switch_observe 纪律），不每请求刷日志；并发下重复打一行可接受。
+_JUDGE_ACTION_STATE = {}
+
+
+def _judge_action_observe(action) -> None:
+    """每请求调用（基于已加载的 settings，成本可忽略）；只关心 reject 档提示，其余档位正常态不打。"""
+    prev = _JUDGE_ACTION_STATE.get("judge")
+    if prev == action:
+        return
+    _JUDGE_ACTION_STATE["judge"] = action
+    if action == "reject":
+        print("[settings] judge.action=reject 契约不支持（语义层永不阻断），按 shadow 仅记录处理", flush=True)
 
 # EDM 文档指纹（issue #29，L3 层 PoC）：归一化 shingle + SHA-256，命中≥阈值即 451。
 # 语料/指纹库 gitignored；指纹是单向哈希，不存原文。
@@ -967,8 +983,20 @@ class Handler(BaseHTTPRequestHandler):
         # issue #93：judge 输入改用掩码后文本（masked_msgs 提取，未命中时==messages 语义不变）——
         # 涉密候选原文不外发；采样率/并发预算只作用于本链路（/judge-test 直测不受限），
         # 未中采样/预算占满 = 跳过判定，不落 shadow_log 条（skip 非层异常，不污染 error_rate）
+        # issue #101 action 四档消费（judge.action 三级取值，默认 shadow）：
+        #   off=链路不送判定（即使 enabled=true 也跳过不落条——档位语义 ≡ enabled=false，
+        #       只管 /request 链路消费；/judge-test 直测不受影响，留显式人肉调试通道）；
+        #   shadow=现状仅记录（绝不带 warned 键）；
+        #   warn=shadow 全部 + confidential 且 confidence ≥ judge.threshold 时落 warned=True 条
+        #       （带请求模型名 model 脱敏字段，alert_poller 巡检项 6 消费发飞书；
+        #       告警不拦截——契约「语义层永不阻断」，响应早已定稿发回）；
+        #   reject=schema 存在（#94）但契约不支持消费：按 shadow 同等处理 + 状态变化 print
+        #       提示（_judge_action_observe），绝不阻断。契约门槛（换内网模型+观察期误报
+        #       可控+回归达标三者齐）满足前 reject 档不实现阻断语义，头注记账。
         judge_input = extract_text(masked_msgs)
-        if judge_input and setting_value(settings, "judge", "enabled", "JUDGE_ENABLED", False):
+        judge_action = setting_value(settings, "judge", "action", "JUDGE_ACTION", "shadow")
+        _judge_action_observe(judge_action)  # reject 档提示（issue #101，状态变化才打）
+        if judge_input and judge_action != "off" and setting_value(settings, "judge", "enabled", "JUDGE_ENABLED", False):
             if random.random() >= setting_value(settings, "judge", "sample_rate", "JUDGE_SAMPLE_RATE", 1.0):
                 print("[semantic.shadow] skipped (sampling)", flush=True)
             elif not judge_budget_try_enter(setting_value(settings, "judge", "max_concurrency", "JUDGE_MAX_CONCURRENCY", 2)):
@@ -979,9 +1007,18 @@ class Handler(BaseHTTPRequestHandler):
                     v = judge_text(judge_input)
                     _ms = int((time.monotonic() - _t0) * 1000)
                     if v is not None:
+                        # warn 档超阈值 → warned 事件条（对齐 #103 blocked 模式：键只在告警条写入，
+                        # 普通判定条形状逐字节不变；model=请求模型名脱敏字段，无原文无 key）
+                        judge_threshold = setting_value(settings, "judge", "threshold", "JUDGE_THRESHOLD", 0.8)
+                        warned = (judge_action == "warn" and v["confidential"]
+                                  and v["confidence"] >= judge_threshold)
                         shadow_log.record("judge", hit=v["confidential"], confidence=v["confidence"],
-                                          latency_ms=_ms, entities=len(v["entities"]))
+                                          latency_ms=_ms, entities=len(v["entities"]),
+                                          warned=True if warned else None,
+                                          model=((payload.get("body") or {}).get("model") if warned else None))
                         print(f"[semantic.shadow] confidential={v['confidential']} entities={','.join(v['entities']) or '-'} confidence={v['confidence']:.2f}", flush=True)
+                        if warned:
+                            print(f"[semantic.warn] confidence={v['confidence']:.2f} >= {judge_threshold}（告警巡检消费，未拦截）", flush=True)
                     else:
                         shadow_log.record("judge", error="unavailable", latency_ms=_ms)
                 finally:
