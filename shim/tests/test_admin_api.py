@@ -10,6 +10,7 @@ import contextlib
 import io
 import json
 import os
+import queue
 import subprocess
 import sys
 import tempfile
@@ -2026,6 +2027,158 @@ class PgNormalizeFlagTest(unittest.TestCase):
         with mock.patch.object(pg_engine, "score", side_effect=RuntimeError("boom")), contextlib.redirect_stdout(buf):
             self.assertIsNone(shim_app.pg_guard("任意文本"))
         self.assertIn("[injection.shadow] fail-open: RuntimeError", buf.getvalue())
+
+
+class PgAsyncShadowTest(unittest.TestCase):
+    """PG 判定异步化（issue #97）：推理（p50≈50ms/p95≈136ms）挪有界后台执行器，
+    /request handler 发完响应即释放线程；判定/记录形状与同步版一致。
+    fixture 对齐 JudgeShadowMaskTest 模式：临时 settings.json + SHADOW_LOG_PATH 注入 tmp，
+    mock pg_engine.score 顶替真实推理；judge 关隔离。执行器结构直测：提交/执行/上限丢弃/异常吞没。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        d = self._tmp.name
+        self.log_path = os.path.join(d, "shadow.jsonl")
+        self.settings_path = os.path.join(d, "settings.json")
+        self._fixture = json.loads(json.dumps(_SETTINGS_FIXTURE))
+        self._fixture["judge"]["enabled"] = False  # 隔离 judge 链路，只验 PG 异步段
+        with open(self.settings_path, "w", encoding="utf-8") as f:
+            json.dump(self._fixture, f, ensure_ascii=False)
+        self._saved = shim_app.SETTINGS_PATH
+        shim_app.SETTINGS_PATH = self.settings_path
+        # env 隔离（对齐 PgNormalizeFlagTest 纪律）：开发机导出的 PG_* env 会顶替 JSON 键级
+        self._saved_env = {k: os.environ.pop(k, None) for k in ("PG_ENABLED", "PG_THRESHOLD", "PG_NORMALIZE")}
+        self._saved_env["SHADOW_LOG_PATH"] = os.environ.get("SHADOW_LOG_PATH")
+        os.environ["SHADOW_LOG_PATH"] = self.log_path
+
+    def tearDown(self):
+        shim_app.SETTINGS_PATH = self._saved
+        for k, v in self._saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        self._tmp.cleanup()
+
+    def _wait_log(self, timeout=3.0):
+        """等异步判定落条；返回最后一条记录或 None。"""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if os.path.exists(self.log_path):
+                with open(self.log_path, encoding="utf-8") as f:
+                    lines = [l for l in f.read().splitlines() if l.strip()]
+                if lines:
+                    return json.loads(lines[-1])
+            time.sleep(0.05)
+        return None
+
+    def _post(self, content="普通业务咨询，请帮我写周报"):
+        return _request("POST", "/request",
+                        payload={"body": {"messages": [{"role": "user", "content": content}]}})
+
+    def test_response_returned_before_pg_completes(self):
+        """核心 AC：score 卡住未返回时 /request 应答已到手（判定不占应答线程预算）；
+        放行 score 后判定最终落条（layer/hit/score/latency_ms 形状与同步版一致）。"""
+        started = threading.Event()
+        proceed = threading.Event()
+
+        def slow_score(_text):
+            started.set()
+            proceed.wait(5)
+            return 0.9
+
+        with mock.patch.object(pg_engine, "score", side_effect=slow_score):
+            t0 = time.monotonic()
+            status, body = self._post()
+            elapsed = time.monotonic() - t0
+            self.assertEqual(status, 200)
+            self.assertEqual(body["action"].get("reason"), "pass")
+            self.assertLess(elapsed, 3)  # score 仍阻塞（proceed 未放行）应答已到手
+            self.assertTrue(started.wait(2))  # 判定已提交执行器并开始执行
+            proceed.set()
+            rec = self._wait_log()
+        self.assertIsNotNone(rec, "判定最终应落 shadow_log 条")
+        self.assertEqual(rec["layer"], "pg")
+        self.assertIs(rec["hit"], True)
+        self.assertEqual(rec["score"], 0.9)
+        self.assertIsNone(rec["error"])
+        self.assertIsNotNone(rec["latency_ms"])
+
+    def test_record_shape_and_latency_pure_inference(self):
+        """低于阈值：hit=False、无 malicious print；latency_ms=纯判定耗时口径（排队不计）——
+        score 内的 120ms 须计入。"""
+        def score_042(_text):
+            time.sleep(0.12)
+            return 0.42
+
+        with mock.patch.object(pg_engine, "score", side_effect=score_042), mock.patch("builtins.print") as m:
+            status, _ = self._post()
+            self.assertEqual(status, 200)
+            rec = self._wait_log()
+        self.assertIsNotNone(rec)
+        self.assertEqual(rec["layer"], "pg")
+        self.assertIs(rec["hit"], False)
+        self.assertEqual(rec["score"], 0.42)
+        self.assertGreaterEqual(rec["latency_ms"], 100)
+        printed = "\n".join(str(c.args[0]) for c in m.call_args_list if c.args)
+        self.assertNotIn("[injection.shadow] malicious", printed)
+
+    def test_submit_backlog_full_drops(self):
+        """有界：积压满 → 丢弃并 print 一行；返回 False 不抛；不落 shadow_log 条
+        （丢弃非层异常，同 #93 skip 语义，不污染 error_rate）。"""
+        q = queue.Queue(maxsize=shim_app.PG_ASYNC_BACKLOG)
+        for _ in range(shim_app.PG_ASYNC_BACKLOG):
+            q.put_nowait(lambda: None)
+        with mock.patch("builtins.print") as m:
+            ok = shim_app.pg_guard_async("任意文本", 0.7, q=q)
+        self.assertFalse(ok)
+        self.assertEqual(q.qsize(), shim_app.PG_ASYNC_BACKLOG)  # 未入队
+        self.assertFalse(os.path.exists(self.log_path))
+        printed = "\n".join(str(c.args[0]) for c in m.call_args_list if c.args)
+        self.assertIn("[injection.shadow] dropped", printed)
+
+    def test_submit_enqueues_without_executing(self):
+        """提交即返回（不等执行）：无 worker 消费时 job 留在队列里；job 体执行后记录落条。"""
+        q = queue.Queue(maxsize=shim_app.PG_ASYNC_BACKLOG)
+        with mock.patch.object(pg_engine, "score", return_value=0.5):
+            self.assertTrue(shim_app.pg_guard_async("任意文本", 0.7, q=q))
+            self.assertEqual(q.qsize(), 1)  # 已入队未执行（handler 线程不受推理阻塞）
+            q.get_nowait()()  # 手动执行 job 体（worker 的活）
+        rec = self._wait_log()
+        self.assertIsNotNone(rec)
+        self.assertEqual((rec["layer"], rec["score"], rec["hit"]), ("pg", 0.5, False))
+
+    def test_worker_swallows_job_exception(self):
+        """异常吞没：job 抛异常只 print 一行，worker 不死继续消费后续 job
+        （防御双保险——pg_guard 自身已 fail-open）。"""
+        q = queue.Queue()
+        threading.Thread(target=shim_app._pg_worker, args=(q,), daemon=True).start()
+        done = threading.Event()
+
+        def boom():
+            raise RuntimeError("boom")
+
+        with mock.patch("builtins.print") as m:
+            q.put(boom)
+            q.put(done.set)
+            self.assertTrue(done.wait(2))  # 异常 job 后 worker 仍活着消费了下一个
+        printed = "\n".join(str(c.args[0]) for c in m.call_args_list if c.args)
+        self.assertIn("[injection.shadow] executor", printed)
+
+    def test_import_app_starts_no_executor(self):
+        """import app 不起执行器（同 alert_poller「import 不起线程」纪律，单测环境安全）：
+        子进程裸 import 后队列未创建。"""
+        shim_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        code = (
+            "import sys\n"
+            f"sys.path.insert(0, {shim_dir!r})\n"
+            "import app\n"
+            "assert app._pg_async_queue is None, 'import 即启动执行器'\n"
+            "print('import-no-executor-ok')\n"
+        )
+        r = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("import-no-executor-ok", r.stdout)
 
 
 class LayerSwitchTest(unittest.TestCase):

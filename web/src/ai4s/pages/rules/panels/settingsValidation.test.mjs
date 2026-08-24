@@ -54,3 +54,9 @@ test('validatePg: threshold 0~1（既有行为回归）', () => {
   assert.equal(validatePg({ enabled: true, threshold: 0.7, normalize: false }), null);
   assert.match(validatePg({ enabled: true, threshold: 2, normalize: false }), /threshold/);
 });
+
+test('validatePg: normalize 开关两档均合法（issue #97 面板开关读写键位）', () => {
+  // normalize 是布尔开关（后端 admin_api 类型校验兜底），预检不应按取值拒绝任何一档
+  assert.equal(validatePg({ enabled: true, threshold: 0.7, normalize: true }), null);
+  assert.equal(validatePg({ enabled: false, threshold: 0.7, normalize: false }), null);
+});

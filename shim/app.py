@@ -15,6 +15,7 @@
 """
 import json
 import os
+import queue
 import random
 import re
 import threading
@@ -385,7 +386,8 @@ def pg_guard(text: str):
     issue #67 进程内化：import pg_engine 在 enabled 判定之后（issue #49 纪律——
     pg.enabled=false 时 import 都不发生，检测路径零 PG 开销）。推理同步阻塞
     （原 HTTP 同为同步；实测 p50≈50ms/p95≈136ms，4000 字符截断 + 512 token 截断封顶，
-    无超时概念）；异常=放行+记日志（与原 HTTP 错误同语义，只记异常类型不含文本）。"""
+    无超时概念）；issue #97 起 /request 调用点经 pg_guard_async 有界异步执行器提交，
+    本函数本体（判定语义）不变；异常=放行+记日志（与原 HTTP 错误同语义，只记异常类型不含文本）。"""
     if not text:
         return None
     settings = load_settings()
@@ -402,6 +404,65 @@ def pg_guard(text: str):
     except Exception as e:
         print(f"[injection.shadow] fail-open: {type(e).__name__}", flush=True)
         return None
+
+
+# PG 判定异步化（issue #97）：推理（p50≈50ms/p95≈136ms）挪出 /request handler 线程——
+# 响应定稿发回后，PG 段（score→shadow_log.record/malicious print，#92 记录形状原样）提交到
+# 有界单线程执行器，handler 立即返回释放线程。单 worker 串行推理：PG 仅 shadow 观测，
+# 串行封顶 CPU（onnxruntime 会话进程级单例，无需并发）；积压超上限丢弃并 print 一行——
+# 不抛、不落 shadow_log error 条（丢弃非层异常，同 #93 skip 语义，不污染 error_rate）。
+# latency_ms 口径与同步版一致：纯判定耗时（pg_guard 调用全程，含 settings 重读+推理），
+# 排队等待不计。惰性首用启动 + daemon 线程：import app 不起执行器（同 alert_poller
+# 「import 不起线程」纪律，单测环境安全），不阻止进程退出。
+PG_ASYNC_BACKLOG = 64  # 积压上限（shadow 观测丢条可接受，内存/线程占用封顶优先）
+_pg_async_queue = None  # None=未启动
+_pg_async_lock = threading.Lock()
+
+
+def _pg_worker(q) -> None:
+    """执行器消费循环：逐 job 执行；job 异常吞没只 print（pg_guard 自身已 fail-open，此为防御双保险）。"""
+    while True:
+        job = q.get()
+        try:
+            job()
+        except Exception as e:
+            print(f"[injection.shadow] executor 吞没异常: {type(e).__name__}", flush=True)
+
+
+def _pg_executor():
+    """取执行器队列（惰性首用启动 daemon worker；双重检查锁保证单 worker）。"""
+    global _pg_async_queue
+    if _pg_async_queue is None:
+        with _pg_async_lock:
+            if _pg_async_queue is None:
+                q = queue.Queue(maxsize=PG_ASYNC_BACKLOG)
+                threading.Thread(target=_pg_worker, args=(q,), name="pg-shadow", daemon=True).start()
+                _pg_async_queue = q
+    return _pg_async_queue
+
+
+def pg_guard_async(text: str, threshold, q=None) -> bool:
+    """提交一次 PG shadow 判定（score→落条/print，判定语义与记录形状和同步版逐字段一致）。
+    返回 True=已受理；False=积压满丢弃（print 一行，不落条、不抛）。q 可注入测试队列（直测 seam）。"""
+    dst = q if q is not None else _pg_executor()
+
+    def job():
+        _t0 = time.monotonic()
+        score = pg_guard(text)
+        _ms = int((time.monotonic() - _t0) * 1000)  # latency_ms=纯判定耗时，排队不计（头注口径）
+        if score is not None:
+            shadow_log.record("pg", hit=score >= threshold, score=score, latency_ms=_ms)
+            if score >= threshold:
+                print(f"[injection.shadow] malicious={score:.3f} >= {threshold}", flush=True)
+        else:
+            shadow_log.record("pg", error="unavailable", latency_ms=_ms)
+
+    try:
+        dst.put_nowait(job)
+        return True
+    except queue.Full:
+        print(f"[injection.shadow] dropped (async backlog full {PG_ASYNC_BACKLOG})", flush=True)
+        return False
 
 
 # ---- 归一化前置（issue #22）----
@@ -875,17 +936,12 @@ class Handler(BaseHTTPRequestHandler):
         # 注入检测 shadow（issue #30）：PromptGuard 2 评分 ≥阈值记日志，不阻断
         # issue #92：同上持久化；调用点显式判 enabled——enabled 且 score 为 None 即本次判定不可用；
         # 空 text 跳过不落条（同 judge 侧，code-review 修复）
+        # issue #97：判定段（score→落条/print，形状语义不变）整体提交有界异步执行器 pg_guard_async——
+        # 推理不再占 handler 线程预算（p50≈50ms/p95≈136ms），响应发完即释放；
+        # 积压满丢弃=跳过判定，不落 error 条（同 #93 skip 语义）
         pg_threshold = setting_value(settings, "pg", "threshold", "PG_THRESHOLD", 0.7)
         if text and setting_value(settings, "pg", "enabled", "PG_ENABLED", False):
-            _t0 = time.monotonic()
-            score = pg_guard(text)
-            _ms = int((time.monotonic() - _t0) * 1000)
-            if score is not None:
-                shadow_log.record("pg", hit=score >= pg_threshold, score=score, latency_ms=_ms)
-                if score >= pg_threshold:
-                    print(f"[injection.shadow] malicious={score:.3f} >= {pg_threshold}", flush=True)
-            else:
-                shadow_log.record("pg", error="unavailable", latency_ms=_ms)
+            pg_guard_async(text, pg_threshold)
 
     def do_PUT(self):
         # 非 admin 路径回 404 而非 BaseHTTPRequestHandler 默认 501：有意语义——

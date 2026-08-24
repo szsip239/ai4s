@@ -2,6 +2,7 @@
  * 注入 PG 面板（issue #38）：独立面板消灭焦点移动（原 SettingsPanel focus 滚动定位）。
  * 只编辑 pg 段；保存时与最新 useSettings 缓存合并（judge/edm 段与 version/_comment 原样）整体 PUT，
  * 写后 invalidate——三面板读写同一份 settings.json 且不互相覆盖。
+ * issue #97：补 normalize 打分前置归一化开关（键 issue #44 起即有、后端校验已有，面板此前只有 threshold）。
  */
 import { useEffect, useState } from 'react';
 import { IconLoader2 } from '@tabler/icons-react';
@@ -72,6 +73,13 @@ export function Ai4sPgPanel({ onDirtyChange }: { onDirtyChange?: (dirty: boolean
                   value={pg.threshold}
                   onChange={(e) => mutate({ ...pg, threshold: Number(e.target.value) })}
                 />
+              </div>
+              <div className='flex items-center justify-between gap-4'>
+                <div className='text-sm text-muted-foreground'>
+                  归一化识别：评分前先还原 base64 伪装内容、清除不可见字符、全角转半角——只改打分输入，
+                  员工原文照常转发；打开后对绕过伪装的注入更敏感，误报略增
+                </div>
+                <Switch checked={pg.normalize} onCheckedChange={(c) => mutate({ ...pg, normalize: c })} />
               </div>
               <div className='flex items-center justify-end gap-3'>
                 {formError && <span className='text-sm text-destructive'>{formError}</span>}
