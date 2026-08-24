@@ -16,6 +16,8 @@ issue #91 增补：P2-2 飞书新建成员校验（非成员不建 Key+回执文
 项目名（含 myProjects 失败回退 gid）；P2-4 自动入项按 gid 匹配（改名仍命中/缺失跳过）。
 issue #92 增补：shadow 层可用率巡检（shadow_avail_findings 纯函数阈值/样本防抖；
 check_cycle 接入的翻转/防抖/恢复与 shadow_log.stats 异常不破坏循环——stats 在线路边界 mock）。
+issue #103 增补：PG 阻断事件巡检（pg_block_pending 纯函数游标过滤/旧到新排序/批量封顶/卡片
+脱敏；check_cycle 游标推进——发送成功才推进、失败下轮重试；tail 在线路边界 mock）。
 """
 import json
 import io
@@ -1116,6 +1118,113 @@ class TestCheckCycleShadowAvail(unittest.TestCase):
             ax.gql.side_effect = RuntimeError("gql down")
             state = ap.check_cycle(ax, {})
         self.assertEqual(state, {})
+
+
+class TestPgBlockPending(unittest.TestCase):
+    """issue #103：PG 阻断事件巡检 pg_block_pending 纯函数——游标过滤（> 游标才发）、
+    旧到新排序（先发生先告警）、批量封顶（风暴防刷，剩余下轮续发）、卡片脱敏
+    （层名/score/阈值/模型/时间，无原文）。"""
+
+    def _rec(self, ts, score=0.95, blocked=True, model="echo-test", thr=0.9):
+        return {"ts": ts, "layer": "pg", "hit": True, "score": score, "latency_ms": 120,
+                "error": None, "blocked": blocked, "block_threshold": thr, "model": model}
+
+    def test_new_entries_oldest_first(self):
+        # tail 返回新到旧；待发卡按旧到新排序
+        recs = [self._rec(300.0), self._rec(100.0), self._rec(200.0)]
+        out = ap.pg_block_pending(recs, 0.0)
+        self.assertEqual([ts for ts, _ in out], [100.0, 200.0, 300.0])
+
+    def test_cursor_filters_seen(self):
+        recs = [self._rec(300.0), self._rec(200.0), self._rec(100.0)]
+        out = ap.pg_block_pending(recs, 200.0)
+        self.assertEqual([ts for ts, _ in out], [300.0])  # > 游标才发（== 不重发）
+
+    def test_unblocked_records_ignored(self):
+        recs = [self._rec(100.0, blocked=False), self._rec(200.0, blocked=None),
+                {"ts": 300.0, "layer": "pg", "hit": True, "score": 0.8}]  # 旧记录无 blocked 键
+        self.assertEqual(ap.pg_block_pending(recs, 0.0), [])
+
+    def test_batch_cap_keeps_oldest(self):
+        recs = [self._rec(float(i)) for i in range(20)]
+        out = ap.pg_block_pending(recs, -1.0)
+        self.assertEqual(len(out), ap.PG_BLOCK_ALERT_BATCH)
+        # 截最旧一批先发；剩余条 ts > 新游标，下轮续发
+        self.assertEqual(out[-1][0], float(ap.PG_BLOCK_ALERT_BATCH - 1))
+
+    def test_card_text_sanitized(self):
+        out = ap.pg_block_pending([self._rec(1787184000.0, score=0.998, model="gpt-x")], 0.0)
+        self.assertEqual(len(out), 1)
+        text = out[0][1]
+        self.assertIn("注入 PG", text)
+        self.assertIn("0.998", text)
+        self.assertIn("0.9", text)
+        self.assertIn("gpt-x", text)
+        self.assertIn("2026-", text)  # ts 格式化为 UTC 时间
+        self.assertNotIn("DAN", text)  # 无原文（卡片字段仅层名/score/阈值/模型/时间）
+
+
+class TestCheckCyclePgBlockCursor(unittest.TestCase):
+    """issue #103：check_cycle 接入阻断事件巡检——发送成功才推进游标；失败不推进、下轮重试。"""
+
+    def _rec(self, ts, score):
+        return {"ts": ts, "layer": "pg", "hit": True, "score": score, "latency_ms": 120,
+                "error": None, "blocked": True, "block_threshold": 0.9, "model": "m"}
+
+    def _cycle(self, state, recs, send_results):
+        sends = []
+        ax = mock.Mock()
+        ax.gql.side_effect = RuntimeError("gql down")
+        send_iter = iter(send_results)
+
+        def fake_send(text):
+            sends.append(text)
+            return next(send_iter, True)
+
+        with mock.patch.object(ap, "http_get", return_value=True), \
+             mock.patch.object(ap.shadow_log, "tail",
+                               side_effect=lambda n, layer=None: recs if layer == "pg" else []), \
+             mock.patch.object(ap.shadow_log, "stats",
+                               side_effect=lambda layer, window=0: _shadow_stats(0, 0)), \
+             mock.patch.object(ap, "send_feishu", side_effect=fake_send):
+            new_state = ap.check_cycle(ax, state)
+        return new_state, sends
+
+    def test_success_advances_cursor_no_repeat(self):
+        recs = [self._rec(100.0, 0.95)]
+        state, sends = self._cycle({}, recs, [True])
+        self.assertEqual(len(sends), 1)
+        self.assertIn("提示词注入", sends[0])
+        self.assertEqual(state["pg_block_cursor"], 100.0)
+        # 下轮同记录 → 游标过滤不重发（防抖）
+        state, sends = self._cycle(state, recs, [True])
+        self.assertEqual(sends, [])
+        self.assertEqual(state["pg_block_cursor"], 100.0)
+
+    def test_send_failure_keeps_cursor_for_retry(self):
+        recs = [self._rec(100.0, 0.95), self._rec(200.0, 0.97)]
+        # 第一条成功、第二条失败 → 游标只推进到 100
+        state, sends = self._cycle({}, recs, [True, False])
+        self.assertEqual(len(sends), 2)
+        self.assertEqual(state["pg_block_cursor"], 100.0)
+        # 下轮重试：只补发第二条
+        state, sends = self._cycle(state, recs, [True])
+        self.assertEqual(len(sends), 1)
+        self.assertIn("0.97", sends[0])
+        self.assertEqual(state["pg_block_cursor"], 200.0)
+
+    def test_tail_failure_does_not_break_cycle(self):
+        # shadow_log 读取异常：本轮跳过阻断分支，循环不抛、既有状态不污染
+        ax = mock.Mock()
+        ax.gql.side_effect = RuntimeError("gql down")
+        with mock.patch.object(ap, "http_get", return_value=True), \
+             mock.patch.object(ap.shadow_log, "tail", side_effect=RuntimeError("io err")), \
+             mock.patch.object(ap.shadow_log, "stats",
+                               side_effect=lambda layer, window=0: _shadow_stats(0, 0)), \
+             mock.patch.object(ap, "send_feishu", return_value=True) as s:
+            state = ap.check_cycle(ax, {})
+        self.assertEqual(state, {})
+        s.assert_not_called()
 
 
 class TestImportDoesNotStartThread(unittest.TestCase):

@@ -56,6 +56,26 @@ class TestRecordTail(unittest.TestCase):
         # 检测路径纪律：持久化失败绝不抛（只记日志），不拖垮 /request 应答
         shadow_log.record("judge", hit=True, path="/nonexistent-dir-xyz/deep/shadow.jsonl")
 
+    def test_record_blocked_roundtrip(self):
+        """阻断事件字段（issue #103）：blocked/block_threshold/model 随条落盘并读回
+        （alert_poller 阻断巡检消费）；未阻断条三键为 None；stats 消费不炸
+        （blocked 条 hit=True 照常计入 hits）。"""
+        shadow_log.record("pg", hit=True, score=0.998, latency_ms=140,
+                          blocked=True, block_threshold=0.9, model="echo-test", path=self.path)
+        shadow_log.record("pg", hit=False, score=0.3, latency_ms=50, path=self.path)
+        recs = shadow_log.tail(10, path=self.path)
+        self.assertEqual(len(recs), 2)
+        b = recs[1]  # 新到旧：阻断条先落盘，是较旧一条
+        self.assertIs(b["blocked"], True)
+        self.assertEqual(b["block_threshold"], 0.9)
+        self.assertEqual(b["model"], "echo-test")
+        # 未阻断条保持旧形状：三个阻断键不写入（消费方 .get() 语义）
+        self.assertNotIn("blocked", recs[0])
+        self.assertNotIn("block_threshold", recs[0])
+        self.assertNotIn("model", recs[0])
+        s = shadow_log.stats("pg", window=10, path=self.path)
+        self.assertEqual((s["total"], s["hits"], s["errors"]), (2, 1, 0))
+
 
 class TestStats(unittest.TestCase):
     def setUp(self):

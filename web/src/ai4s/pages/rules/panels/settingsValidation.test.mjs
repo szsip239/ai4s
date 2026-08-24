@@ -51,12 +51,24 @@ test('validateJudge: 既有规则不回归（空 model/timeout/prompt 仍拒绝�
 });
 
 test('validatePg: threshold 0~1（既有行为回归）', () => {
-  assert.equal(validatePg({ enabled: true, threshold: 0.7, normalize: false }), null);
-  assert.match(validatePg({ enabled: true, threshold: 2, normalize: false }), /threshold/);
+  const base = { enabled: true, threshold: 0.7, normalize: false, block_enabled: false, block_threshold: 0.9 };
+  assert.equal(validatePg(base), null);
+  assert.match(validatePg({ ...base, threshold: 2 }), /threshold/);
 });
 
 test('validatePg: normalize 开关两档均合法（issue #97 面板开关读写键位）', () => {
   // normalize 是布尔开关（后端 admin_api 类型校验兜底），预检不应按取值拒绝任何一档
-  assert.equal(validatePg({ enabled: true, threshold: 0.7, normalize: true }), null);
-  assert.equal(validatePg({ enabled: false, threshold: 0.7, normalize: false }), null);
+  const base = { enabled: true, threshold: 0.7, block_enabled: false, block_threshold: 0.9 };
+  assert.equal(validatePg({ ...base, normalize: true }), null);
+  assert.equal(validatePg({ ...base, enabled: false, normalize: false }), null);
+});
+
+test('validatePg: block_threshold 0~1 预检（issue #103 阻断阈值；放行用例含两新键）', () => {
+  const base = { enabled: true, threshold: 0.7, normalize: false, block_enabled: true, block_threshold: 0.9 };
+  assert.equal(validatePg(base), null); // 阻断开放行用例
+  assert.match(validatePg({ ...base, block_threshold: 1.5 }), /block_threshold/);
+  assert.match(validatePg({ ...base, block_threshold: -0.1 }), /block_threshold/);
+  assert.match(validatePg({ ...base, block_threshold: Number.NaN }), /block_threshold/);
+  // block_enabled 是布尔开关（后端类型校验兜底），预检不按取值拒绝
+  assert.equal(validatePg({ ...base, block_enabled: false }), null);
 });

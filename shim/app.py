@@ -10,6 +10,9 @@
 检测职责划分：
   - 非 CJK 词：Presidio /analyze（ad-hoc deny-list recognizer 随请求注入，词表热更新）
   - CJK 词：shim 直配兜底（Presidio deny-list 依赖 NLP 分词，中文不可靠）
+  - 注入 PG：PromptGuard 2 进程内打分，默认 shadow 仅记录不阻断（fail-open）；issue #103
+    高分档阻断试点——pg.block_enabled 开 → /request 应答前同步判定（推理延迟回请求路径
+    是试点明示代价），score ≥ pg.block_threshold（默认 0.9）返回 451，低于阈值维持 shadow
 本模块（检测路径）依赖仅标准库；镜像 python:3.12-slim（issue #48 起含 doc_extract 文档解析依赖，
 检测路径不 import 第三方库，纪律不变）。
 """
@@ -66,7 +69,8 @@ _SETTINGS_SCHEMA = {
               "threshold": "number", "action": "str",  # 阈值/动作分级（issue #94）：schema 先行，消费在 #101
               "sample_rate": "number", "max_concurrency": "int"},  # 采样率/并发预算（issue #93）
     "edm": {"enabled": "bool", "min_hits": "int"},
-    "pg": {"enabled": "bool", "threshold": "number", "normalize": "bool"},
+    "pg": {"enabled": "bool", "threshold": "number", "normalize": "bool",
+           "block_enabled": "bool", "block_threshold": "number"},  # 阻断试点（issue #103）
     # 分层总开关（issue #40）：默认 True 保现网行为；关掉即整层跳过（l1=格式规则全族，
     # l2=词表/Presidio PII，response=响应侧整分支）
     "l1": {"enabled": "bool"},
@@ -887,6 +891,55 @@ class Handler(BaseHTTPRequestHandler):
                 },
             )
             return
+        # PG 高分档阻断试点（issue #103）：pg.block_enabled 开 → 应答前同步跑一次 pg_guard。
+        # 明示代价：PG 本地推理（实测 p50≈50ms/p95≈136ms）回到请求路径——试点期只拦高分档
+        # （block_threshold 默认 0.9，v3 水位 14/46 检出、四档零误报），延迟换注入拦阻能力；
+        # block_enabled 关（默认）= 现状纯异步零变化（下方 shadow 段仍走 pg_guard_async）。
+        # 判定结果三分支：≥ 阻断阈值 → 451（应答体对齐词表/EDM 451 形状，不含原文）+
+        #   blocked 条落 shadow_log（脱敏：score/阈值/模型名，飞书告警由 alert_poller 巡检消费，
+        #   shim 不新增同步外发）；< 阻断阈值 → 放行，本次 score 留给应答后 shadow 落条复用
+        #   （只跑一次推理）；None（fail-open）→ 放行 + error 落条（与异步版同语义）。
+        # 词表/EDM 已 451 的请求不进本段（上方已 return，与 shadow 段既有口径一致）；
+        # 空 text / pg.enabled=false 整体跳过（总开关优先，不打分不落条）。
+        pg_checked = False  # 本请求是否已同步判定（score 见 pg_score，None=fail-open）
+        pg_score = None
+        pg_ms = None
+        if (setting_value(settings, "pg", "block_enabled", "PG_BLOCK_ENABLED", False)
+                and text and setting_value(settings, "pg", "enabled", "PG_ENABLED", False)):
+            pg_block_threshold = setting_value(settings, "pg", "block_threshold", "PG_BLOCK_THRESHOLD", 0.9)
+            _pg_t0 = time.monotonic()
+            pg_score = pg_guard(text)
+            pg_ms = int((time.monotonic() - _pg_t0) * 1000)  # 口径与异步版一致：纯判定耗时
+            pg_checked = True
+            if pg_score is None:
+                shadow_log.record("pg", error="unavailable", latency_ms=pg_ms)
+            elif pg_score >= pg_block_threshold:
+                # 阻断条先于应答落盘（告警巡检消费即见）；record 永不抛（shadow_log 纪律）
+                shadow_log.record("pg", hit=True, score=pg_score, latency_ms=pg_ms,
+                                  blocked=True, block_threshold=pg_block_threshold,
+                                  model=(payload.get("body") or {}).get("model"))
+                print(f"[injection.block] 451 score={pg_score:.3f} >= {pg_block_threshold}", flush=True)
+                body = json.dumps(
+                    {
+                        "error": {
+                            "message": "Blocked by ai4s DLP: prompt injection detected (pg.injection)",
+                            "type": "content_policy_violation",
+                            "code": "pg.injection",
+                        }
+                    },
+                    ensure_ascii=False,
+                )
+                self._json(
+                    200,
+                    {
+                        "action": {
+                            "body": body,
+                            "status_code": 451,
+                            "reason": f"prompt injection blocked: score>={pg_block_threshold} (values withheld)",
+                        }
+                    },
+                )
+                return
         # PII 脱敏（issue #15）：命中不阻断，返回改写后的消息体（MaskAction）
         # issue #22：先走归一化 mask（分隔/全角变形）；无命中再走 Presidio context 流程
         # issue #40：归一化 mask 属 l1（格式规则全族），Presidio PII 属 l2，各自随总开关跳过
@@ -939,9 +992,17 @@ class Handler(BaseHTTPRequestHandler):
         # issue #97：判定段（score→落条/print，形状语义不变）整体提交有界异步执行器 pg_guard_async——
         # 推理不再占 handler 线程预算（p50≈50ms/p95≈136ms），响应发完即释放；
         # 积压满丢弃=跳过判定，不落 error 条（同 #93 skip 语义）
+        # issue #103：阻断试点同步判定过（pg_checked）→ 直接复用本次 score 落条
+        # （形状语义与异步版逐字段一致，只跑一次推理）；score None 的 error 条已在阻断段落；
+        # 未同步判定（阻断关/未启用/空 text 之外）→ 现状纯异步路径零变化
         pg_threshold = setting_value(settings, "pg", "threshold", "PG_THRESHOLD", 0.7)
         if text and setting_value(settings, "pg", "enabled", "PG_ENABLED", False):
-            pg_guard_async(text, pg_threshold)
+            if pg_checked and pg_score is not None:
+                shadow_log.record("pg", hit=pg_score >= pg_threshold, score=pg_score, latency_ms=pg_ms)
+                if pg_score >= pg_threshold:
+                    print(f"[injection.shadow] malicious={pg_score:.3f} >= {pg_threshold}", flush=True)
+            elif not pg_checked:
+                pg_guard_async(text, pg_threshold)
 
     def do_PUT(self):
         # 非 admin 路径回 404 而非 BaseHTTPRequestHandler 默认 501：有意语义——

@@ -18,12 +18,14 @@ import base64
 import json
 import os
 import re
+import threading
 import unicodedata
 
 MODEL_DIR = os.environ.get("PG_MODEL_DIR", "/models/promptguard")
 _sess = None
 _tok = None
 _mal_idx = 1
+_model_lock = threading.Lock()  # 首载互斥（issue #103）：锁非线程，合规 import 不起线程纪律
 
 # 归一化（issue #44）：零宽字符清除 + NFKC（全角→半角）+ base64 形 token 可解码为
 # 可打印文本时内联替换（append 变体被 512 token 截断稀释，实测 inline 才翻盘）。
@@ -51,19 +53,23 @@ def normalize_for_scoring(text: str) -> str:
 
 
 def _get_model():
-    """模型懒加载（函数级 import 重依赖）：首次打分加载，进程内单例。"""
+    """模型懒加载（函数级 import 重依赖）：首次打分加载，进程内单例。
+    双重检查锁（issue #103）：阻断模式开时同步打分跑在请求线程，
+    无锁则并发首批可双载模型（~1.66GiB/份，2.8GB Docker VM OOM 风险）。"""
     global _sess, _tok, _mal_idx
     if _sess is None:
-        import onnxruntime as ort
-        from transformers import AutoTokenizer
-        cfg = json.load(open(os.path.join(MODEL_DIR, "config.json"), encoding="utf-8"))
-        id2label = {int(k): v.upper() for k, v in (cfg.get("id2label") or {}).items()}
-        for i, lab in id2label.items():
-            if "MALICIOUS" in lab:
-                _mal_idx = i
-        _tok = AutoTokenizer.from_pretrained(MODEL_DIR, local_files_only=True)
-        _sess = ort.InferenceSession(os.path.join(MODEL_DIR, "model.quant.onnx"),
-                                     providers=["CPUExecutionProvider"])
+        with _model_lock:
+            if _sess is None:
+                import onnxruntime as ort
+                from transformers import AutoTokenizer
+                cfg = json.load(open(os.path.join(MODEL_DIR, "config.json"), encoding="utf-8"))
+                id2label = {int(k): v.upper() for k, v in (cfg.get("id2label") or {}).items()}
+                for i, lab in id2label.items():
+                    if "MALICIOUS" in lab:
+                        _mal_idx = i
+                _tok = AutoTokenizer.from_pretrained(MODEL_DIR, local_files_only=True)
+                _sess = ort.InferenceSession(os.path.join(MODEL_DIR, "model.quant.onnx"),
+                                             providers=["CPUExecutionProvider"])
     return _sess, _tok, _mal_idx
 
 

@@ -17,8 +17,9 @@ export function validateJudge(judge: JudgeSettings): string | null {
   return null;
 }
 
-/** pg 段预检：threshold 须在 0~1 */
+/** pg 段预检：threshold/block_threshold（issue #103 阻断阈值）均须在 0~1 */
 export function validatePg(pg: PgSettings): string | null {
   if (!(pg.threshold >= 0 && pg.threshold <= 1)) return 'pg threshold 须在 0~1';
+  if (!(pg.block_threshold >= 0 && pg.block_threshold <= 1)) return 'pg block_threshold 须在 0~1';
   return null;
 }

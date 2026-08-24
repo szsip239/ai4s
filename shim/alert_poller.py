@@ -11,6 +11,10 @@ axonhub 无事件源的事务靠主动轮询补齐。巡检项（状态翻转才
      名单失败回退裸 gid 不阻塞告警）
   4. shadow 层可用率（issue #92）：judge/PG 判定持久化（shadow_log.stats）窗口内
      异常率 ≥ SHADOW_ERR_RATE 且样本 ≥ SHADOW_ALERT_MIN → 告警（样本不足/无流量不判坏）
+  5. PG 阻断事件（issue #103）：tail 消费 shadow_log pg 层 blocked=True 条目，发现即发卡
+     （脱敏：层名/score/阻断阈值/请求模型名/时间，绝无原文无 key）——事件型告警非状态翻转，
+     游标（alert-state.json pg_block_cursor=已告警条 ts）防抖，发送成功才推进、失败下轮重试；
+     单轮条数封顶 PG_BLOCK_ALERT_BATCH（防阻断风暴刷屏，剩余下轮续发）
 
 审批同步（issue #19 提额 + issue #72 新建，approval_sync 泛化为多定义并存）：
   轮询飞书审批实例（APPROVAL_QUOTA_CODE / APPROVAL_KEY_CODE 两个定义各自轮询）：
@@ -107,6 +111,9 @@ SHADOW_ALERT_WINDOW = _env_int("SHADOW_ALERT_WINDOW", 20)
 SHADOW_ALERT_MIN = _env_int("SHADOW_ALERT_MIN_SAMPLES", 4)
 SHADOW_ERR_RATE = _env_float("SHADOW_ERR_RATE", 0.5)
 SHADOW_LAYER_NAMES = {"judge": "语义 judge", "pg": "注入 PG"}
+# PG 阻断事件巡检（issue #103）：单轮发卡封顶（防风暴）+ tail 窗口（须覆盖两轮间积压）
+PG_BLOCK_ALERT_BATCH = _env_int("PG_BLOCK_ALERT_BATCH", 10)
+PG_BLOCK_ALERT_TAIL = _env_int("PG_BLOCK_ALERT_TAIL", 100)
 FEISHU_APP_ID = os.environ.get("FEISHU_APP_ID", "")
 FEISHU_APP_SECRET = os.environ.get("FEISHU_APP_SECRET", "")
 APPROVAL_QUOTA_CODE = os.environ.get("APPROVAL_QUOTA_CODE", "")
@@ -791,6 +798,28 @@ def shadow_avail_findings(layer_stats: dict) -> dict:
     return findings
 
 
+def pg_block_pending(recs: list, cursor: float) -> list:
+    """PG 阻断事件待发卡列表（issue #103，纯函数）：pg 层 tail 记录（新到旧形状）+ 游标
+    （上次已告警条 ts）→ [(ts, 告警文本)]（旧到新——先发生先告警）。
+    只取 blocked=True 且 ts > cursor 的条目（== 不重发）；单轮封顶 PG_BLOCK_ALERT_BATCH
+    （截最旧一批先发，剩余条 ts 仍在游标后，下轮续发）。
+    卡片脱敏纪律：只带层名/score/阻断阈值/请求模型名/时间——记录本身不落原文（shadow_log
+    #103 字段设计），此处亦不引入任何文本字段。"""
+    out = []
+    for r in sorted((r for r in recs if r.get("blocked") and (r.get("ts") or 0) > cursor),
+                    key=lambda r: r["ts"]):
+        score = r.get("score")
+        score_txt = f"{score:.3f}" if isinstance(score, (int, float)) else "-"
+        out.append((r["ts"], (
+            f"[ai4s 告警] 提示词注入已阻断（451）\n"
+            f"层: 注入 PG\n"
+            f"score: {score_txt} ≥ 阻断阈值 {r.get('block_threshold')}\n"
+            f"请求模型: {r.get('model') or '-'}\n"
+            f"时间: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(r['ts']))}"
+        )))
+    return out[:PG_BLOCK_ALERT_BATCH]
+
+
 def check_cycle(ax: Axonhub, state: dict) -> dict:
     """一轮巡检；返回新状态。finding: key -> (bad: bool, 告警文本, 恢复文本)"""
     findings = {}
@@ -879,6 +908,20 @@ def check_cycle(ax: Axonhub, state: dict) -> dict:
         if send_feishu(text):
             state[k] = kind == "alert"
             print(f"[alert] 已{'告警' if kind == 'alert' else '恢复'}: {k}", flush=True)
+
+    # 5) PG 阻断事件（issue #103）：事件型告警（非 flip_actions 状态翻转模型——阻断无「恢复」
+    # 语义），游标独立防抖：发送成功才把游标推进到该条 ts，失败即止下轮重试（与翻转项同款纪律）；
+    # tail/发送异常只记日志，不阻塞巡检主流程
+    try:
+        pending = pg_block_pending(shadow_log.tail(PG_BLOCK_ALERT_TAIL, layer="pg"),
+                                   state.get("pg_block_cursor") or 0.0)
+        for ts, text in pending:
+            if not send_feishu(text):
+                break
+            state["pg_block_cursor"] = ts
+            print(f"[alert] 已告警: pg 阻断 ts={ts}", flush=True)
+    except Exception as e:
+        print(f"[alert] PG 阻断巡检失败: {type(e).__name__}: {e}", flush=True)
     return state
 
 

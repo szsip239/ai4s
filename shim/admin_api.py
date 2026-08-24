@@ -19,6 +19,9 @@ issue #94：judge 阈值与动作分级 schema——settings judge 段加 thresh
 issue #93：judge 采样/并发预算 schema——settings judge 段加 sample_rate（0~1 判定采样率）
 /max_concurrency（≥1 judge HTTP 并发上限）校验；/request 链路消费（app.py），
 采样/预算 skip 不落 shadow_log 条（非层异常，不污染 #92 error_rate）。
+issue #103：PG 高分阻断 schema——settings pg 段加 block_enabled（布尔开关，默认关=纯 shadow
+现状）/block_threshold（0~1 阻断阈值，默认 0.9）校验；/request 链路消费（app.py 应答前
+同步判定 451），阻断事件落 shadow_log（blocked=True）由 alert_poller 巡检发飞书（脱敏）。
 
 与检测路径（/request /response 调用链）完全隔离：admin 平面 fail-closed——
 内省不可达回 503，不适用检测链的 fail-open 分级（契约 docs/contracts/dlp-webhook-shim.md）。
@@ -251,7 +254,8 @@ _SETTINGS_JUDGE_KEYS = {"enabled", "model", "base_url", "timeout", "prompt_syste
                         "threshold", "action",  # threshold/action：issue #94 置信度门槛与动作分级
                         "sample_rate", "max_concurrency"}  # issue #93 判定采样率与并发预算
 _SETTINGS_EDM_KEYS = {"enabled", "min_hits"}
-_SETTINGS_PG_KEYS = {"enabled", "threshold", "normalize"}  # normalize：issue #44 打分前置归一化开关
+_SETTINGS_PG_KEYS = {"enabled", "threshold", "normalize",  # normalize：issue #44 打分前置归一化开关
+                     "block_enabled", "block_threshold"}  # 阻断试点（issue #103）：开关 + 阻断阈值
 # 分层总开关（issue #40）：单键段
 _SETTINGS_L1_KEYS = {"enabled"}
 _SETTINGS_L2_KEYS = {"enabled"}
@@ -320,6 +324,11 @@ def _validate_settings(data) -> str | None:
         return "pg.threshold 必须是 0~1 数值"
     if not isinstance(pg["normalize"], bool):
         return "pg.normalize 必须是布尔值"
+    # issue #103：阻断开关必填布尔；阻断阈值必填 0~1 数值（消费在 app.py /request 应答前同步判定）
+    if not isinstance(pg["block_enabled"], bool):
+        return "pg.block_enabled 必须是布尔值"
+    if not _is_number(pg["block_threshold"]) or not 0 <= pg["block_threshold"] <= 1:
+        return "pg.block_threshold 必须是 0~1 数值"
     for section in ("l1", "l2", "response"):  # 分层总开关（issue #40）：仅 enabled 单键
         if not isinstance(data[section]["enabled"], bool):
             return f"{section}.enabled 必须是布尔值"

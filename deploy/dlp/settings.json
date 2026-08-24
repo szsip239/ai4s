@@ -18,6 +18,8 @@
     "min_hits": 2
   },
   "pg": {
+    "block_enabled": false,
+    "block_threshold": 0.9,
     "enabled": true,
     "threshold": 0.7,
     "normalize": true

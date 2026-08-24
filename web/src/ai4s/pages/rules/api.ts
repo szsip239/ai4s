@@ -117,12 +117,21 @@ export interface PgSettings {
   enabled: boolean;
   threshold: number;
   normalize: boolean; // issue #44 打分前置归一化开关；后端 PUT 必填（shim _SETTINGS_PG_KEYS）
+  block_enabled: boolean; // issue #103 高分阻断开关（开=≥阻断阈值 451）；后端 PUT 必填
+  block_threshold: number; // issue #103 阻断阈值（0~1）；后端 PUT 必填
 }
-/** pg 段读侧缺键补默认（issue #70）：旧 settings.json（issue #44 前写入）可能缺 normalize，
- * 不补则面板整体 PUT 时后端必填校验 400；缺省值与 shim setting_value 缺省对齐
- * （enabled/normalize 默认 false、threshold 默认 0.7） */
+/** pg 段读侧缺键补默认（issue #70/#103）：旧 settings.json（issue #44/#103 前写入）可能缺
+ * normalize/block_enabled/block_threshold，不补则面板整体 PUT 时后端必填校验 400；
+ * 缺省值与 shim setting_value 缺省对齐（enabled/normalize/block_enabled 默认 false、
+ * threshold 默认 0.7、block_threshold 默认 0.9） */
 export function normalizePg(pg: Partial<PgSettings> | undefined): PgSettings {
-  return { enabled: pg?.enabled ?? false, threshold: pg?.threshold ?? 0.7, normalize: pg?.normalize ?? false };
+  return {
+    enabled: pg?.enabled ?? false,
+    threshold: pg?.threshold ?? 0.7,
+    normalize: pg?.normalize ?? false,
+    block_enabled: pg?.block_enabled ?? false,
+    block_threshold: pg?.block_threshold ?? 0.9,
+  };
 }
 /** judge 段读侧缺键补默认（issue #94/#93）：旧 settings.json（两票前写入）可能缺
  * threshold/action/sample_rate/max_concurrency，不补则面板整体 PUT 时后端必填校验 400；

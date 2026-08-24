@@ -6,6 +6,8 @@
 本模块提供最小闭环底座：判定逐条落 JSONL（不落原文——judge 只存命中实体数，不存实体
 字符串），tail/stats 供 admin 查询出口（/dlp-admin/shadow-verdicts）与 alert_poller
 可用率告警消费。
+issue #103：PG 高分阻断试点的阻断事件同槽落条（blocked=True + block_threshold/model
+脱敏字段——告警卡片只需这些，绝无原文/key），alert_poller 新增阻断巡检 tail 消费。
 
 纪律：
 - record 永不抛（检测路径纪律，与 pg_guard fail-open 同语义）——持久化失败只 print；
@@ -33,9 +35,13 @@ def _max_bytes() -> int:
 
 
 def record(layer: str, hit=None, score=None, confidence=None, latency_ms=None,
-           error=None, entities=None, path=None):
+           error=None, entities=None, path=None, blocked=None, block_threshold=None, model=None):
     """追加一条 shadow 判定。entities 只存命中数（不存字符串——不落原文）；
-    error 非 None 表示该次判定不可用（hit/score/confidence 应为 None）。永不抛。"""
+    error 非 None 表示该次判定不可用（hit/score/confidence 应为 None）。永不抛。
+    issue #103：blocked=True 表示该次判定触发了 451 阻断（PG 高分试点；语义层永不阻断），
+    block_threshold/model 随阻断条落盘——告警卡片脱敏字段（阈值/请求模型名，无原文无 key）。
+    三个阻断字段只在非 None 时写入（未阻断条保持旧形状逐字节一致——jsonl 体积纪律，
+    消费方一律 rec.get()）。"""
     rec = {
         "ts": time.time(),
         "layer": layer,
@@ -46,6 +52,9 @@ def record(layer: str, hit=None, score=None, confidence=None, latency_ms=None,
         "error": error,
         "entities": entities,
     }
+    for k, v in (("blocked", blocked), ("block_threshold", block_threshold), ("model", model)):
+        if v is not None:
+            rec[k] = v
     p = path or _default_path()
     try:
         d = os.path.dirname(p)

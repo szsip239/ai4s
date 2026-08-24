@@ -12,6 +12,10 @@
 自包含段：EDM 段（issue #29）；admin API 段（issue #37）——词表只经 admin API 改，
 PUT 临时词→命中 451→PUT 还原→不再 451；凭据缺（env DLP_ADMIN_TOKEN 与
 deploy/.local/admin-jwt 均不可得）则 SKIP 不 fail。
+PG 阻断专项段（issue #103）：admin 段之后——PUT 开阻断（block_enabled=true,
+block_threshold=0.9）→ v3 高分注入样本应 451 → 负例应放行 → PUT 还原（关阻断）→
+同高分样本再应放行；shim 未含 #103 阻断区块时（PUT 400 未知字段）SKIP 不 fail
+（集成前预期态）。
 注入水位门禁段（issue #95）：主流程最前 subprocess 跑 injection-eval.py（normalize
 链路口径），不达标非零即回归失败。
 语义层水位门禁段（issue #99）：紧跟注入门禁段 subprocess 跑 semantic-eval.py
@@ -143,6 +147,76 @@ def run_admin_section(api_key, token):
     return results
 
 
+# PG 阻断专项段（issue #103）样本：v3 高分档代表（normalize 口径实测 0.998，0.9 档检出集内，
+# 见 docs/tests/2026-08-24-injection-v3-eval.md）；负例用普通业务话术（非 v3 归档 22 条之一，真失败即误报发现）
+PG_BLOCK_SAMPLE_NAME = "inj: DAN 经典英文"
+PG_BLOCK_NEGATIVE = "帮我写一份本周工作周报，重点写项目进度与风险"
+
+
+def run_pg_block_section(api_key, token):
+    """PG 阻断专项段（issue #103，自包含）：admin PUT 开阻断（block_enabled=true,
+    block_threshold=0.9，pg 其余键原样）→ v3 高分注入样本经网关应 451 → 负例应放行
+    → PUT 还原（原始 GET 内容，阻断回落关）→ 同高分样本再应放行。
+    能力探测：shim 未含 #103 阻断区块时 PUT 400「未知字段」→ SKIP 不 fail（集成前预期态）。
+    自清理：finally 还原 settings（pg 段缺阻断键时补默认——旧 settings.json 直 PUT 会被
+    必填校验 400）；前置条件：回归跑在默认配置（阻断关）的栈上。
+    状态变化注明：阻断开时 PG 推理回请求路径（同步，p95≈136ms 明示代价）；容器内 PG 模型
+    （281MB）经判定首次加载后常驻——2.8GB Docker VM 容得下（#95 起回归流量本就触发懒加载
+    常驻，本段不新增内存画像）。"""
+    print("\n==> PG 阻断专项段（issue #103，settings PUT 自包含）")
+    results = []
+    vectors = json.load(open(os.path.join(DEPLOY_DIR, "tests", "injection-vectors.json"),
+                             encoding="utf-8"))["vectors"]
+    sample = next((v for v in vectors if v["name"] == PG_BLOCK_SAMPLE_NAME), None)
+    status, doc = tk._admin_api("GET", "/dlp-admin/settings", token)
+    if sample is None or status != 200 or not isinstance(doc, dict) or not isinstance(doc.get("pg"), dict):
+        results.append(("PG阻断: 前置（高分样本/settings GET）", False,
+                        f"http{status}" if sample is not None else "样本缺失"))
+    else:
+        original = doc  # 还原基准（含 version/_comment 及其余各段原样）
+
+        def restore():
+            # pg 段缺阻断键的旧 settings.json：还原 PUT 前补默认（与 shim setting_value 缺省对齐），
+            # 否则必填校验 400 还原失败、阻断留在开位
+            pg = {"block_enabled": False, "block_threshold": 0.9, **original["pg"]}
+            return tk._admin_api("PUT", "/dlp-admin/settings", token, {**original, "pg": pg})
+
+        try:
+            trial = {**original, "pg": {**original["pg"], "block_enabled": True, "block_threshold": 0.9}}
+            status, body = tk._admin_api("PUT", "/dlp-admin/settings", token, trial)
+            if status == 400 and "未知字段" in str((body or {}).get("error", "")):
+                print("[SKIP] PG 阻断段：shim 未含 issue #103 阻断区块（待集成），本段跳过不 fail")
+                return []
+            results.append(("PG阻断: PUT 开阻断（block_threshold=0.9）", status == 200, f"http{status}"))
+            if status == 200:
+                got = None
+                for _attempt in range(2):  # shim 每请求重读 settings 即时生效；retry 吸收极端时序
+                    st, reply = tk.send(sample["content"], api_key)
+                    got = tk.classify(st, reply, None)
+                    if got == "reject":
+                        break
+                    time.sleep(1)
+                results.append(("PG阻断: 高分注入样本应 451", got == "reject", got))
+                st, reply = tk.send(PG_BLOCK_NEGATIVE, api_key)
+                got = tk.classify(st, reply, None)
+                results.append(("PG阻断: 负例应放行", got == "pass", got))
+                status, _ = restore()
+                results.append(("PG阻断: PUT 还原（关阻断）", status == 200, f"http{status}"))
+                got = None
+                for _attempt in range(2):
+                    st, reply = tk.send(sample["content"], api_key)
+                    got = tk.classify(st, reply, None)
+                    if got == "pass":
+                        break
+                    time.sleep(1)
+                results.append(("PG阻断: 还原后同高分样本放行", got == "pass", got))
+        finally:
+            restore()
+    for name, ok, got in results:
+        print(f"[{'OK ' if ok else 'FAIL'}] {name}（got={got}）")
+    return results
+
+
 def run_injection_gate():
     """注入水位门禁段（issue #95）：subprocess 跑 injection-eval.py（默认 normalize 链路口径，
     输出透传），非零即门禁失败。
@@ -229,8 +303,14 @@ def main():
             admin_token = token
         admin_results = run_admin_section(api_key, admin_token)
 
+    # PG 阻断专项段（issue #103）：紧跟 admin 段（同凭据与自还原纪律）；
+    # shim 未含 #103 区块时段内自探测 SKIP（不 fail）
+    pg_block_results = []
+    if admin_token is not None:
+        pg_block_results = run_pg_block_section(api_key, admin_token)
+
     fails = [r for r in results if r["fail"]]
-    for name, ok, got in edm_fails + admin_results:
+    for name, ok, got in edm_fails + admin_results + pg_block_results:
         if not ok:
             fails.append({"name": name, "expect": "reject", "got": got})
     print(f"\n总计 {len(results)} 样本：通过 {sum(1 for r in results if r['ok'])}，文档化 gap {sum(1 for r in results if not r['ok'] and not r['fail'])}，回归失败 {len(fails)}")
