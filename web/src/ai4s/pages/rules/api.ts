@@ -122,6 +122,20 @@ export interface PgSettings {
   block_enabled: boolean; // issue #103 高分阻断开关（开=≥阻断阈值 451）；后端 PUT 必填
   block_threshold: number; // issue #103 阻断阈值（0~1）；后端 PUT 必填
 }
+/** 注入规则层（issue #104，#100 路线② 生产落点）：语义模式组命中（布尔无分数——无阈值键）；
+ * enabled 默认 false（新层先进场 shadow 观察）、block 默认 false（开=命中即 451）；后端 PUT 必填 */
+export interface InjectRulesSettings {
+  enabled: boolean;
+  block: boolean;
+}
+/** rules 段读侧缺段/缺键补默认（issue #104，先例见 normalizePg）：#104 前写入的 settings.json
+ * 无 rules 段，不补则面板整体 PUT 时后端必填校验 400；缺省值与 shim setting_value 缺省对齐（双关） */
+export function normalizeInjectRules(rules: Partial<InjectRulesSettings> | undefined): InjectRulesSettings {
+  return {
+    enabled: rules?.enabled ?? false,
+    block: rules?.block ?? false,
+  };
+}
 /** pg 段读侧缺键补默认（issue #70/#103）：旧 settings.json（issue #44/#103 前写入）可能缺
  * normalize/block_enabled/block_threshold，不补则面板整体 PUT 时后端必填校验 400；
  * 缺省值与 shim setting_value 缺省对齐（enabled/normalize/block_enabled 默认 false、
@@ -163,6 +177,7 @@ export interface DlpSettings {
   judge: JudgeSettings;
   edm: EdmSettings;
   pg: PgSettings;
+  rules: InjectRulesSettings; // issue #104：#104 前旧文件可能缺段，读侧经 normalizeInjectRules 补齐
   l1?: LayerSwitchSettings;
   l2?: LayerSwitchSettings;
   response?: LayerSwitchSettings;
@@ -249,7 +264,12 @@ export function useEdmCorpus() {
 }
 
 // select 提升模块级：内联匿名函数每次渲染新建引用会让 TanStack Query 的 select 记忆化失效（issue #70 评审 P2）
-const selectSettings = (d: DlpSettings): DlpSettings => ({ ...d, judge: normalizeJudge(d.judge), pg: normalizePg(d.pg) });
+const selectSettings = (d: DlpSettings): DlpSettings => ({
+  ...d,
+  judge: normalizeJudge(d.judge),
+  pg: normalizePg(d.pg),
+  rules: normalizeInjectRules(d.rules), // issue #104：旧文件缺 rules 段补默认（双关）
+});
 
 export function useSettings() {
   // retry: false——settings.json 缺失回 404（env 兜底态，合法），交由面板即时展示而非重试

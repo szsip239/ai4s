@@ -11,6 +11,9 @@ issue #103：PG 高分阻断试点的阻断事件同槽落条（blocked=True + b
 issue #101：judge warn 试点的告警事件同槽落条（warned=True + model 脱敏字段，
 对齐 #103 blocked 模式——只在超阈值告警条写入，普通判定条形状逐字节不变），
 alert_poller 新增 warn 巡检 tail 消费；stats 聚合 warned 数供观察期误报对账。
+issue #104：注入规则层（layer="rules"）判定同槽落条——groups 存命中模式组名列表
+（模式标识非原文，脱敏安全），阻断条复用 blocked=True + model 字段（无 score 语义），
+alert_poller 阻断巡检（巡检项 5）复用 pg 游标通道消费。
 
 纪律：
 - record 永不抛（检测路径纪律，与 pg_guard fail-open 同语义）——持久化失败只 print；
@@ -39,7 +42,7 @@ def _max_bytes() -> int:
 
 def record(layer: str, hit=None, score=None, confidence=None, latency_ms=None,
            error=None, entities=None, path=None, blocked=None, block_threshold=None, model=None,
-           warned=None):
+           warned=None, groups=None):
     """追加一条 shadow 判定。entities 只存命中数（不存字符串——不落原文）；
     error 非 None 表示该次判定不可用（hit/score/confidence 应为 None）。永不抛。
     issue #103：blocked=True 表示该次判定触发了 451 阻断（PG 高分试点；语义层永不阻断），
@@ -48,7 +51,9 @@ def record(layer: str, hit=None, score=None, confidence=None, latency_ms=None,
     消费方一律 rec.get()）。
     issue #101：warned=True 表示该次 judge 判定触发了 warn 告警（action=warn 且
     confidential 超阈值；不拦截——契约「语义层永不阻断」），model 随告警条落盘
-    （同款脱敏字段）；只在非 None 时写入，消费方 .get() 兜底。"""
+    （同款脱敏字段）；只在非 None 时写入，消费方 .get() 兜底。
+    issue #104：groups 存注入规则层命中模式组名列表（如 ["extract-zh","authority"]——
+    模式标识非原文，脱敏安全）；只在非 None 时写入（未命中条不带——体积纪律）。"""
     rec = {
         "ts": time.time(),
         "layer": layer,
@@ -60,7 +65,8 @@ def record(layer: str, hit=None, score=None, confidence=None, latency_ms=None,
         "entities": entities,
     }
     for k, v in (("blocked", blocked), ("block_threshold", block_threshold), ("model", model),
-                 ("warned", warned)):  # warned：issue #101 judge warn 事件条
+                 ("warned", warned),  # warned：issue #101 judge warn 事件条
+                 ("groups", groups)):  # groups：issue #104 规则层命中模式组
         if v is not None:
             rec[k] = v
     p = path or _default_path()

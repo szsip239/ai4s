@@ -1076,6 +1076,15 @@ class TestShadowAvailFindings(unittest.TestCase):
         self.assertFalse(f["shadow:pg"][0])
         self.assertIn("注入 PG", f["shadow:pg"][1])
 
+    def test_rules_layer_display_name(self):
+        """issue #104：rules 层纳入可用率巡检——层名「注入规则」；默认关无落条即无样本不判坏。"""
+        f = ap.shadow_avail_findings({"rules": _shadow_stats(10, 6)})
+        bad, alert, _ = f["shadow:rules"]
+        self.assertTrue(bad)
+        self.assertIn("注入规则", alert)
+        ok = ap.shadow_avail_findings({"rules": _shadow_stats(0, 0)})
+        self.assertFalse(ok["shadow:rules"][0])  # 无流量（enabled=false 默认态）不误报
+
 
 class TestCheckCycleShadowAvail(unittest.TestCase):
     """issue #92：check_cycle 接入 shadow 可用率巡检——翻转告警/防抖/恢复
@@ -1094,17 +1103,18 @@ class TestCheckCycleShadowAvail(unittest.TestCase):
         return new_state, sends
 
     def test_alert_debounce_recover(self):
-        bad = {"judge": _shadow_stats(10, 8), "pg": _shadow_stats(10, 0)}
+        bad = {"judge": _shadow_stats(10, 8), "pg": _shadow_stats(10, 0), "rules": _shadow_stats(10, 0)}
         state, sends = self._cycle({}, bad)
         self.assertEqual(len(sends), 1)
         self.assertIn("语义 judge 异常率过高", sends[0])
         self.assertTrue(state["shadow:judge"])
         self.assertNotIn("shadow:pg", state)  # 正常项不落状态
+        self.assertNotIn("shadow:rules", state)  # issue #104：rules 层正常项同样不落状态
         # 仍坏 → 不重复发
         state, sends = self._cycle(state, bad)
         self.assertEqual(sends, [])
         # 恢复 → 发恢复通知且状态清除
-        good = {"judge": _shadow_stats(10, 0), "pg": _shadow_stats(10, 0)}
+        good = {"judge": _shadow_stats(10, 0), "pg": _shadow_stats(10, 0), "rules": _shadow_stats(10, 0)}
         state, sends = self._cycle(state, good)
         self.assertEqual(len(sends), 1)
         self.assertIn("已恢复", sends[0])
@@ -1165,6 +1175,32 @@ class TestPgBlockPending(unittest.TestCase):
         self.assertIn("2026-", text)  # ts 格式化为 UTC 时间
         self.assertNotIn("DAN", text)  # 无原文（卡片字段仅层名/score/阈值/模型/时间）
 
+    def test_rules_layer_card(self):
+        """issue #104：rules 层阻断条走同一阻断巡检通道（复用 pg 游标）——卡片带层名
+        「注入规则」+ 命中模式组（脱敏：组名/模型/时间，无 score 字段语义、无原文）。"""
+        rec = {"ts": 1787184000.0, "layer": "rules", "hit": True, "latency_ms": 0,
+               "error": None, "blocked": True, "groups": ["extract-zh", "authority"], "model": "gpt-x"}
+        out = ap.pg_block_pending([rec], 0.0)
+        self.assertEqual(len(out), 1)
+        text = out[0][1]
+        self.assertIn("提示词注入已阻断（451）", text)
+        self.assertIn("注入规则", text)
+        self.assertIn("extract-zh,authority", text)
+        self.assertIn("gpt-x", text)
+        self.assertNotIn("逐字", text)  # 无原文
+
+    def test_mixed_layers_oldest_first(self):
+        """issue #104：pg/rules 两层阻断条混排按 ts 旧到新排序发卡（共用游标，同文件同时间轴）。"""
+        rules_rec = {"ts": 100.0, "layer": "rules", "hit": True, "blocked": True,
+                     "groups": ["override-en"], "model": "m"}
+        out = ap.pg_block_pending([self._rec(300.0), rules_rec, self._rec(200.0)], 0.0)
+        self.assertEqual([ts for ts, _ in out], [100.0, 200.0, 300.0])
+
+    def test_rules_shadow_hit_not_alerted(self):
+        """issue #104：rules 层 shadow 命中条（无 blocked 键）不发卡——与 pg shadow 同语义。"""
+        rec = {"ts": 100.0, "layer": "rules", "hit": True, "groups": ["extract-zh"], "latency_ms": 0}
+        self.assertEqual(ap.pg_block_pending([rec], 0.0), [])
+
 
 class TestCheckCyclePgBlockCursor(unittest.TestCase):
     """issue #103：check_cycle 接入阻断事件巡检——发送成功才推进游标；失败不推进、下轮重试。"""
@@ -1185,7 +1221,7 @@ class TestCheckCyclePgBlockCursor(unittest.TestCase):
 
         with mock.patch.object(ap, "http_get", return_value=True), \
              mock.patch.object(ap.shadow_log, "tail",
-                               side_effect=lambda n, layer=None: recs if layer == "pg" else []), \
+                               side_effect=lambda n, layer=None: recs if layer in ("pg", None) else []), \
              mock.patch.object(ap.shadow_log, "stats",
                                side_effect=lambda layer, window=0: _shadow_stats(0, 0)), \
              mock.patch.object(ap, "send_feishu", side_effect=fake_send):

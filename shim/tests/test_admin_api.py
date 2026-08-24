@@ -1400,6 +1400,8 @@ _SETTINGS_FIXTURE = {
     # issue #103：pg 段加阻断两键（block_enabled 默认关 / block_threshold 默认 0.9）
     "pg": {"enabled": True, "threshold": 0.7, "normalize": False,
            "block_enabled": False, "block_threshold": 0.9},
+    # issue #104：注入规则层段（enabled 默认关=先进场 shadow 观察 / block 默认关=命中不阻断）
+    "rules": {"enabled": False, "block": False},
     "l1": {"enabled": True},
     "l2": {"enabled": True},
     "response": {"enabled": True},
@@ -1476,6 +1478,16 @@ class AdminSettingsTest(unittest.TestCase):
                 status, body = self._put(new)
                 self.assertEqual(status, 200, f"action={action}: 期望 200，实际 {status} {body}")
 
+    def test_put_settings_rules_section_flip_200(self):
+        """rules 段（issue #104）：enabled/block 两键布尔翻转 → 200 整体替换落盘。"""
+        new = json.loads(json.dumps(_SETTINGS_FIXTURE))
+        new["rules"] = {"enabled": True, "block": True}
+        status, body = self._put(new)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["rules"], {"enabled": True, "block": True})
+        with open(self.settings_path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["rules"], {"enabled": True, "block": True})
+
     def test_put_settings_validation_400(self):
         """PUT 校验（issue #35）：逐条非法变体 → 400 带原因，且落盘文件不被污染。"""
         def mutated(fn):
@@ -1533,6 +1545,13 @@ class AdminSettingsTest(unittest.TestCase):
             ("pg.block_enabled 非布尔", mutated(lambda d: d["pg"].update({"block_enabled": 1}))),
             ("pg.block_threshold 超界", mutated(lambda d: d["pg"].update({"block_threshold": 1.5}))),
             ("pg.block_threshold 为布尔", mutated(lambda d: d["pg"].update({"block_threshold": True}))),
+            # rules 段（issue #104 注入规则层）：必填段、仅 enabled/block 两键、均布尔
+            ("rules 整段缺失", mutated(lambda d: d.pop("rules"))),
+            ("rules 缺 enabled", mutated(lambda d: d["rules"].pop("enabled"))),
+            ("rules 缺 block", mutated(lambda d: d["rules"].pop("block"))),
+            ("rules.enabled 非布尔", mutated(lambda d: d["rules"].update({"enabled": 1}))),
+            ("rules.block 非布尔", mutated(lambda d: d["rules"].update({"block": "yes"}))),
+            ("rules 未知字段", mutated(lambda d: d["rules"].update({"typo": 1}))),
             # 分层总开关三段（issue #40）：必填、仅 enabled 单键、必须布尔
             ("l1 缺 enabled", mutated(lambda d: d["l1"].pop("enabled"))),
             ("l1.enabled 非布尔", mutated(lambda d: d["l1"].update({"enabled": 1}))),
@@ -2862,7 +2881,7 @@ class TestShadowVerdictsApi(unittest.TestCase):
         shadow_log.record("pg", hit=False, score=0.2, latency_ms=40, path=self.log_path)
         status, body = _get("/dlp-admin/shadow-verdicts", token="reader-token")
         self.assertEqual(status, 200)
-        self.assertEqual(set(body["stats"].keys()), {"judge", "pg"})
+        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules"})  # issue #104：rules 层 stats 同槽透出
         self.assertEqual(body["stats"]["judge"]["total"], 2)
         self.assertEqual(body["stats"]["judge"]["errors"], 1)
         self.assertEqual(body["stats"]["judge"]["hits"], 1)
@@ -2895,6 +2914,19 @@ class TestShadowVerdictsApi(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(len(body["records"]), 3)
         self.assertTrue(all(r["layer"] == "judge" for r in body["records"]))
+
+    def test_layer_rules_accepted(self):
+        """issue #104：layer 过滤接受 rules（规则层判定条）；非法值仍 400。"""
+        import shadow_log
+        shadow_log.record("rules", hit=True, groups=["extract-zh"], latency_ms=0, path=self.log_path)
+        shadow_log.record("pg", hit=False, score=0.2, latency_ms=40, path=self.log_path)
+        status, body = _get("/dlp-admin/shadow-verdicts?layer=rules", token="reader-token")
+        self.assertEqual(status, 200)
+        self.assertEqual([r["layer"] for r in body["records"]], ["rules"])
+        self.assertEqual(body["records"][0]["groups"], ["extract-zh"])
+        self.assertEqual(body["stats"]["rules"]["hits"], 1)
+        status, _ = _get("/dlp-admin/shadow-verdicts?layer=bogus", token="reader-token")
+        self.assertEqual(status, 400)
 
     def test_empty_store_200_zeros(self):
         status, body = _get("/dlp-admin/shadow-verdicts", token="reader-token")

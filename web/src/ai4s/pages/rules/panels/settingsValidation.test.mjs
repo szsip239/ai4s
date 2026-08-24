@@ -13,7 +13,7 @@ const transpiled = ts.transpileModule(source, {
 }).outputText;
 const mod = await import(`data:text/javascript;base64,${Buffer.from(transpiled).toString('base64')}`);
 
-const { validateJudge, validatePg } = mod;
+const { validateJudge, validatePg, validateInjectRules } = mod;
 
 const validJudge = {
   enabled: true,
@@ -81,4 +81,16 @@ test('validatePg: block_threshold 0~1 预检（issue #103 阻断阈值；放行�
   assert.match(validatePg({ ...base, block_threshold: Number.NaN }), /block_threshold/);
   // block_enabled 是布尔开关（后端类型校验兜底），预检不按取值拒绝
   assert.equal(validatePg({ ...base, block_enabled: false }), null);
+});
+
+test('validateInjectRules: 布尔两键合法放行、非布尔拒绝（issue #104 注入规则层）', () => {
+  // enabled/block 两布尔开关的四种组合均合法（取值语义由后端权威校验，预检只挡类型错误）
+  for (const enabled of [true, false]) {
+    for (const block of [true, false]) {
+      assert.equal(validateInjectRules({ enabled, block }), null, `enabled=${enabled} block=${block} 应合法`);
+    }
+  }
+  // 运行时防御：JSON 手改/接口异常进来的非布尔值须拒绝（与后端 admin_api 布尔校验同款）
+  assert.match(validateInjectRules({ enabled: 1, block: false }), /enabled/);
+  assert.match(validateInjectRules({ enabled: true, block: 'yes' }), /block/);
 });

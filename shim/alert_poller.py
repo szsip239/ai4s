@@ -10,11 +10,14 @@ axonhub 无事件源的事务靠主动轮询补齐。巡检项（状态翻转才
      issue #91 P2-3：告警/预警/恢复文本带项目名（一轮一次 myProjects 建 gid→名映射，
      名单失败回退裸 gid 不阻塞告警）
   4. shadow 层可用率（issue #92）：judge/PG 判定持久化（shadow_log.stats）窗口内
-     异常率 ≥ SHADOW_ERR_RATE 且样本 ≥ SHADOW_ALERT_MIN → 告警（样本不足/无流量不判坏）
-  5. PG 阻断事件（issue #103）：tail 消费 shadow_log pg 层 blocked=True 条目，发现即发卡
-     （脱敏：层名/score/阻断阈值/请求模型名/时间，绝无原文无 key）——事件型告警非状态翻转，
-     游标（alert-state.json pg_block_cursor=已告警条 ts）防抖，发送成功才推进、失败下轮重试；
-     单轮条数封顶 PG_BLOCK_ALERT_BATCH（防阻断风暴刷屏，剩余下轮续发）
+     异常率 ≥ SHADOW_ERR_RATE 且样本 ≥ SHADOW_ALERT_MIN → 告警（样本不足/无流量不判坏）；
+     issue #104 起 rules 层（注入规则）纳入同巡检
+  5. 注入阻断事件（issue #103 PG / issue #104 规则层）：tail 消费 shadow_log blocked=True
+     条目（pg/rules 两层混合，同文件同时间轴），发现即发卡
+     （脱敏：层名/score/阻断阈值/命中模式组名/请求模型名/时间，绝无原文无 key）——事件型告警
+     非状态翻转，游标（alert-state.json pg_block_cursor=已告警条 ts，两层共用）防抖，
+     发送成功才推进、失败下轮重试；单轮条数封顶 PG_BLOCK_ALERT_BATCH（防阻断风暴刷屏，
+     剩余下轮续发）
   6. judge warn 事件（issue #101）：tail 消费 shadow_log judge 层 warned=True 条目，发现即发卡
      （脱敏：项目/confidence/实体命中数/请求模型名/时间，绝无原文无 key 无实体字符串）——
      同款事件型游标模型（judge_warn_cursor），发送成功才推进、失败下轮重试；
@@ -114,8 +117,9 @@ def _env_float(name: str, default: float) -> float:
 SHADOW_ALERT_WINDOW = _env_int("SHADOW_ALERT_WINDOW", 20)
 SHADOW_ALERT_MIN = _env_int("SHADOW_ALERT_MIN_SAMPLES", 4)
 SHADOW_ERR_RATE = _env_float("SHADOW_ERR_RATE", 0.5)
-SHADOW_LAYER_NAMES = {"judge": "语义 judge", "pg": "注入 PG"}
+SHADOW_LAYER_NAMES = {"judge": "语义 judge", "pg": "注入 PG", "rules": "注入规则"}  # rules：issue #104
 # PG 阻断事件巡检（issue #103）：单轮发卡封顶（防风暴）+ tail 窗口（须覆盖两轮间积压）
+# issue #104：rules 层阻断条复用本通道（同 shadow_log 文件同时间轴，共用 pg_block_cursor 游标）
 PG_BLOCK_ALERT_BATCH = _env_int("PG_BLOCK_ALERT_BATCH", 10)
 PG_BLOCK_ALERT_TAIL = _env_int("PG_BLOCK_ALERT_TAIL", 100)
 # judge warn 事件巡检（issue #101）：同款封顶/窗口（judge 同步在响应后判定，两轮间积压同量级）
@@ -806,24 +810,37 @@ def shadow_avail_findings(layer_stats: dict) -> dict:
 
 
 def pg_block_pending(recs: list, cursor: float) -> list:
-    """PG 阻断事件待发卡列表（issue #103，纯函数）：pg 层 tail 记录（新到旧形状）+ 游标
-    （上次已告警条 ts）→ [(ts, 告警文本)]（旧到新——先发生先告警）。
+    """注入阻断事件待发卡列表（issue #103 PG；issue #104 起 rules 层阻断条复用本通道，纯函数）：
+    tail 记录（新到旧形状）+ 游标（上次已告警条 ts）→ [(ts, 告警文本)]（旧到新——先发生先告警）。
     只取 blocked=True 且 ts > cursor 的条目（== 不重发）；单轮封顶 PG_BLOCK_ALERT_BATCH
     （截最旧一批先发，剩余条 ts 仍在游标后，下轮续发）。
-    卡片脱敏纪律：只带层名/score/阻断阈值/请求模型名/时间——记录本身不落原文（shadow_log
-    #103 字段设计），此处亦不引入任何文本字段。"""
+    issue #104：recs 为两层混合（调用点 tail 不再按层过滤）——pg 条卡片带 score/阻断阈值，
+    rules 条卡片带命中模式组名（规则命中是布尔无 score 语义）；两层同 jsonl 文件同时间轴，
+    共用 pg_block_cursor 游标语义不变。
+    卡片脱敏纪律：只带层名/score/阻断阈值/模式组名/请求模型名/时间——记录本身不落原文
+    （shadow_log #103/#104 字段设计），此处亦不引入任何文本字段。"""
     out = []
     for r in sorted((r for r in recs if r.get("blocked") and (r.get("ts") or 0) > cursor),
                     key=lambda r: r["ts"]):
-        score = r.get("score")
-        score_txt = f"{score:.3f}" if isinstance(score, (int, float)) else "-"
-        out.append((r["ts"], (
-            f"[ai4s 告警] 提示词注入已阻断（451）\n"
-            f"层: 注入 PG\n"
-            f"score: {score_txt} ≥ 阻断阈值 {r.get('block_threshold')}\n"
-            f"请求模型: {r.get('model') or '-'}\n"
-            f"时间: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(r['ts']))}"
-        )))
+        if r.get("layer") == "rules":
+            text = (
+                f"[ai4s 告警] 提示词注入已阻断（451）\n"
+                f"层: 注入规则\n"
+                f"命中模式组: {','.join(r.get('groups') or ['-'])}\n"
+                f"请求模型: {r.get('model') or '-'}\n"
+                f"时间: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(r['ts']))}"
+            )
+        else:
+            score = r.get("score")
+            score_txt = f"{score:.3f}" if isinstance(score, (int, float)) else "-"
+            text = (
+                f"[ai4s 告警] 提示词注入已阻断（451）\n"
+                f"层: 注入 PG\n"
+                f"score: {score_txt} ≥ 阻断阈值 {r.get('block_threshold')}\n"
+                f"请求模型: {r.get('model') or '-'}\n"
+                f"时间: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(r['ts']))}"
+            )
+        out.append((r["ts"], text))
     return out[:PG_BLOCK_ALERT_BATCH]
 
 
@@ -930,11 +947,12 @@ def check_cycle(ax: Axonhub, state: dict) -> dict:
     except Exception as e:
         print(f"[alert] API key 额度查询失败: {type(e).__name__}", flush=True)
 
-    # 4) shadow 层可用率（issue #92）：judge/PG 判定持久化（shadow_log）的异常率巡检——
+    # 4) shadow 层可用率（issue #92）：judge/PG/rules 判定持久化（shadow_log）的异常率巡检——
     # 两侧判定原本只 print  stdout，异常无感知；统计失败只记日志不阻塞巡检主流程
+    # issue #104：rules 层纳入（本地正则层异常=bug 信号；enabled=false 默认态无落条不误报）
     try:
         findings.update(shadow_avail_findings(
-            {layer: shadow_log.stats(layer, window=SHADOW_ALERT_WINDOW) for layer in ("judge", "pg")}))
+            {layer: shadow_log.stats(layer, window=SHADOW_ALERT_WINDOW) for layer in ("judge", "pg", "rules")}))
     except Exception as e:
         print(f"[alert] shadow 层统计失败: {type(e).__name__}", flush=True)
 
@@ -944,19 +962,20 @@ def check_cycle(ax: Axonhub, state: dict) -> dict:
             state[k] = kind == "alert"
             print(f"[alert] 已{'告警' if kind == 'alert' else '恢复'}: {k}", flush=True)
 
-    # 5) PG 阻断事件（issue #103）：事件型告警（非 flip_actions 状态翻转模型——阻断无「恢复」
-    # 语义），游标独立防抖：发送成功才把游标推进到该条 ts，失败即止下轮重试（与翻转项同款纪律）；
-    # tail/发送异常只记日志，不阻塞巡检主流程
+    # 5) 注入阻断事件（issue #103 PG；issue #104 起 rules 层同通道）：事件型告警（非 flip_actions
+    # 状态翻转模型——阻断无「恢复」语义），游标独立防抖：发送成功才把游标推进到该条 ts，
+    # 失败即止下轮重试（与翻转项同款纪律）；tail/发送异常只记日志，不阻塞巡检主流程。
+    # tail 不按层过滤（pg/rules 阻断条同 jsonl 同时间轴，共用 pg_block_cursor 游标）
     try:
-        pending = pg_block_pending(shadow_log.tail(PG_BLOCK_ALERT_TAIL, layer="pg"),
+        pending = pg_block_pending(shadow_log.tail(PG_BLOCK_ALERT_TAIL),
                                    state.get("pg_block_cursor") or 0.0)
         for ts, text in pending:
             if not send_feishu(text):
                 break
             state["pg_block_cursor"] = ts
-            print(f"[alert] 已告警: pg 阻断 ts={ts}", flush=True)
+            print(f"[alert] 已告警: 注入阻断 ts={ts}", flush=True)
     except Exception as e:
-        print(f"[alert] PG 阻断巡检失败: {type(e).__name__}: {e}", flush=True)
+        print(f"[alert] 注入阻断巡检失败: {type(e).__name__}: {e}", flush=True)
 
     # 6) judge warn 事件（issue #101）：严格对齐巡检项 5 模型——事件型告警（warn 无「恢复」语义），
     # 独立游标 judge_warn_cursor 防抖（发送成功才推进、失败即止下轮重试）；

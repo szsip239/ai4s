@@ -13,6 +13,11 @@
   - 注入 PG：PromptGuard 2 进程内打分，默认 shadow 仅记录不阻断（fail-open）；issue #103
     高分档阻断试点——pg.block_enabled 开 → /request 应答前同步判定（推理延迟回请求路径
     是试点明示代价），score ≥ pg.block_threshold（默认 0.9）返回 451，低于阈值维持 shadow
+  - 注入规则层（issue #104，#100 路线② 生产落点）：inject_rules 语义模式组命中即记
+    （归一化扩清除表 + 迭代 base64 解码探针 + 16 个模式组，µs 级全文扫描无 4000 截断），
+    默认 rules.enabled=false 零开销零落条；开启后 shadow 落条（groups 脱敏字段），
+    rules.block 开 → 应答前同步 451（复用 #103 应答形状，code=rules.injection）。
+    与 PG 分工：规则层管确定性模式命中（布尔无分数），PG 管模型打分，两段各自独立开关
 本模块（检测路径）依赖仅标准库；镜像 python:3.12-slim（issue #48 起含 doc_extract 文档解析依赖，
 检测路径不 import 第三方库，纪律不变）。
 """
@@ -32,6 +37,7 @@ import edm_lib    # EDM 指纹算法共享库（issue #34）：入库/检测同�
 import feishu_lib  # 飞书签名共享实现（issue #70）：alert_poller 同一份
 import alert_poller  # 告警巡检+提额审批（issue #56 并入）：import 不起线程，仅 __main__ start_daemon
 import shadow_log  # shadow 判定观测闭环（issue #92）：stdlib-only；judge/PG 判定持久化供巡检/查询
+import inject_rules  # 注入规则层匹配器（issue #104）：纯 stdlib 正则，import 免费（无第三方依赖）
 
 PRESIDIO_URL = os.environ.get("PRESIDIO_URL", "http://presidio:3000")
 WORDLIST_PATH = os.environ.get("WORDLIST_PATH", "/dlp/confidential-terms.json")
@@ -71,6 +77,7 @@ _SETTINGS_SCHEMA = {
     "edm": {"enabled": "bool", "min_hits": "int"},
     "pg": {"enabled": "bool", "threshold": "number", "normalize": "bool",
            "block_enabled": "bool", "block_threshold": "number"},  # 阻断试点（issue #103）
+    "rules": {"enabled": "bool", "block": "bool"},  # 注入规则层（issue #104）：布尔命中无分数，阻断开关单键
     # 分层总开关（issue #40）：默认 True 保现网行为；关掉即整层跳过（l1=格式规则全族，
     # l2=词表/Presidio PII，response=响应侧整分支）
     "l1": {"enabled": "bool"},
@@ -907,6 +914,58 @@ class Handler(BaseHTTPRequestHandler):
                 },
             )
             return
+        # 注入规则层（issue #104，#100 路线② 生产落点）：inject_rules 语义模式组判定——
+        # 归一化扩清除表 + 迭代 base64 解码探针 + 模式组命中（µs 级全文扫描，无 4000 截断，
+        # 实测 p50≈24µs 同步无感，不占异步执行器）。位置在词表/EDM 451 之后、PG 阻断段之前：
+        # 规则命中是确定性布尔（便宜），先于 PG 模型推理（p95≈136ms）拦下可省一次同步推理。
+        # 开关语义：rules.enabled=false（默认）→ 零开销零落条（新层先进场 shadow 观察）；
+        # enabled=true → 每请求落 rules 层判定条（hit=True 带 groups 命中模式组名——脱敏字段；
+        # hit=False 不带 groups，jsonl 体积纪律）；rules.block 开 + 命中 → 451（应答形状对齐
+        # #103 PG 阻断：code=rules.injection、body/reason 不含原文）+ blocked=True 落条先于
+        # 应答（告警由 alert_poller 巡检项 5 复用 pg 阻断通道消费，shim 不新增同步外发）。
+        # fail-open：规则层自身异常必须放行不阻断——捕获后放行 + error 落条（与 PG 段同语义）。
+        # 空 text / 词表已 451 的请求不进本段（上方已 return，与 PG 段既有口径一致）。
+        if text and setting_value(settings, "rules", "enabled", "RULES_ENABLED", False):
+            _rules_t0 = time.monotonic()
+            try:
+                _r_hit, _r_groups, _r_depth = inject_rules.rule_match(text)
+                _r_err = None
+            except Exception as e:
+                _r_hit, _r_groups, _r_err = False, [], type(e).__name__
+                print(f"[injection.rules] fail-open: {_r_err}", flush=True)
+            _r_ms = int((time.monotonic() - _rules_t0) * 1000)  # 口径同 PG 段：纯判定耗时
+            if _r_err is not None:
+                shadow_log.record("rules", error="unavailable", latency_ms=_r_ms)
+            elif _r_hit and setting_value(settings, "rules", "block", "RULES_BLOCK", False):
+                # 阻断条先于应答落盘（告警巡检消费即见）；record 永不抛（shadow_log 纪律）
+                shadow_log.record("rules", hit=True, groups=_r_groups, latency_ms=_r_ms,
+                                  blocked=True, model=(payload.get("body") or {}).get("model"))
+                print(f"[injection.rules] 451 groups={','.join(_r_groups)}", flush=True)
+                body = json.dumps(
+                    {
+                        "error": {
+                            "message": "Blocked by ai4s DLP: prompt injection detected (rules.injection)",
+                            "type": "content_policy_violation",
+                            "code": "rules.injection",
+                        }
+                    },
+                    ensure_ascii=False,
+                )
+                self._json(
+                    200,
+                    {
+                        "action": {
+                            "body": body,
+                            "status_code": 451,
+                            "reason": f"prompt injection blocked: rules hit {', '.join(_r_groups)} (values withheld)",
+                        }
+                    },
+                )
+                return
+            else:
+                shadow_log.record("rules", hit=_r_hit, groups=_r_groups or None, latency_ms=_r_ms)
+                if _r_hit:
+                    print(f"[injection.rules] hit groups={','.join(_r_groups)}", flush=True)
         # PG 高分档阻断试点（issue #103）：pg.block_enabled 开 → 应答前同步跑一次 pg_guard。
         # 明示代价：PG 本地推理（实测 p50≈50ms/p95≈136ms）回到请求路径——试点期只拦高分档
         # （block_threshold 默认 0.9，v3 水位 14/46 检出、四档零误报），延迟换注入拦阻能力；

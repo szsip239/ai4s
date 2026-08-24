@@ -42,6 +42,9 @@ judge action 第三档（issue #101）：confidential 且 confidence ≥ `judge.
 **观测闭环（Observability Loop）**:
 shadow 层判定的三件套（issue #92）：持久化（shadow-verdicts.jsonl）+ judge 可用率巡检 + 查询/误报对账出口（`/dlp-admin/shadow-verdicts`）。
 
+**注入规则层（Injection Rules Layer）**:
+#100 路线② 的生产落点（issue #104）：shim 内嵌 `inject_rules.rule_match`（纯 stdlib 正则，µs 级），`/request` 词表/EDM 451 之后、PG 阻断段之前同步判定；16 个语义模式组覆盖 PG 中文盲区（提取系统提示词/覆盖指令/虚假授权/情感操纵/分隔符伪装，中英日韩 + 拼音变体），并闭合 nested_encoding（迭代 base64 解码探针，深度 2）与 invisible（不可见字符扩充清除）盲区。布尔命中无分数：`rules.enabled`=shadow 只记不拦（shadow_log 层名 `rules`，落条只存命中模式组名），`rules.block`=命中即 451（code `rules.injection`）；默认双关，先进场 shadow 观察。
+
 **前置脱敏（Pre-egress Masking）**:
 judge 外发硬性纪律（issue #93）：判定输入一律取 L1/L2 掩码后文本（masked_msgs），secret/PII 原文不进 judge prompt；已收敛为部署 checklist 硬性项。
 _Avoid_: 原文外发

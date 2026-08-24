@@ -5,7 +5,7 @@ import test from 'node:test';
 import ts from 'typescript';
 
 // 与 src/gql/graphql.test.mjs 同款：TS 源 transpile 后运行期依赖替换为桩，经 data URL 导入。
-// 只测 normalizePg 纯函数（settings pg 段读侧缺键补默认），hooks/apiRequest 桩不触发。
+// 只测 normalizePg / normalizeInjectRules 纯函数（settings pg/rules 段读侧缺键补默认），hooks/apiRequest 桩不触发。
 const source = readFileSync(join(import.meta.dirname, 'api.ts'), 'utf8');
 const transpiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2023 },
@@ -18,7 +18,9 @@ const transpiled = ts.transpileModule(source, {
   .replaceAll("import { apiRequest } from '@/lib/api-client';", 'const apiRequest = () => Promise.resolve({});')
   .replaceAll("import { getTokenFromStorage } from '@/stores/authStore';", 'const getTokenFromStorage = () => "";');
 
-const { normalizePg } = await import(`data:text/javascript;base64,${Buffer.from(transpiled).toString('base64')}`);
+const { normalizePg, normalizeInjectRules } = await import(
+  `data:text/javascript;base64,${Buffer.from(transpiled).toString('base64')}`
+);
 
 test('normalizePg: 旧 settings.json 缺键补默认（issue #44 normalize / issue #103 阻断两键）', () => {
   assert.deepEqual(normalizePg({ enabled: true, threshold: 0.8 }), {
@@ -50,4 +52,20 @@ test('normalizePg: 阻断两键显式值原样保留（issue #103 面板整体 P
   const off = normalizePg({ enabled: true, threshold: 0.7, block_enabled: false, block_threshold: 0.8 });
   assert.equal(off.block_enabled, false);
   assert.equal(off.block_threshold, 0.8);
+});
+
+test('normalizeInjectRules: 旧 settings.json 缺 rules 段/缺键补默认（issue #104 双键默认关）', () => {
+  // 缺省与 shim setting_value 缺省对齐：enabled=false（新层先进场 shadow 观察）、block=false
+  assert.deepEqual(normalizeInjectRules(undefined), { enabled: false, block: false });
+  assert.deepEqual(normalizeInjectRules({}), { enabled: false, block: false });
+  assert.deepEqual(normalizeInjectRules({ enabled: true }), { enabled: true, block: false });
+});
+
+test('normalizeInjectRules: 显式两档原样保留（面板整体 PUT 必填，读侧不得吞档）', () => {
+  const on = normalizeInjectRules({ enabled: true, block: true });
+  assert.equal(on.enabled, true);
+  assert.equal(on.block, true);
+  const off = normalizeInjectRules({ enabled: false, block: false });
+  assert.equal(off.enabled, false);
+  assert.equal(off.block, false);
 });

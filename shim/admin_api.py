@@ -22,6 +22,9 @@ issue #93：judge 采样/并发预算 schema——settings judge 段加 sample_r
 issue #103：PG 高分阻断 schema——settings pg 段加 block_enabled（布尔开关，默认关=纯 shadow
 现状）/block_threshold（0~1 阻断阈值，默认 0.9）校验；/request 链路消费（app.py 应答前
 同步判定 451），阻断事件落 shadow_log（blocked=True）由 alert_poller 巡检发飞书（脱敏）。
+issue #104：注入规则层 schema——settings 新增 rules 段（必填，仅 enabled/block 两布尔键，
+默认双关=先进场 shadow 观察再议阻断）；shadow-verdicts 出口 layer 过滤接受 rules、
+stats 加 rules 层（判定条带 groups 命中模式组名脱敏字段）。
 issue #101：judge action 消费落地（app.py /request 链路：off 不判定 / shadow 现状 /
 warn 超阈值落 warned=True 条不拦截 / reject 契约不支持按 shadow）；shadow-verdicts
 stats 聚合透出 warned 数（观察期误报对账口径），warn 事件由 alert_poller 巡检项 6 发飞书。
@@ -252,13 +255,16 @@ def _settings_get(handler, _me):
 
 
 # settings schema（issue #35）：顶层/区段未知键一律拒绝（防 typo 静默漂移，同 format-rules 校验精神）
-_SETTINGS_TOP_KEYS = {"version", "_comment", "judge", "edm", "pg", "l1", "l2", "response"}
+_SETTINGS_TOP_KEYS = {"version", "_comment", "judge", "edm", "pg", "rules", "l1", "l2", "response"}
 _SETTINGS_JUDGE_KEYS = {"enabled", "model", "base_url", "timeout", "prompt_system", "prompt_fewshot",
                         "threshold", "action",  # threshold/action：issue #94 置信度门槛与动作分级
                         "sample_rate", "max_concurrency"}  # issue #93 判定采样率与并发预算
 _SETTINGS_EDM_KEYS = {"enabled", "min_hits"}
 _SETTINGS_PG_KEYS = {"enabled", "threshold", "normalize",  # normalize：issue #44 打分前置归一化开关
                      "block_enabled", "block_threshold"}  # 阻断试点（issue #103）：开关 + 阻断阈值
+# 注入规则层（issue #104）：enabled=层开关（默认关，先进场 shadow 观察）/block=命中即 451
+# （默认关；规则命中是布尔无分数，无阈值概念——与 pg 双键形态不同）
+_SETTINGS_RULES_KEYS = {"enabled", "block"}
 # 分层总开关（issue #40）：单键段
 _SETTINGS_L1_KEYS = {"enabled"}
 _SETTINGS_L2_KEYS = {"enabled"}
@@ -288,6 +294,7 @@ def _validate_settings(data) -> str | None:
     if "_comment" in data and not isinstance(data["_comment"], str):
         return "_comment 必须是字符串"
     allowed = {"judge": _SETTINGS_JUDGE_KEYS, "edm": _SETTINGS_EDM_KEYS, "pg": _SETTINGS_PG_KEYS,
+               "rules": _SETTINGS_RULES_KEYS,
                "l1": _SETTINGS_L1_KEYS, "l2": _SETTINGS_L2_KEYS, "response": _SETTINGS_RESPONSE_KEYS}
     for section, keys in allowed.items():
         sec = data.get(section)
@@ -333,6 +340,10 @@ def _validate_settings(data) -> str | None:
         return "pg.block_enabled 必须是布尔值"
     if not _is_number(pg["block_threshold"]) or not 0 <= pg["block_threshold"] <= 1:
         return "pg.block_threshold 必须是 0~1 数值"
+    # issue #104：rules 段必填两布尔键（规则命中是布尔无分数，无阈值概念）
+    for k in ("enabled", "block"):
+        if not isinstance(data["rules"][k], bool):
+            return f"rules.{k} 必须是布尔值"
     for section in ("l1", "l2", "response"):  # 分层总开关（issue #40）：仅 enabled 单键
         if not isinstance(data[section]["enabled"], bool):
             return f"{section}.enabled 必须是布尔值"
@@ -936,10 +947,11 @@ def _kr_reject_item(handler, me, rid):
 
 
 def _shadow_verdicts(handler, _me):
-    """GET /dlp-admin/shadow-verdicts：两层 stats + 近期判定记录（新到旧，不落原文）。
-    query 参数：n（默认 50，1..500 截断）、layer（judge/pg 过滤，非法值 400）。
+    """GET /dlp-admin/shadow-verdicts：三层 stats + 近期判定记录（新到旧，不落原文）。
+    query 参数：n（默认 50，1..500 截断）、layer（judge/pg/rules 过滤，非法值 400）。
     issue #101：stats 透出 warned 聚合数（judge warn 试点观察期误报对账口径：
-    warned/hits 同窗可比），records 逐条带 warned/model 脱敏字段供核对。"""
+    warned/hits 同窗可比），records 逐条带 warned/model 脱敏字段供核对。
+    issue #104：rules 层（注入规则层）判定条同槽透出，records 带 groups 命中模式组名。"""
     q = urllib.parse.parse_qs(urllib.parse.urlsplit(handler.path).query)
     try:
         n = int((q.get("n") or ["50"])[0])
@@ -947,11 +959,11 @@ def _shadow_verdicts(handler, _me):
         n = 50
     n = max(1, min(500, n))
     layer = (q.get("layer") or [""])[0] or None
-    if layer not in (None, "judge", "pg"):
-        _respond(handler, 400, {"error": "layer 必须是 judge 或 pg"})
+    if layer not in (None, "judge", "pg", "rules"):
+        _respond(handler, 400, {"error": "layer 必须是 judge、pg 或 rules"})
         return
     _respond(handler, 200, {
-        "stats": {l: shadow_log.stats(l) for l in ("judge", "pg")},
+        "stats": {l: shadow_log.stats(l) for l in ("judge", "pg", "rules")},
         "records": shadow_log.tail(n, layer=layer),
     })
 

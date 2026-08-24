@@ -1,10 +1,11 @@
 /**
  * settings 段校验共享模块（issue #38 review #3）：judge/pg 段客户端预检原本在
  * JudgePanel/PgPanel/SettingsPanel 逐字重复，收敛于此三处共用。
+ * issue #104 起 rules 段（注入规则层）同址。
  * 规则与服务端权威校验（shim/admin_api.py _validate_settings）同款——预检只为省一次往返，
  * 失败原因仍以 API 为准。合法返回 null，非法返回中文原因。
  */
-import type { JudgeSettings, PgSettings } from '../api';
+import type { InjectRulesSettings, JudgeSettings, PgSettings } from '../api';
 
 /** judge 段预检：model/base_url 非空、timeout > 0、两段 prompt 非空、threshold 0~1、action 档位（issue #94）。
  * issue #101 契约纪律：reject 档 schema 存在但「语义层永不阻断」不支持消费——面板拒绝保存，
@@ -24,5 +25,13 @@ export function validateJudge(judge: JudgeSettings): string | null {
 export function validatePg(pg: PgSettings): string | null {
   if (!(pg.threshold >= 0 && pg.threshold <= 1)) return 'pg threshold 须在 0~1';
   if (!(pg.block_threshold >= 0 && pg.block_threshold <= 1)) return 'pg block_threshold 须在 0~1';
+  return null;
+}
+
+/** rules 段预检（issue #104）：enabled/block 两布尔开关——取值两档均合法（语义由后端权威校验），
+ * 预检只挡运行时非布尔类型错误（手改 JSON/异常数据进面板的防御，与后端布尔校验同款） */
+export function validateInjectRules(rules: InjectRulesSettings): string | null {
+  if (typeof rules.enabled !== 'boolean') return 'rules enabled 须为布尔开关';
+  if (typeof rules.block !== 'boolean') return 'rules block 须为布尔开关';
   return null;
 }

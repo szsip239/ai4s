@@ -1,7 +1,7 @@
 /**
- * 开关与阈值整体面板（issue #36；issue #38 起为整体视图，judge/PG 单项维护走各自独立面板；issue #40 扩六段）。
- * GET/PUT /dlp-admin/settings（L1/L2/响应侧分层总开关 + judge/edm/pg 开关阈值 + judge prompt）。
- * PUT 整体替换（服务端校验六段必填且字段齐全）；本地草稿 edited===null 即无改动（dirty 供离开提示）。
+ * 开关与阈值整体面板（issue #36；issue #38 起为整体视图，judge/PG 单项维护走各自独立面板；issue #40 扩六段；issue #104 加注入规则段）。
+ * GET/PUT /dlp-admin/settings（L1/L2/响应侧分层总开关 + judge/edm/rules/pg 开关阈值 + judge prompt）。
+ * PUT 整体替换（服务端校验七段必填且字段齐全）；本地草稿 edited===null 即无改动（dirty 供离开提示）。
  * 404/故障展示与 judge/PG 面板同款（Ai4sSettingsQueryState）。judge 区常驻警示：真实员工流量启用前必须换内网模型。
  */
 import { useEffect, useState } from 'react';
@@ -15,7 +15,7 @@ import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { usePutSettings, useSettings, type DlpSettings } from '../api';
 import { Ai4sSettingsQueryState } from './QueryState';
-import { validateJudge, validatePg } from './settingsValidation';
+import { validateInjectRules, validateJudge, validatePg } from './settingsValidation';
 
 export function Ai4sSettingsPanel({ onDirtyChange }: { onDirtyChange?: (dirty: boolean) => void }) {
   const { data, isLoading, error } = useSettings();
@@ -30,7 +30,7 @@ export function Ai4sSettingsPanel({ onDirtyChange }: { onDirtyChange?: (dirty: b
   }, [dirty, onDirtyChange]);
 
   // 旧 settings.json 可能缺 l1/l2/response 段（shim 侧缺段默认 true）：草稿基线按缺省 true 补齐三段，
-  // 保证 PUT 整体替换始终六段齐全（否则只改其他段保存也会被服务端 400）
+  // 保证 PUT 整体替换始终七段齐全（rules 段由 api selectSettings 的 normalizeInjectRules 补默认；否则只改其他段保存也会被服务端 400）
   const settingsDoc =
     edited ??
     (data
@@ -49,13 +49,15 @@ export function Ai4sSettingsPanel({ onDirtyChange }: { onDirtyChange?: (dirty: b
 
   const save = () => {
     if (!settingsDoc) return;
-    // 共享预检（settingsValidation，judge→edm→pg 顺序同原逐字面板的报错优先级；服务端权威校验为准）
+    // 共享预检（settingsValidation，judge→edm→pg→rules 顺序同原逐字面板的报错优先级；服务端权威校验为准）
     const invalidJudge = validateJudge(settingsDoc.judge);
     if (invalidJudge) return setFormError(invalidJudge);
     if (!Number.isInteger(settingsDoc.edm.min_hits) || settingsDoc.edm.min_hits < 1)
       return setFormError('edm min_hits 须为 ≥1 整数');
     const invalidPg = validatePg(settingsDoc.pg);
     if (invalidPg) return setFormError(invalidPg);
+    const invalidRules = validateInjectRules(settingsDoc.rules); // issue #104 注入规则层（两布尔开关）
+    if (invalidRules) return setFormError(invalidRules);
     putSettings.mutate(settingsDoc, { onSuccess: () => setEdited(null) });
   };
 
@@ -64,7 +66,7 @@ export function Ai4sSettingsPanel({ onDirtyChange }: { onDirtyChange?: (dirty: b
       <CardHeader>
         <CardTitle>开关与阈值</CardTitle>
         <CardDescription>
-          L1/L2/响应侧分层总开关与 judge / EDM / PG 开关阈值的整体视图，与左侧各层面板读写同一份
+          L1/L2/响应侧分层总开关与 judge / EDM / 注入规则 / PG 开关阈值的整体视图，与左侧各层面板读写同一份
           settings.json。单项维护走对应面板，这里适合整体核对；保存即热生效
         </CardDescription>
       </CardHeader>
@@ -197,6 +199,29 @@ export function Ai4sSettingsPanel({ onDirtyChange }: { onDirtyChange?: (dirty: b
                     <Switch
                       checked={settingsDoc.edm.enabled}
                       onCheckedChange={(c) => mutate({ ...settingsDoc, edm: { ...settingsDoc.edm, enabled: c } })}
+                    />
+                  </div>
+                </div>
+              </section>
+
+              {/* ---- 注入规则（issue #104；管线顺序在 PG 之前——确定性模式命中先于模型打分） ---- */}
+              <section className='space-y-4'>
+                <div className='flex items-center justify-between gap-4'>
+                  <div>
+                    <div className='font-medium'>注入规则（16 模式组）</div>
+                    <div className='text-sm text-muted-foreground'>
+                      命中记 [injection.rules] 日志（shadow 不拦）；开阻断后命中即 451
+                    </div>
+                  </div>
+                  <div className='flex items-center gap-3'>
+                    <span className='text-sm text-muted-foreground'>阻断</span>
+                    <Switch
+                      checked={settingsDoc.rules.block}
+                      onCheckedChange={(c) => mutate({ ...settingsDoc, rules: { ...settingsDoc.rules, block: c } })}
+                    />
+                    <Switch
+                      checked={settingsDoc.rules.enabled}
+                      onCheckedChange={(c) => mutate({ ...settingsDoc, rules: { ...settingsDoc.rules, enabled: c } })}
                     />
                   </div>
                 </div>

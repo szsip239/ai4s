@@ -27,6 +27,7 @@ import { Ai4sNodeBadges, Ai4sPipelineBar, type Ai4sPipelineNodeView } from './Pi
 import { Ai4sDeepLayerRules } from './panels/DeepLayerRules';
 import { Ai4sEdmCorpusPanel } from './panels/EdmCorpusPanel';
 import { Ai4sFormatRulesPanel } from './panels/FormatRulesPanel';
+import { Ai4sInjectRulesPanel } from './panels/InjectRulesPanel';
 import { Ai4sJudgePanel } from './panels/JudgePanel';
 import { Ai4sLayerSwitch } from './panels/LayerSwitch';
 import { Ai4sPgPanel } from './panels/PgPanel';
@@ -119,6 +120,13 @@ export default function Ai4sRulesPage() {
         badges: cfgBadges(cfgEnabled((x) => x.judge.enabled), true),
         count: settingsDoc?.judge.model ?? '—',
       },
+      rules: {
+        key: 'rules',
+        name: LAYER_LABEL.rules,
+        // 规则层 shadow 只记不拦（issue #104）；block 开=命中即 451 阻断，不再标 shadow
+        badges: cfgBadges(cfgEnabled((x) => x.rules.enabled), !(settingsDoc?.rules.block ?? false)),
+        count: settingsDoc ? `16 模式组${settingsDoc.rules.block ? ' · 阻断' : ''}` : '—',
+      },
       pg: {
         key: 'pg',
         name: LAYER_LABEL.pg,
@@ -165,6 +173,7 @@ export default function Ai4sRulesPage() {
       l2: !(settingsDoc.l2?.enabled ?? true),
       l3: !settingsDoc.edm.enabled,
       judge: !settingsDoc.judge.enabled,
+      rules: !settingsDoc.rules.enabled,
       pg: !settingsDoc.pg.enabled,
       response: !(settingsDoc.response?.enabled ?? true),
     };
@@ -217,6 +226,7 @@ export default function Ai4sRulesPage() {
             )}
             {selected === 'l3' && <Ai4sEdmCorpusPanel onDirtyChange={dirtyRegistry.reporter('l3')} />}
             {selected === 'judge' && <Ai4sJudgePanel onDirtyChange={dirtyRegistry.reporter('judge')} />}
+            {selected === 'rules' && <Ai4sInjectRulesPanel onDirtyChange={dirtyRegistry.reporter('rules')} />}
             {selected === 'pg' && <Ai4sPgPanel onDirtyChange={dirtyRegistry.reporter('pg')} />}
             {selected === 'toggles' && <Ai4sSettingsPanel onDirtyChange={dirtyRegistry.reporter('toggles')} />}
             {selected === 'response' && <Ai4sResponseSideCard />}

@@ -3,7 +3,7 @@
  * key 即面板选中态（Ai4sRulesPage 的 selected），管线点击与导航选中联动同一 state。
  */
 
-export type PanelKey = 'l1' | 'l2' | 'l3' | 'judge' | 'pg' | 'response' | 'toggles' | 'deep';
+export type PanelKey = 'l1' | 'l2' | 'l3' | 'judge' | 'rules' | 'pg' | 'response' | 'toggles' | 'deep';
 
 export interface LayerDef {
   key: PanelKey;
@@ -11,12 +11,14 @@ export interface LayerDef {
 }
 
 /** 管线节点（请求侧 5 节点 + 响应侧），顺序即检测链评估顺序。
- * L1/L1.5 同一 format-rules.json、同一 FormatRulesPanel（action 列区分 reject/mask），#39 起合并为「L1 格式规则」 */
+ * L1/L1.5 同一 format-rules.json、同一 FormatRulesPanel（action 列区分 reject/mask），#39 起合并为「L1 格式规则」；
+ * issue #104 起「注入规则」节点与「注入 PG」相邻（规则层在 PG 段之前评估——确定性模式命中先于模型打分） */
 export const PIPELINE_LAYERS: LayerDef[] = [
   { key: 'l1', label: 'L1 格式规则' },
   { key: 'l2', label: 'L2 词表/PII' },
   { key: 'l3', label: 'L3 EDM' },
   { key: 'judge', label: '语义 judge' },
+  { key: 'rules', label: '注入规则' },
   { key: 'pg', label: '注入 PG' },
   { key: 'response', label: '响应侧' },
 ];

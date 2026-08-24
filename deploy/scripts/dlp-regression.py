@@ -14,12 +14,16 @@ PUT 临时词→命中 451→PUT 还原→不再 451；凭据缺（env DLP_ADMIN
 deploy/.local/admin-jwt 均不可得）则 SKIP 不 fail。
 PG 阻断专项段（issue #103）：admin 段之后——PUT 开阻断（block_enabled=true,
 block_threshold=0.9）→ v3 高分注入样本应 451 → 负例应放行 → PUT 还原（关阻断）→
-同高分样本再应放行；shim 未含 #103 阻断区块时（PUT 400 未知字段）SKIP 不 fail
-（集成前预期态）。
+同高分样本再应放行；shim 未含 #103 阻断区块时（PUT 400 未知字段/未知顶层键）SKIP 不 fail
+（集成前预期态；#104 起入库 settings.json 含 rules 顶层段，更旧 shim 的拒绝口径一并覆盖）。
 judge warn 专项段（issue #101）：PG 阻断段之后——PUT action=warn → 经网关打一条
 semantic-vectors novel 涉密样本（应放行——契约「语义层永不阻断」）→ admin 查询出口
 shadow-verdicts 出现 warned=True 新条 → PUT 还原 action=shadow；shim 未含 #101 消费时
 （judge 判定超阈值落条但无 warned 键）SKIP 不 fail（对齐 #103 段探测纪律）。
+规则层专项段（issue #104）：judge warn 段之后——PUT 开 rules.enabled（shadow）→ v3
+注入样本应放行且查询出口 layer=rules 出现 hit 条 → PUT 开 block=true → 同样本应
+451 → 负例应放行 → PUT 还原（双关）→ 同样本再应放行；shim 未含 #104 区块时
+（PUT 400 未知顶层键 / 查询出口 layer=rules 400）SKIP 不 fail（集成前预期态）。
 注入水位门禁段（issue #95）：主流程最前 subprocess 跑 injection-eval.py（normalize
 链路口径），不达标非零即回归失败。
 语义层水位门禁段（issue #99）：紧跟注入门禁段 subprocess 跑 semantic-eval.py
@@ -161,7 +165,9 @@ def run_pg_block_section(api_key, token):
     """PG 阻断专项段（issue #103，自包含）：admin PUT 开阻断（block_enabled=true,
     block_threshold=0.9，pg 其余键原样）→ v3 高分注入样本经网关应 451 → 负例应放行
     → PUT 还原（原始 GET 内容，阻断回落关）→ 同高分样本再应放行。
-    能力探测：shim 未含 #103 阻断区块时 PUT 400「未知字段」→ SKIP 不 fail（集成前预期态）。
+    能力探测：shim 未含 #103 阻断区块时 PUT 400「未知字段」→ SKIP 不 fail（集成前预期态）；
+    #104 起 settings.json 增 rules 顶层段，更旧的 shim 报「未知顶层键」——探测放宽为「未知」
+    一并覆盖（shim 版本落后于入库配置 = 待集成态，同义 SKIP）。
     自清理：finally 还原 settings（pg 段缺阻断键时补默认——旧 settings.json 直 PUT 会被
     必填校验 400）；前置条件：回归跑在默认配置（阻断关）的栈上。
     状态变化注明：阻断开时 PG 推理回请求路径（同步，p95≈136ms 明示代价）；容器内 PG 模型
@@ -188,7 +194,7 @@ def run_pg_block_section(api_key, token):
         try:
             trial = {**original, "pg": {**original["pg"], "block_enabled": True, "block_threshold": 0.9}}
             status, body = tk._admin_api("PUT", "/dlp-admin/settings", token, trial)
-            if status == 400 and "未知字段" in str((body or {}).get("error", "")):
+            if status == 400 and "未知" in str((body or {}).get("error", "")):
                 print("[SKIP] PG 阻断段：shim 未含 issue #103 阻断区块（待集成），本段跳过不 fail")
                 return []
             results.append(("PG阻断: PUT 开阻断（block_threshold=0.9）", status == 200, f"http{status}"))
@@ -242,6 +248,8 @@ def run_judge_warn_section(api_key, token):
     （time.time()-1），轮询至该次判定条落盘再评估——段外存量/前段迟落记录不串档。
     能力探测：shim 未含 #101 消费时（旧容器）judge 仍判定落条但无 warned 键——任一次
     hit 且置信度达档却无 warned 条即判旧容器 → SKIP 不 fail（对齐 #103 段探测纪律）。
+    #104 起 settings.json 增 rules 顶层段：更旧的 shim 对 PUT 直接 400「未知顶层键」
+    → 同样判 SKIP（shim 版本落后于入库配置 = 待集成态）。
     自清理：finally 还原 settings（judge 段缺 #93/#94 键的旧 settings.json 直 PUT 会被必填
     校验 400——PUT 前补默认，与 shim setting_value/normalizeJudge 缺省对齐）。
     前置条件：回归跑在默认配置（action=shadow）且 judge 链路可用（语义水位门禁段已先跑）。"""
@@ -277,6 +285,10 @@ def run_judge_warn_section(api_key, token):
             trial = {**original,
                      "judge": {**_judge_full(original["judge"]), "action": "warn"}}
             status, body = tk._admin_api("PUT", "/dlp-admin/settings", token, trial)
+            if status == 400 and "未知" in str((body or {}).get("error", "")):
+                # #104 起入库 settings.json 含 rules 顶层段，更旧的 shim 直接拒绝整个 PUT
+                print("[SKIP] judge warn 段：shim 版本落后于入库 settings（待集成），本段跳过不 fail")
+                return []
             results.append(("judgeWarn: PUT action=warn", status == 200, f"http{status}"))
             if status == 200:
                 pass_checked = False
@@ -316,6 +328,110 @@ def run_judge_warn_section(api_key, token):
                 st, reply = tk.send(sample["content"], api_key)
                 got = tk.classify(st, reply, None)
                 results.append(("judgeWarn: 还原后同样本放行", got == "pass", got))
+        finally:
+            restore()
+    for name, ok, got in results:
+        print(f"[{'OK ' if ok else 'FAIL'}] {name}（got={got}）")
+    return results
+
+
+# 规则层专项段（issue #104）样本：v3「inj: 系统提示词提取中文」——extract-zh 组必中
+#（#100 评估单点口径，生产即 shim/inject_rules.rule_match）；负例同 PG 阻断段
+#（普通业务话术，真失败即误报发现）
+RULES_SAMPLE_NAME = "inj: 系统提示词提取中文"
+
+
+def run_rules_layer_section(api_key, token):
+    """规则层专项段（issue #104，自包含）：admin PUT 开 rules.enabled（block 关）→ v3 注入
+    样本经网关应放行（shadow 只记不拦）→ 轮询 admin 查询出口
+    /dlp-admin/shadow-verdicts?layer=rules 出现 hit=True 条 → PUT 开 block=true →
+    同样本应 451 → 负例应放行 → PUT 还原（双关）→ 同样本再应放行。
+    判定条同步落盘（规则段在应答前 record），应答到手即可查，轮询几次兜底吸收时序。
+    能力探测：shim 未含 #104 规则层时 PUT 400「未知顶层键」、或查询出口 layer=rules 400
+    → SKIP 不 fail（集成前预期态，对齐 #103/#101 段探测纪律）。
+    自清理：finally 还原 settings（rules 段缺/缺键补默认 {"enabled":False,"block":False}
+    ——与 shim setting_value 缺省对齐，否则必填校验 400 还原失败、开关留在开位）。
+    前置条件：回归跑在默认配置（规则层双关）的栈上。规则层判定 µs 级（正则无模型），
+    不新增内存画像。"""
+    print("\n==> 规则层专项段（issue #104，settings PUT 自包含）")
+    results = []
+    vectors = json.load(open(os.path.join(DEPLOY_DIR, "tests", "injection-vectors.json"),
+                             encoding="utf-8"))["vectors"]
+    sample = next((v for v in vectors if v["name"] == RULES_SAMPLE_NAME), None)
+    status, doc = tk._admin_api("GET", "/dlp-admin/settings", token)
+    if sample is None or status != 200 or not isinstance(doc, dict):
+        results.append(("规则层: 前置（v3 样本/settings GET）", False,
+                        f"http{status}" if sample is not None else "样本缺失"))
+    else:
+        original = doc  # 还原基准（含 version/_comment 及其余各段原样）
+
+        def _rules_full(section):
+            # 旧 settings.json 缺 rules 段/缺键：PUT 前补默认（与 shim setting_value 缺省对齐）
+            return {"enabled": False, "block": False,
+                    **(section if isinstance(section, dict) else {})}
+
+        def restore():
+            return tk._admin_api("PUT", "/dlp-admin/settings", token,
+                                 {**original, "rules": _rules_full(original.get("rules"))})
+
+        def recent_rules_recs(since_ts):
+            st, body = tk._admin_api("GET", "/dlp-admin/shadow-verdicts?layer=rules&n=20", token)
+            if st == 400:
+                return None  # 旧容器无 rules 层查询出口（能力探测锚点）
+            if st != 200 or not isinstance(body, dict):
+                return []
+            return [r for r in body.get("records") or [] if (r.get("ts") or 0) >= since_ts]
+
+        try:
+            trial = {**original, "rules": {**_rules_full(original.get("rules")), "enabled": True}}
+            status, body = tk._admin_api("PUT", "/dlp-admin/settings", token, trial)
+            if status == 400 and "未知" in str((body or {}).get("error", "")):
+                print("[SKIP] 规则层段：shim 未含 issue #104 规则层区块（待集成），本段跳过不 fail")
+                return []
+            results.append(("规则层: PUT 开 shadow（rules.enabled=true）", status == 200, f"http{status}"))
+            if status == 200:
+                wm = time.time() - 1  # 本次发送水位线：隔离本次判定条（-1s 吸收时钟误差）
+                st, reply = tk.send(sample["content"], api_key)
+                got = tk.classify(st, reply, None)
+                results.append(("规则层: 注入样本 shadow 应放行", got == "pass", got))
+                hit_rec = None
+                legacy = False
+                for _poll in range(4):  # 规则段落条同步先于应答，应答到手即可查；轮询兜底
+                    recs = recent_rules_recs(wm)
+                    if recs is None:
+                        legacy = True
+                        break
+                    hit_rec = next((r for r in recs if r.get("hit") and not r.get("error")), None)
+                    if hit_rec is not None:
+                        break
+                    time.sleep(1)
+                if legacy:
+                    print("[SKIP] 规则层段：shim 未含 issue #104 查询出口（待集成），本段跳过不 fail")
+                    return []
+                results.append(("规则层: 查询出口出现 layer=rules hit 条", hit_rec is not None,
+                                f"groups={hit_rec.get('groups')}" if hit_rec else "4 次轮询未见 hit 条"))
+                status, _ = tk._admin_api(
+                    "PUT", "/dlp-admin/settings", token,
+                    {**original, "rules": {**_rules_full(original.get("rules")),
+                                           "enabled": True, "block": True}})
+                results.append(("规则层: PUT 开阻断（rules.block=true）", status == 200, f"http{status}"))
+                if status == 200:
+                    st, reply = tk.send(sample["content"], api_key)
+                    got = tk.classify(st, reply, None)
+                    results.append(("规则层: 注入样本应 451", got == "reject", got))
+                    st, reply = tk.send(PG_BLOCK_NEGATIVE, api_key)
+                    got = tk.classify(st, reply, None)
+                    results.append(("规则层: 负例应放行", got == "pass", got))
+                status, _ = restore()
+                results.append(("规则层: PUT 还原（双关）", status == 200, f"http{status}"))
+                got = None
+                for _attempt in range(2):  # shim 每请求重读 settings 即时生效；retry 吸收极端时序
+                    st, reply = tk.send(sample["content"], api_key)
+                    got = tk.classify(st, reply, None)
+                    if got == "pass":
+                        break
+                    time.sleep(1)
+                results.append(("规则层: 还原后同样本放行", got == "pass", got))
         finally:
             restore()
     for name, ok, got in results:
@@ -421,8 +537,14 @@ def main():
     if admin_token is not None:
         judge_warn_results = run_judge_warn_section(api_key, admin_token)
 
+    # 规则层专项段（issue #104）：紧跟 judge warn 段（同凭据与自还原纪律）；
+    # shim 未含 #104 区块时段内自探测 SKIP（不 fail）
+    rules_results = []
+    if admin_token is not None:
+        rules_results = run_rules_layer_section(api_key, admin_token)
+
     fails = [r for r in results if r["fail"]]
-    for name, ok, got in edm_fails + admin_results + pg_block_results + judge_warn_results:
+    for name, ok, got in edm_fails + admin_results + pg_block_results + judge_warn_results + rules_results:
         if not ok:
             fails.append({"name": name, "expect": "reject", "got": got})
     print(f"\n总计 {len(results)} 样本：通过 {sum(1 for r in results if r['ok'])}，文档化 gap {sum(1 for r in results if not r['ok'] and not r['fail'])}，回归失败 {len(fails)}")
