@@ -21,6 +21,31 @@ _Avoid_: 用户规则、user scope 规则
 请求打码时留映射、响应还原为原文，员工看到完整内容而上游只见掩码。当前全部为**不可逆**固定替换词；可逆评估挂账待 #23。
 _Avoid_: 脱敏还原、映射恢复
 
+### 语义层
+
+**语义层（Semantic Layer）**:
+DLP 检测链中 shim 内嵌 LLM judge 的一层，负责词表层覆盖不了的商密语义（谐音/拼音/拆字/暗示性指代）。路线已定案为外部 API（ADR-0006，supersede ADR-0002 的 LangExtract/本地 Ollama 描述）；本地/内网路线（Ollama 1.5b、GLiNER、zero-shot NLI）实测全部出局。
+_Avoid_: LangExtract 路线、内网 7b+ 路线（均已废止）
+
+**judge**:
+语义层的 LLM 判定器（shim 内 `judge_text`），现网 gpt-5.6-luna 经 axonhub 中转；响应定稿后异步判定，只记 verdict 不含原文。action 四档：off / shadow / warn / reject。
+
+**shadow（影子模式）**:
+judge 默认档：照常判定、照常记录，对链路零动作。判定持久化 `alert-state/shadow-verdicts.jsonl`。
+
+**warn（告警试点档）**:
+judge action 第三档（issue #101）：confidential 且 confidence ≥ `judge.threshold` 时落 `warned=True` 条，alert_poller 巡检项 6 游标消费发飞书（卡片字段全脱敏；项目字段因链路无项目标识恒为「未知（请求链路无项目标识）」），**只告警不拦截**。观察期终态的前奏形态。
+
+**永不阻断（Never-block Discipline）**:
+语义层纪律（ADR-0006 维持结论）：judge 延迟秒级且误判不可归零，只能 shadow/warn/异步审计，永不阻断链路；reject 档在 schema 存在但不消费（按 shadow 处理，UI 灰置）。
+
+**观测闭环（Observability Loop）**:
+shadow 层判定的三件套（issue #92）：持久化（shadow-verdicts.jsonl）+ judge 可用率巡检 + 查询/误报对账出口（`/dlp-admin/shadow-verdicts`）。
+
+**前置脱敏（Pre-egress Masking）**:
+judge 外发硬性纪律（issue #93）：判定输入一律取 L1/L2 掩码后文本（masked_msgs），secret/PII 原文不进 judge prompt；已收敛为部署 checklist 硬性项。
+_Avoid_: 原文外发
+
 ### 统一配置
 
 **统一配置中心（Unified Config Center）**:

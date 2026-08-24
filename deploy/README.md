@@ -85,6 +85,17 @@ crontab 每日 03:00：`0 3 * * * cd <repo>/deploy && ./scripts/pg-backup.sh >> 
 
 恢复参考：`gunzip -c backups/<文件>.sql.gz | docker compose exec -T postgres psql -U axonhub -d axonhub`
 
+## 部署 checklist（硬性项，逐条勾选）
+
+部署或变更后开员工流量前逐项确认，任一不满足不得放行：
+
+- [ ] `python3 scripts/dlp-regression.py` 全绿（含 EDM/admin/注入/语义水位门禁段）
+- [ ] **judge 外发前置脱敏生效**（`judge.enabled=true` 前必查，issue #93 / ADR-0006）：judge 判定输入一律为 L1/L2 掩码后文本（masked_msgs）——用「仅含 `sk-` 密钥、无其他涉密语义」的样本过 `/judge-test`，judge 应判 clean（原文若真外发必判涉密，判 clean 即间接证明 judge 只见掩码占位）；secret/PII 原文不进 judge prompt
+- [ ] `JUDGE_API_KEY`/`FEISHU_*` 只走 `.env`，未写入 settings.json 或任何入库配置文件
+- [ ] `judge.action` 只取 off/shadow/warn；reject 档契约不支持消费（语义层永不阻断，UI 灰置，误设按 shadow 处理 + 日志提示）
+- [ ] fail-open 告警链路可用：alert_poller 探活（shim `/healthz`、Presidio `/health`）与飞书群机器人签名发送实测可达；judge warn 巡检项 6 游标消费正常（`alert-state/shadow-verdicts.jsonl` 有判定落条）
+- [ ] axonhub 每次新建项目后重跑 `scripts/issue-70-narrow-seed-roles.sql` 核查收窄 Developer/Viewer 种子角色（ADR-0005 纪律）
+
 ## 密钥纪律
 
 - 所有口令/OAuth 凭据只放 `deploy/.env`（已 gitignore）；`.env.example` 仅占位。
