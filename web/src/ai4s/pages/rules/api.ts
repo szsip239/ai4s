@@ -95,6 +95,8 @@ export interface EdmDocSummary {
 }
 
 /** 统一 settings（issue #35）：PUT 整体替换（六段必填且字段齐全） */
+/** judge 动作分级（issue #94）：off 关 / shadow 仅记录 / warn 告警 / reject 拦截；消费执行在 #101 */
+export type JudgeAction = 'off' | 'shadow' | 'warn' | 'reject';
 export interface JudgeSettings {
   enabled: boolean;
   model: string;
@@ -102,6 +104,8 @@ export interface JudgeSettings {
   timeout: number;
   prompt_system: string;
   prompt_fewshot: string;
+  threshold: number; // issue #94 置信度门槛（0~1）
+  action: JudgeAction; // issue #94 动作分级；后端 PUT 必填（shim _SETTINGS_JUDGE_KEYS）
 }
 export interface EdmSettings {
   enabled: boolean;
@@ -117,6 +121,20 @@ export interface PgSettings {
  * （enabled/normalize 默认 false、threshold 默认 0.7） */
 export function normalizePg(pg: Partial<PgSettings> | undefined): PgSettings {
   return { enabled: pg?.enabled ?? false, threshold: pg?.threshold ?? 0.7, normalize: pg?.normalize ?? false };
+}
+/** judge 段读侧缺键补默认（issue #94）：旧 settings.json（本票前写入）可能缺 threshold/action，
+ * 不补则面板整体 PUT 时后端必填校验 400；缺省值与 shim setting_value 缺省对齐（0.8 / shadow） */
+export function normalizeJudge(judge: Partial<JudgeSettings> | undefined): JudgeSettings {
+  return {
+    enabled: judge?.enabled ?? false,
+    model: judge?.model ?? '',
+    base_url: judge?.base_url ?? '',
+    timeout: judge?.timeout ?? 8,
+    prompt_system: judge?.prompt_system ?? '',
+    prompt_fewshot: judge?.prompt_fewshot ?? '',
+    threshold: judge?.threshold ?? 0.8,
+    action: judge?.action ?? 'shadow',
+  };
 }
 /** 分层总开关（issue #40）：单键段；旧 settings.json 可能缺段（shim 侧缺段默认 true），
  * 故读侧按可选处理、展示缺省回退 true 与服务端语义对齐 */
@@ -215,11 +233,12 @@ export function useEdmCorpus() {
 }
 
 // select 提升模块级：内联匿名函数每次渲染新建引用会让 TanStack Query 的 select 记忆化失效（issue #70 评审 P2）
-const selectSettings = (d: DlpSettings): DlpSettings => ({ ...d, pg: normalizePg(d.pg) });
+const selectSettings = (d: DlpSettings): DlpSettings => ({ ...d, judge: normalizeJudge(d.judge), pg: normalizePg(d.pg) });
 
 export function useSettings() {
   // retry: false——settings.json 缺失回 404（env 兜底态，合法），交由面板即时展示而非重试
-  // select：pg 段缺键补默认（issue #70），保存面板整体 PUT 不因缺 normalize 被后端 400
+  // select：judge 段缺 threshold/action（issue #94）、pg 段缺键（issue #70）补默认，
+  // 保存面板整体 PUT 不因缺键被后端 400
   return useQuery({
     queryKey: QK.settings,
     queryFn: () => get<DlpSettings>('/settings'),

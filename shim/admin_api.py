@@ -14,6 +14,8 @@ issue #89：多项目隔离——read_project_header 统一解析/校验 X-Proje
 所在项目解耦，切错项目不批错单）。
 issue #92：shadow 判定查询出口 GET /dlp-admin/shadow-verdicts（读级）——judge/PG shadow
 判定持久化（shadow_log）的 stats + 近期记录（新到旧，不落原文），供误报观察期统计。
+issue #94：judge 阈值与动作分级 schema——settings judge 段加 threshold（0~1 置信度门槛）
+/action（off/shadow/warn/reject 四档）校验；本票仅 schema/校验，消费执行在 #101。
 
 与检测路径（/request /response 调用链）完全隔离：admin 平面 fail-closed——
 内省不可达回 503，不适用检测链的 fail-open 分级（契约 docs/contracts/dlp-webhook-shim.md）。
@@ -242,13 +244,18 @@ def _settings_get(handler, _me):
 
 # settings schema（issue #35）：顶层/区段未知键一律拒绝（防 typo 静默漂移，同 format-rules 校验精神）
 _SETTINGS_TOP_KEYS = {"version", "_comment", "judge", "edm", "pg", "l1", "l2", "response"}
-_SETTINGS_JUDGE_KEYS = {"enabled", "model", "base_url", "timeout", "prompt_system", "prompt_fewshot"}
+_SETTINGS_JUDGE_KEYS = {"enabled", "model", "base_url", "timeout", "prompt_system", "prompt_fewshot",
+                        "threshold", "action"}  # threshold/action：issue #94 置信度门槛与动作分级
 _SETTINGS_EDM_KEYS = {"enabled", "min_hits"}
 _SETTINGS_PG_KEYS = {"enabled", "threshold", "normalize"}  # normalize：issue #44 打分前置归一化开关
 # 分层总开关（issue #40）：单键段
 _SETTINGS_L1_KEYS = {"enabled"}
 _SETTINGS_L2_KEYS = {"enabled"}
 _SETTINGS_RESPONSE_KEYS = {"enabled"}
+
+
+# judge 动作分级（issue #94）：off 关 / shadow 仅记录 / warn 告警 / reject 拦截；消费执行在 #101
+_SETTINGS_JUDGE_ACTIONS = {"off", "shadow", "warn", "reject"}
 
 
 def _is_number(v) -> bool:
@@ -288,6 +295,12 @@ def _validate_settings(data) -> str | None:
             return f"judge.{k} 必须是非空字符串"
     if not _is_number(judge["timeout"]) or judge["timeout"] <= 0:
         return "judge.timeout 必须是 >0 数值"
+    # issue #94：threshold 0~1 置信度门槛 + action 四档（仅校验，消费在 #101）
+    if not _is_number(judge["threshold"]) or not 0 <= judge["threshold"] <= 1:
+        return "judge.threshold 必须是 0~1 数值"
+    # 先 str 再查档位集合：list/dict 等 unhashable 值直接 not in 会抛 TypeError 断连（#94 评审）
+    if not isinstance(judge["action"], str) or judge["action"] not in _SETTINGS_JUDGE_ACTIONS:
+        return "judge.action 必须是 off/shadow/warn/reject 之一"
     if not isinstance(edm["enabled"], bool):
         return "edm.enabled 必须是布尔值"
     if not isinstance(edm["min_hits"], int) or isinstance(edm["min_hits"], bool) or edm["min_hits"] < 1:

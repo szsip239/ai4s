@@ -59,7 +59,8 @@ def load_settings() -> dict:
 # 否则检测路径在响应已发后抛 TypeError（如 score >= "0.7"）。与 admin 写侧 _validate_settings 同款映射。
 _SETTINGS_SCHEMA = {
     "judge": {"enabled": "bool", "model": "str", "base_url": "str", "timeout": "number",
-              "prompt_system": "str", "prompt_fewshot": "str"},
+              "prompt_system": "str", "prompt_fewshot": "str",
+              "threshold": "number", "action": "str"},  # 阈值/动作分级（issue #94）：schema 先行，消费在 #101
     "edm": {"enabled": "bool", "min_hits": "int"},
     "pg": {"enabled": "bool", "threshold": "number", "normalize": "bool"},
     # 分层总开关（issue #40）：默认 True 保现网行为；关掉即整层跳过（l1=格式规则全族，

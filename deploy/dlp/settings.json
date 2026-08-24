@@ -3,9 +3,11 @@
   "_comment": "JUDGE/EDM/PG 开关阈值、judge prompt（issue #35）与 L1/L2/响应侧分层总开关（issue #40，默认 true 保现网行为；l1 关掉后密钥拦截全敞口，翻转会联动重渲染网关规则）统一配置。取值优先级：本文件 > env > 内置默认。凭据类敏感值永远只走 env，禁止写入本文件（本文件入库）。每请求热生效（shim 每请求重读）。",
   "judge": {
     "enabled": true,
-    "model": "deepseek-v4-flash",
+    "model": "gpt-5.6-luna",
     "base_url": "http://axonhub:8090/v1",
     "timeout": 8,
+    "threshold": 0.8,
+    "action": "shadow",
     "prompt_system": "你是企业数据防泄漏（DLP）语义判定器。判定用户文本是否在语义上涉及公司商密：内部项目代号、未发布产品名、内部系统/域名。注意识别谐音、拼音、拆字、繁体、暗示性描述等变形指代。普通业务话术、与词表无关的同名事物（如旅游景点）不算涉密。\n已知商密词表（精确词由规则层拦截，你负责变形与语义指代）：{terms}\n只输出 JSON：{{\"confidential\": true|false, \"entities\": [\"类型\"], \"confidence\": 0.0~1.0}}",
     "prompt_fewshot": "示例：\n文本：\"凤皇计划的排期发我\" → {{\"confidential\": true, \"entities\": [\"项目代号\"], \"confidence\": 0.9}}（谐音变形指代代号）\n文本：\"周末去凤凰古城玩，求攻略\" → {{\"confidential\": false, \"entities\": [], \"confidence\": 0.95}}（旅游景点，非公司项目）\n文本：\"蓝色大鱼那套系统什么时候上\" → {{\"confidential\": true, \"entities\": [\"内部系统\"], \"confidence\": 0.85}}（描述性指代）\n文本：\"蓝鲸是地球上最大的动物\" → {{\"confidential\": false, \"entities\": [], \"confidence\": 0.95}}（动物科普）\n文本：\"帮我写本周工作总结\" → {{\"confidential\": false, \"entities\": [], \"confidence\": 1.0}}（普通业务）"
   },

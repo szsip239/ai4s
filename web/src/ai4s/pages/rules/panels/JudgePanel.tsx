@@ -2,6 +2,8 @@
  * 语义 judge 面板（issue #38）：独立面板消灭焦点移动（原 SettingsPanel focus 滚动定位）。
  * 只编辑 judge 段；保存时与最新 useSettings 缓存合并（edm/pg 段与 version/_comment 原样）整体 PUT，
  * 写后 invalidate——三面板读写同一份 settings.json 且不互相覆盖。
+ * issue #94：置信度门槛 + 命中处置四档（关/仅记录/告警/拦截）开放配置；本票仅配置面，
+ * 告警/拦截的执行在 #101 落地，当前实际行为等同「仅记录」。
  * 外发警示常驻：真实员工流量启用前必须换内网模型（契约部署 checklist 硬性项）。
  */
 import { useEffect, useState } from 'react';
@@ -11,9 +13,10 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
-import { usePutSettings, useSettings, type JudgeSettings } from '../api';
+import { usePutSettings, useSettings, type JudgeAction, type JudgeSettings } from '../api';
 import { Ai4sSettingsQueryState } from './QueryState';
 import { validateJudge } from './settingsValidation';
 
@@ -50,7 +53,7 @@ export function Ai4sJudgePanel({ onDirtyChange }: { onDirtyChange?: (dirty: bool
       <CardHeader>
         <CardTitle>语义 judge</CardTitle>
         <CardDescription>
-          用大模型判断一段话是否在变相提及公司商密（谐音、暗示这类精确词表抓不住的变形）。当前只记判定结果不拦截（shadow）；judge
+          用大模型判断一段话是否在变相提及公司商密（谐音、暗示这类精确词表抓不住的变形）。命中后按「命中处置」分级处理，当前实际执行为仅记录（告警、拦截的执行将在后续试点落地）；judge
           服务不可用时自动退回纯词表检测，不影响正常请求
         </CardDescription>
       </CardHeader>
@@ -66,7 +69,7 @@ export function Ai4sJudgePanel({ onDirtyChange }: { onDirtyChange?: (dirty: bool
                 <IconAlertTriangle className='size-4' />
                 <AlertTitle>外发警示</AlertTitle>
                 <AlertDescription>
-                  真实员工流量启用前必须换内网模型（当前测试期外发 deepseek，judge 会扩大暴露面，生产不可外发——契约部署
+                  真实员工流量启用前必须换内网模型（当前测试期经内部网关外发 API 判定，judge 会扩大暴露面，生产不可外发——契约部署
                   checklist 硬性项）。
                 </AlertDescription>
               </Alert>
@@ -87,6 +90,33 @@ export function Ai4sJudgePanel({ onDirtyChange }: { onDirtyChange?: (dirty: bool
                     value={judge.timeout}
                     onChange={(e) => mutate({ ...judge, timeout: Number(e.target.value) })}
                   />
+                </div>
+              </div>
+              <div className='grid grid-cols-2 gap-4'>
+                <div className='space-y-1.5'>
+                  <Label>置信度门槛（0~1，判定把握达到门槛才算命中）</Label>
+                  <Input
+                    type='number'
+                    step='0.05'
+                    min='0'
+                    max='1'
+                    value={judge.threshold}
+                    onChange={(e) => mutate({ ...judge, threshold: Number(e.target.value) })}
+                  />
+                </div>
+                <div className='space-y-1.5'>
+                  <Label>命中处置</Label>
+                  <Select value={judge.action} onValueChange={(v) => mutate({ ...judge, action: v as JudgeAction })}>
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value='off'>关（不送判定）</SelectItem>
+                      <SelectItem value='shadow'>仅记录（记入日志，不影响使用）</SelectItem>
+                      <SelectItem value='warn'>告警（记录并通知管理员）</SelectItem>
+                      <SelectItem value='reject'>拦截（拒绝该次请求）</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
               <div className='space-y-1.5'>

@@ -1378,6 +1378,7 @@ class EdmLibParityTest(unittest.TestCase):
 
 
 # 合法 settings fixture（issue #35）：结构对齐 deploy/dlp/settings.json 首版
+# judge.threshold/action（issue #94）：置信度门槛与动作分级（schema/校验 only，消费在 #101）
 _SETTINGS_FIXTURE = {
     "version": 1,
     "_comment": "测试 fixture",
@@ -1388,6 +1389,8 @@ _SETTINGS_FIXTURE = {
         "timeout": 8,
         "prompt_system": "系统提示 {terms} {{json}}",
         "prompt_fewshot": "示例",
+        "threshold": 0.8,
+        "action": "shadow",
     },
     "edm": {"enabled": True, "min_hits": 2},
     "pg": {"enabled": True, "threshold": 0.7, "normalize": False},
@@ -1458,6 +1461,15 @@ class AdminSettingsTest(unittest.TestCase):
         status, _ = self._put(_SETTINGS_FIXTURE, token="reader-token")
         self.assertEqual(status, 403)
 
+    def test_put_settings_judge_action_four_tiers_200(self):
+        """judge.action 四档（issue #94）：off/shadow/warn/reject 均为合法值 → 200。"""
+        for action in ("off", "shadow", "warn", "reject"):
+            with self.subTest(action=action):
+                new = json.loads(json.dumps(_SETTINGS_FIXTURE))
+                new["judge"]["action"] = action
+                status, body = self._put(new)
+                self.assertEqual(status, 200, f"action={action}: 期望 200，实际 {status} {body}")
+
     def test_put_settings_validation_400(self):
         """PUT 校验（issue #35）：逐条非法变体 → 400 带原因，且落盘文件不被污染。"""
         def mutated(fn):
@@ -1478,6 +1490,17 @@ class AdminSettingsTest(unittest.TestCase):
             ("judge.model 空串", mutated(lambda d: d["judge"].update({"model": ""}))),
             ("judge.prompt_system 非字符串", mutated(lambda d: d["judge"].update({"prompt_system": 1}))),
             ("judge.prompt_fewshot 空串", mutated(lambda d: d["judge"].update({"prompt_fewshot": ""}))),
+            # judge.threshold/action（issue #94）：threshold 必填 0~1 数值；action 必填四档之一
+            ("judge 缺 threshold", mutated(lambda d: d["judge"].pop("threshold"))),
+            ("judge 缺 action", mutated(lambda d: d["judge"].pop("action"))),
+            ("judge.threshold 超界", mutated(lambda d: d["judge"].update({"threshold": 1.5}))),
+            ("judge.threshold 为布尔", mutated(lambda d: d["judge"].update({"threshold": True}))),
+            ("judge.threshold 为字符串", mutated(lambda d: d["judge"].update({"threshold": "0.8"}))),
+            ("judge.action 非法档位", mutated(lambda d: d["judge"].update({"action": "block"}))),
+            ("judge.action 非字符串", mutated(lambda d: d["judge"].update({"action": 1}))),
+            # unhashable 值（list/dict）不得抛 TypeError 断连，须 400 带原因（#94 评审：_validate_settings 契约）
+            ("judge.action 为数组", mutated(lambda d: d["judge"].update({"action": ["shadow"]}))),
+            ("judge.action 为对象", mutated(lambda d: d["judge"].update({"action": {"x": 1}}))),
             ("edm 缺 enabled", mutated(lambda d: d["edm"].pop("enabled"))),
             ("edm.min_hits 小于 1", mutated(lambda d: d["edm"].update({"min_hits": 0}))),
             ("edm.min_hits 为布尔", mutated(lambda d: d["edm"].update({"min_hits": True}))),
@@ -1599,13 +1622,21 @@ class AppSettingsTest(unittest.TestCase):
             # 字符串字段拒绝非 str
             self.assertEqual(
                 shim_app.setting_value({"judge": {"model": 123}}, "judge", "model", "JUDGE_MODEL", "m0"), "m0")
+            # judge.threshold/action（issue #94）：number/str 护栏（schema 覆盖，暂无消费方）
+            self.assertEqual(
+                shim_app.setting_value({"judge": {"threshold": "0.8"}}, "judge", "threshold", "JUDGE_THRESHOLD", 0.8), 0.8)
+            self.assertEqual(
+                shim_app.setting_value({"judge": {"action": 1}}, "judge", "action", "JUDGE_ACTION", "shadow"), "shadow")
         out = buf.getvalue()
-        self.assertEqual(out.count("类型不符"), 5)
+        self.assertEqual(out.count("类型不符"), 7)
         self.assertIn("pg.threshold", out)
+        self.assertIn("judge.threshold", out)
         self.assertNotIn('"0.7"', out)  # warn 不带回显值本身
         # 合法类型原样通过（number 兼收 int/float；bool/str/int 各归各型）
         self.assertEqual(shim_app.setting_value({"pg": {"threshold": 1}}, "pg", "threshold", "PG_THRESHOLD", 0.7), 1)
         self.assertEqual(shim_app.setting_value({"judge": {"timeout": 2.5}}, "judge", "timeout", "JUDGE_TIMEOUT", 8), 2.5)
+        self.assertEqual(shim_app.setting_value({"judge": {"threshold": 0.9}}, "judge", "threshold", "JUDGE_THRESHOLD", 0.8), 0.9)
+        self.assertEqual(shim_app.setting_value({"judge": {"action": "warn"}}, "judge", "action", "JUDGE_ACTION", "shadow"), "warn")
         self.assertEqual(shim_app.setting_value({"edm": {"min_hits": 3}}, "edm", "min_hits", "EDM_MIN_HITS", 2), 3)
         self.assertEqual(shim_app.setting_value({"judge": {"enabled": True}}, "judge", "enabled", "JUDGE_ENABLED", False), True)
         # 坏键不牵连同文件好键

@@ -118,7 +118,7 @@ export function Ai4sSettingsPanel({ onDirtyChange }: { onDirtyChange?: (dirty: b
                   <IconAlertTriangle className='size-4' />
                   <AlertTitle>外发警示</AlertTitle>
                   <AlertDescription>
-                    真实员工流量启用前必须换内网模型（当前测试期外发 deepseek，judge 会扩大暴露面，生产不可外发——契约部署
+                    真实员工流量启用前必须换内网模型（当前测试期经内部网关外发 API 判定，judge 会扩大暴露面，生产不可外发——契约部署
                     checklist 硬性项）。
                   </AlertDescription>
                 </Alert>
