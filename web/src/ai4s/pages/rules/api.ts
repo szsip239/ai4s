@@ -106,6 +106,8 @@ export interface JudgeSettings {
   prompt_fewshot: string;
   threshold: number; // issue #94 置信度门槛（0~1）
   action: JudgeAction; // issue #94 动作分级；后端 PUT 必填（shim _SETTINGS_JUDGE_KEYS）
+  sample_rate: number; // issue #93 判定采样率（0~1）；后端 PUT 必填，面板无控件
+  max_concurrency: number; // issue #93 judge 并发上限（≥1）；后端 PUT 必填，面板无控件
 }
 export interface EdmSettings {
   enabled: boolean;
@@ -122,8 +124,9 @@ export interface PgSettings {
 export function normalizePg(pg: Partial<PgSettings> | undefined): PgSettings {
   return { enabled: pg?.enabled ?? false, threshold: pg?.threshold ?? 0.7, normalize: pg?.normalize ?? false };
 }
-/** judge 段读侧缺键补默认（issue #94）：旧 settings.json（本票前写入）可能缺 threshold/action，
- * 不补则面板整体 PUT 时后端必填校验 400；缺省值与 shim setting_value 缺省对齐（0.8 / shadow） */
+/** judge 段读侧缺键补默认（issue #94/#93）：旧 settings.json（两票前写入）可能缺
+ * threshold/action/sample_rate/max_concurrency，不补则面板整体 PUT 时后端必填校验 400；
+ * 缺省值与 shim setting_value 缺省对齐（0.8 / shadow / 1.0 / 2） */
 export function normalizeJudge(judge: Partial<JudgeSettings> | undefined): JudgeSettings {
   return {
     enabled: judge?.enabled ?? false,
@@ -134,6 +137,8 @@ export function normalizeJudge(judge: Partial<JudgeSettings> | undefined): Judge
     prompt_fewshot: judge?.prompt_fewshot ?? '',
     threshold: judge?.threshold ?? 0.8,
     action: judge?.action ?? 'shadow',
+    sample_rate: judge?.sample_rate ?? 1.0,
+    max_concurrency: judge?.max_concurrency ?? 2,
   };
 }
 /** 分层总开关（issue #40）：单键段；旧 settings.json 可能缺段（shim 侧缺段默认 true），

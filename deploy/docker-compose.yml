@@ -133,8 +133,9 @@ services:
       FEISHU_ALERT_WEBHOOK: ${FEISHU_ALERT_WEBHOOK:-}
       FEISHU_ALERT_SECRET: ${FEISHU_ALERT_SECRET:-}
       # issue #21 语义层 shadow：judge 经 axonhub 直连调 deepseek-flash（测试期，合成样本）；
-      # 真实流量启用前必须换内网模型。issue #35 起开关/模型/超时/prompt 生效值以
-      # /dlp/settings.json 为准（GET/PUT /dlp-admin/settings 维护，热生效），env 仅作回退层
+      # issue #93 起确定外部 API 路线（无内网机型）——judge 输入先经 L1/L2 掩码脱敏再外发，
+      # settings 加 sample_rate/max_concurrency 采样与并发预算。issue #35 起开关/模型/超时/prompt
+      # 生效值以 /dlp/settings.json 为准（GET/PUT /dlp-admin/settings 维护，热生效），env 仅作回退层
       JUDGE_ENABLED: ${JUDGE_ENABLED:-0}
       JUDGE_BASE_URL: ${JUDGE_BASE_URL:-http://axonhub:8090/v1}
       JUDGE_API_KEY: ${JUDGE_API_KEY:-} # 凭据永远只走 env，禁止写入 settings.json

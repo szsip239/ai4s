@@ -15,7 +15,9 @@
 """
 import json
 import os
+import random
 import re
+import threading
 import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -60,7 +62,8 @@ def load_settings() -> dict:
 _SETTINGS_SCHEMA = {
     "judge": {"enabled": "bool", "model": "str", "base_url": "str", "timeout": "number",
               "prompt_system": "str", "prompt_fewshot": "str",
-              "threshold": "number", "action": "str"},  # 阈值/动作分级（issue #94）：schema 先行，消费在 #101
+              "threshold": "number", "action": "str",  # 阈值/动作分级（issue #94）：schema 先行，消费在 #101
+              "sample_rate": "number", "max_concurrency": "int"},  # 采样率/并发预算（issue #93）
     "edm": {"enabled": "bool", "min_hits": "int"},
     "pg": {"enabled": "bool", "threshold": "number", "normalize": "bool"},
     # 分层总开关（issue #40）：默认 True 保现网行为；关掉即整层跳过（l1=格式规则全族，
@@ -138,10 +141,34 @@ FEISHU_SECRET = os.environ.get("FEISHU_ALERT_SECRET", "")
 ALERT_RETRIES = 2
 
 # 商密语义层 shadow（issue #21）：LLM judge 只记录不阻断。
-# 测试期 judge 经 axonhub:8090 直连（绕过 agentgateway DLP 防递归）调 deepseek-flash，样本全为合成占位词；
-# 真实流量启用前必须换内网模型（Ollama/vLLM）——judge 会扩大暴露面，生产不可外发。
+# issue #93 起确定走外部 API 路线（无内网机型，用户拍板）：judge 输入先过 L1/L2 掩码管线
+# 脱敏再外发（/request 复用已算好的 masked_msgs，/judge-test 包单条 messages 走同一管线），
+# 并有采样率/并发预算两键（settings judge.sample_rate / judge.max_concurrency）做流量护栏。
 # 开关/模型/超时/prompt 走统一 settings（issue #35）；凭据永远只走 env。
 JUDGE_API_KEY = os.environ.get("JUDGE_API_KEY", "")
+
+# judge 并发预算（issue #93）：模块级锁+计数器，不用 Semaphore——上限每请求现读 settings
+# 热生效，Semaphore 尺寸创建后僵化。占满即跳过判定（不落 shadow_log 条：skip 非层异常，
+# 不能污染 #92 的 error_rate）。
+_JUDGE_INFLIGHT = 0
+_JUDGE_LOCK = threading.Lock()
+
+
+def judge_budget_try_enter(limit: int) -> bool:
+    """占一个 judge 并发名额；已达 limit 返回 False（不占位）。limit 由调用方每请求现读 settings。"""
+    global _JUDGE_INFLIGHT
+    with _JUDGE_LOCK:
+        if _JUDGE_INFLIGHT >= limit:
+            return False
+        _JUDGE_INFLIGHT += 1
+        return True
+
+
+def judge_budget_exit() -> None:
+    """释放一个名额（与 try_enter 成功配对，finally 中调用）。"""
+    global _JUDGE_INFLIGHT
+    with _JUDGE_LOCK:
+        _JUDGE_INFLIGHT = max(0, _JUDGE_INFLIGHT - 1)
 
 # EDM 文档指纹（issue #29，L3 层 PoC）：归一化 shingle + SHA-256，命中≥阈值即 451。
 # 语料/指纹库 gitignored；指纹是单向哈希，不存原文。
@@ -643,6 +670,17 @@ def mask_message_contents(messages, recs):
     return out, any_masked, sorted(all_entities)
 
 
+def mask_pipeline(messages, l1_on: bool, l2_on: bool):
+    """L1/L2 掩码管线（/request 掩码段原顺序，issue #93 起 judge 外发输入同口径复用）：
+    先归一化 mask（l1），无命中再走 Presidio PII mask（l2）。返回 (masked_msgs, any_masked, entities)。"""
+    masked_msgs, any_masked, entities = messages, False, []
+    if l1_on:
+        masked_msgs, any_masked, entities = norm_mask_messages(messages)
+    if not any_masked and l2_on:
+        masked_msgs, any_masked, entities = mask_message_contents(messages, load_pii_recognizers())
+    return masked_msgs, any_masked, entities
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):  # 静默（命中敏感值不进 shim 日志，契约）
         pass
@@ -680,11 +718,19 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/judge-test":
             # 语义层直测端点（issue #21）：不进请求链，供回归脚本测 judge 准确率/延迟
+            # issue #93：与 /request 链路同口径——text 包成单条 messages 过同一掩码管线再送 judge
+            # （semantic-eval 量的即生产输入）；直测显式触发，不走采样/并发预算
             try:
                 length = min(int(self.headers.get("Content-Length") or 0), MAX_BODY)
                 payload = json.loads(self.rfile.read(length) or b"{}")
                 t0 = time.time()
-                verdict = judge_text(payload.get("text", ""))
+                settings = load_settings()
+                masked_msgs, _, _ = mask_pipeline(
+                    [{"role": "user", "content": payload.get("text", "")}],
+                    setting_value(settings, "l1", "enabled", "L1_ENABLED", True),
+                    setting_value(settings, "l2", "enabled", "L2_ENABLED", True),
+                )
+                verdict = judge_text(extract_text(masked_msgs))
                 self._json(200, {"verdict": verdict, "latency_ms": round((time.time() - t0) * 1000)})
             except Exception as e:
                 self._json(500, {"error": str(e)[:200]})
@@ -784,12 +830,7 @@ class Handler(BaseHTTPRequestHandler):
         # issue #22：先走归一化 mask（分隔/全角变形）；无命中再走 Presidio context 流程
         # issue #40：归一化 mask 属 l1（格式规则全族），Presidio PII 属 l2，各自随总开关跳过
         try:
-            masked_msgs, any_masked, entities = messages, False, []
-            if l1_on:
-                masked_msgs, any_masked, entities = norm_mask_messages(messages)
-            if not any_masked and l2_on:
-                recs = load_pii_recognizers()
-                masked_msgs, any_masked, entities = mask_message_contents(messages, recs)
+            masked_msgs, any_masked, entities = mask_pipeline(messages, l1_on, l2_on)
         except Exception as e:
             self._json(500, {"error": str(e)[:200]})
             return
@@ -809,16 +850,28 @@ class Handler(BaseHTTPRequestHandler):
         # issue #92：判定持久化 shadow_log（实体只存命中数，不存字符串）——观测闭环供巡检/统计消费；
         # enabled 但无 verdict（prompt 缺失/API 异常等）记 error 条，可用率巡检才有数据；
         # 空 text（纯图片/工具调用请求无可判输入）整体跳过不落条——否则误计「层不可用」污染异常率
-        if text and setting_value(settings, "judge", "enabled", "JUDGE_ENABLED", False):
-            _t0 = time.monotonic()
-            v = judge_text(text)
-            _ms = int((time.monotonic() - _t0) * 1000)
-            if v is not None:
-                shadow_log.record("judge", hit=v["confidential"], confidence=v["confidence"],
-                                  latency_ms=_ms, entities=len(v["entities"]))
-                print(f"[semantic.shadow] confidential={v['confidential']} entities={','.join(v['entities']) or '-'} confidence={v['confidence']:.2f}", flush=True)
+        # issue #93：judge 输入改用掩码后文本（masked_msgs 提取，未命中时==messages 语义不变）——
+        # 涉密候选原文不外发；采样率/并发预算只作用于本链路（/judge-test 直测不受限），
+        # 未中采样/预算占满 = 跳过判定，不落 shadow_log 条（skip 非层异常，不污染 error_rate）
+        judge_input = extract_text(masked_msgs)
+        if judge_input and setting_value(settings, "judge", "enabled", "JUDGE_ENABLED", False):
+            if random.random() >= setting_value(settings, "judge", "sample_rate", "JUDGE_SAMPLE_RATE", 1.0):
+                print("[semantic.shadow] skipped (sampling)", flush=True)
+            elif not judge_budget_try_enter(setting_value(settings, "judge", "max_concurrency", "JUDGE_MAX_CONCURRENCY", 2)):
+                print("[semantic.shadow] skipped (concurrency budget)", flush=True)
             else:
-                shadow_log.record("judge", error="unavailable", latency_ms=_ms)
+                try:
+                    _t0 = time.monotonic()
+                    v = judge_text(judge_input)
+                    _ms = int((time.monotonic() - _t0) * 1000)
+                    if v is not None:
+                        shadow_log.record("judge", hit=v["confidential"], confidence=v["confidence"],
+                                          latency_ms=_ms, entities=len(v["entities"]))
+                        print(f"[semantic.shadow] confidential={v['confidential']} entities={','.join(v['entities']) or '-'} confidence={v['confidence']:.2f}", flush=True)
+                    else:
+                        shadow_log.record("judge", error="unavailable", latency_ms=_ms)
+                finally:
+                    judge_budget_exit()
         # 注入检测 shadow（issue #30）：PromptGuard 2 评分 ≥阈值记日志，不阻断
         # issue #92：同上持久化；调用点显式判 enabled——enabled 且 score 为 None 即本次判定不可用；
         # 空 text 跳过不落条（同 judge 侧，code-review 修复）

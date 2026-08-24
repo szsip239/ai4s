@@ -16,6 +16,9 @@ issue #92：shadow 判定查询出口 GET /dlp-admin/shadow-verdicts（读级）
 判定持久化（shadow_log）的 stats + 近期记录（新到旧，不落原文），供误报观察期统计。
 issue #94：judge 阈值与动作分级 schema——settings judge 段加 threshold（0~1 置信度门槛）
 /action（off/shadow/warn/reject 四档）校验；本票仅 schema/校验，消费执行在 #101。
+issue #93：judge 采样/并发预算 schema——settings judge 段加 sample_rate（0~1 判定采样率）
+/max_concurrency（≥1 judge HTTP 并发上限）校验；/request 链路消费（app.py），
+采样/预算 skip 不落 shadow_log 条（非层异常，不污染 #92 error_rate）。
 
 与检测路径（/request /response 调用链）完全隔离：admin 平面 fail-closed——
 内省不可达回 503，不适用检测链的 fail-open 分级（契约 docs/contracts/dlp-webhook-shim.md）。
@@ -245,7 +248,8 @@ def _settings_get(handler, _me):
 # settings schema（issue #35）：顶层/区段未知键一律拒绝（防 typo 静默漂移，同 format-rules 校验精神）
 _SETTINGS_TOP_KEYS = {"version", "_comment", "judge", "edm", "pg", "l1", "l2", "response"}
 _SETTINGS_JUDGE_KEYS = {"enabled", "model", "base_url", "timeout", "prompt_system", "prompt_fewshot",
-                        "threshold", "action"}  # threshold/action：issue #94 置信度门槛与动作分级
+                        "threshold", "action",  # threshold/action：issue #94 置信度门槛与动作分级
+                        "sample_rate", "max_concurrency"}  # issue #93 判定采样率与并发预算
 _SETTINGS_EDM_KEYS = {"enabled", "min_hits"}
 _SETTINGS_PG_KEYS = {"enabled", "threshold", "normalize"}  # normalize：issue #44 打分前置归一化开关
 # 分层总开关（issue #40）：单键段
@@ -301,6 +305,11 @@ def _validate_settings(data) -> str | None:
     # 先 str 再查档位集合：list/dict 等 unhashable 值直接 not in 会抛 TypeError 断连（#94 评审）
     if not isinstance(judge["action"], str) or judge["action"] not in _SETTINGS_JUDGE_ACTIONS:
         return "judge.action 必须是 off/shadow/warn/reject 之一"
+    # issue #93：sample_rate 0~1 判定采样率 + max_concurrency ≥1 并发预算（/request 链路消费）
+    if not _is_number(judge["sample_rate"]) or not 0 <= judge["sample_rate"] <= 1:
+        return "judge.sample_rate 必须是 0~1 数值"
+    if not isinstance(judge["max_concurrency"], int) or isinstance(judge["max_concurrency"], bool) or judge["max_concurrency"] < 1:
+        return "judge.max_concurrency 必须是 ≥1 整数"
     if not isinstance(edm["enabled"], bool):
         return "edm.enabled 必须是布尔值"
     if not isinstance(edm["min_hits"], int) or isinstance(edm["min_hits"], bool) or edm["min_hits"] < 1:

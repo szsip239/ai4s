@@ -1379,6 +1379,7 @@ class EdmLibParityTest(unittest.TestCase):
 
 # 合法 settings fixture（issue #35）：结构对齐 deploy/dlp/settings.json 首版
 # judge.threshold/action（issue #94）：置信度门槛与动作分级（schema/校验 only，消费在 #101）
+# judge.sample_rate/max_concurrency（issue #93）：判定采样率与并发预算（/request 链路消费）
 _SETTINGS_FIXTURE = {
     "version": 1,
     "_comment": "测试 fixture",
@@ -1391,6 +1392,8 @@ _SETTINGS_FIXTURE = {
         "prompt_fewshot": "示例",
         "threshold": 0.8,
         "action": "shadow",
+        "sample_rate": 1.0,
+        "max_concurrency": 2,
     },
     "edm": {"enabled": True, "min_hits": 2},
     "pg": {"enabled": True, "threshold": 0.7, "normalize": False},
@@ -1501,6 +1504,16 @@ class AdminSettingsTest(unittest.TestCase):
             # unhashable 值（list/dict）不得抛 TypeError 断连，须 400 带原因（#94 评审：_validate_settings 契约）
             ("judge.action 为数组", mutated(lambda d: d["judge"].update({"action": ["shadow"]}))),
             ("judge.action 为对象", mutated(lambda d: d["judge"].update({"action": {"x": 1}}))),
+            # judge.sample_rate/max_concurrency（issue #93）：采样率必填 0~1 数值；并发预算必填 ≥1 整数
+            ("judge 缺 sample_rate", mutated(lambda d: d["judge"].pop("sample_rate"))),
+            ("judge 缺 max_concurrency", mutated(lambda d: d["judge"].pop("max_concurrency"))),
+            ("judge.sample_rate 超界", mutated(lambda d: d["judge"].update({"sample_rate": 1.5}))),
+            ("judge.sample_rate 为负数", mutated(lambda d: d["judge"].update({"sample_rate": -0.1}))),
+            ("judge.sample_rate 为字符串", mutated(lambda d: d["judge"].update({"sample_rate": "0.5"}))),
+            ("judge.sample_rate 为布尔", mutated(lambda d: d["judge"].update({"sample_rate": True}))),
+            ("judge.max_concurrency 为零", mutated(lambda d: d["judge"].update({"max_concurrency": 0}))),
+            ("judge.max_concurrency 为浮点", mutated(lambda d: d["judge"].update({"max_concurrency": 2.5}))),
+            ("judge.max_concurrency 为布尔", mutated(lambda d: d["judge"].update({"max_concurrency": True}))),
             ("edm 缺 enabled", mutated(lambda d: d["edm"].pop("enabled"))),
             ("edm.min_hits 小于 1", mutated(lambda d: d["edm"].update({"min_hits": 0}))),
             ("edm.min_hits 为布尔", mutated(lambda d: d["edm"].update({"min_hits": True}))),
@@ -1575,8 +1588,12 @@ class AppSettingsTest(unittest.TestCase):
             ("edm", "min_hits", "EDM_MIN_HITS", 2, "3", 3),
             ("pg", "threshold", "PG_THRESHOLD", 0.7, "0.55", 0.55),
             ("judge", "model", "JUDGE_MODEL", "m0", "m1", "m1"),
+            # judge.sample_rate/max_concurrency（issue #93）：env 层按 default 类型转换
+            ("judge", "sample_rate", "JUDGE_SAMPLE_RATE", 1.0, "0.3", 0.3),
+            ("judge", "max_concurrency", "JUDGE_MAX_CONCURRENCY", 2, "4", 4),
             # 非法 env 回退默认（比旧模块级 int()/float() 启动即崩更宽容）
             ("judge", "timeout", "JUDGE_TIMEOUT", 8, "garbage", 8),
+            ("judge", "max_concurrency", "JUDGE_MAX_CONCURRENCY", 2, "garbage", 2),
             ("pg", "threshold", "PG_THRESHOLD", 0.7, "garbage", 0.7),
             # 分层总开关（issue #40）：内置默认 True（保现网行为），env "0" 才关
             ("l1", "enabled", "L1_ENABLED", True, "0", False),
@@ -1627,16 +1644,24 @@ class AppSettingsTest(unittest.TestCase):
                 shim_app.setting_value({"judge": {"threshold": "0.8"}}, "judge", "threshold", "JUDGE_THRESHOLD", 0.8), 0.8)
             self.assertEqual(
                 shim_app.setting_value({"judge": {"action": 1}}, "judge", "action", "JUDGE_ACTION", "shadow"), "shadow")
+            # judge.sample_rate/max_concurrency（issue #93）：number 拒 str、int 拒 float
+            self.assertEqual(
+                shim_app.setting_value({"judge": {"sample_rate": "0.5"}}, "judge", "sample_rate", "JUDGE_SAMPLE_RATE", 1.0), 1.0)
+            self.assertEqual(
+                shim_app.setting_value({"judge": {"max_concurrency": 2.5}}, "judge", "max_concurrency", "JUDGE_MAX_CONCURRENCY", 2), 2)
         out = buf.getvalue()
-        self.assertEqual(out.count("类型不符"), 7)
+        self.assertEqual(out.count("类型不符"), 9)
         self.assertIn("pg.threshold", out)
         self.assertIn("judge.threshold", out)
+        self.assertIn("judge.sample_rate", out)
         self.assertNotIn('"0.7"', out)  # warn 不带回显值本身
         # 合法类型原样通过（number 兼收 int/float；bool/str/int 各归各型）
         self.assertEqual(shim_app.setting_value({"pg": {"threshold": 1}}, "pg", "threshold", "PG_THRESHOLD", 0.7), 1)
         self.assertEqual(shim_app.setting_value({"judge": {"timeout": 2.5}}, "judge", "timeout", "JUDGE_TIMEOUT", 8), 2.5)
         self.assertEqual(shim_app.setting_value({"judge": {"threshold": 0.9}}, "judge", "threshold", "JUDGE_THRESHOLD", 0.8), 0.9)
         self.assertEqual(shim_app.setting_value({"judge": {"action": "warn"}}, "judge", "action", "JUDGE_ACTION", "shadow"), "warn")
+        self.assertEqual(shim_app.setting_value({"judge": {"sample_rate": 0}}, "judge", "sample_rate", "JUDGE_SAMPLE_RATE", 1.0), 0)
+        self.assertEqual(shim_app.setting_value({"judge": {"max_concurrency": 4}}, "judge", "max_concurrency", "JUDGE_MAX_CONCURRENCY", 2), 4)
         self.assertEqual(shim_app.setting_value({"edm": {"min_hits": 3}}, "edm", "min_hits", "EDM_MIN_HITS", 2), 3)
         self.assertEqual(shim_app.setting_value({"judge": {"enabled": True}}, "judge", "enabled", "JUDGE_ENABLED", False), True)
         # 坏键不牵连同文件好键
@@ -1755,6 +1780,151 @@ class JudgeSettingsTest(unittest.TestCase):
         with open(self.settings_path, "w", encoding="utf-8") as f:
             json.dump(self._fixture, f)
         self.assertIsNone(shim_app.judge_text("任意文本"))
+
+
+class JudgeShadowMaskTest(unittest.TestCase):
+    """issue #93：judge 外发前置脱敏 + 采样率/并发预算（/request 链路 HTTP 级 seam，复用 _FakeJudge 模式）。
+    fixture：临时 settings.json（指向假 judge）+ 词表 + format-rules（手机号 mask 规则）；
+    覆写 shim_app 模块级路径与 JUDGE_API_KEY；SHADOW_LOG_PATH env 注入 tmp（shadow_log 每次调用现读 env）。
+    pg 段关（对齐 InjectionShadowSettingsTest 隔离纪律）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._judge_srv = _start_server(_FakeJudge)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._judge_srv.shutdown()
+
+    def setUp(self):
+        _FakeJudge.captured = {}
+        self._tmp = tempfile.TemporaryDirectory()
+        d = self._tmp.name
+        self.wordlist_path = os.path.join(d, "wordlist.json")
+        with open(self.wordlist_path, "w", encoding="utf-8") as f:
+            json.dump({"version": 1,
+                       "terms": [{"value": "凤皇计划", "rule_id": "confidential.fenghuang"}]},
+                      f, ensure_ascii=False)
+        self.format_rules_path = os.path.join(d, "format-rules.json")
+        with open(self.format_rules_path, "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "rules": [
+                {"code": "pii.phone", "action": "mask", "enabled": True, "entity": "ZH_PHONE",
+                 "replacement": "【PII:手机号】", "shim_patterns": ["(?<!\\d)1[3-9]\\d{9}(?!\\d)"]}]},
+                      f, ensure_ascii=False)
+        self.log_path = os.path.join(d, "shadow.jsonl")
+        self.settings_path = os.path.join(d, "settings.json")
+        self._fixture = json.loads(json.dumps(_SETTINGS_FIXTURE))
+        j = self._fixture["judge"]
+        j["enabled"] = True
+        j["base_url"] = f"http://127.0.0.1:{self._judge_srv.server_address[1]}"
+        j["model"] = "json-model"
+        j["prompt_system"] = "自定义系统提示：{terms}"
+        j["prompt_fewshot"] = "自定义示例"
+        self._fixture["pg"]["enabled"] = False  # 隔离注入 shadow，只验 judge 链路
+        self._write_settings()
+        self._saved = (shim_app.SETTINGS_PATH, shim_app.WORDLIST_PATH,
+                       shim_app.FORMAT_RULES_PATH, shim_app.JUDGE_API_KEY)
+        shim_app.SETTINGS_PATH = self.settings_path
+        shim_app.WORDLIST_PATH = self.wordlist_path
+        shim_app.FORMAT_RULES_PATH = self.format_rules_path
+        shim_app.JUDGE_API_KEY = "test-key"
+        # env 隔离（对齐 PgNormalizeFlagTest 纪律）：开发机导出的采样/并发 env 会顶替 JSON 缺键级
+        self._saved_env = {k: os.environ.pop(k, None)
+                           for k in ("JUDGE_SAMPLE_RATE", "JUDGE_MAX_CONCURRENCY")}
+        self._saved_env["SHADOW_LOG_PATH"] = os.environ.get("SHADOW_LOG_PATH")
+        os.environ["SHADOW_LOG_PATH"] = self.log_path
+
+    def tearDown(self):
+        shim_app.SETTINGS_PATH, shim_app.WORDLIST_PATH, shim_app.FORMAT_RULES_PATH, shim_app.JUDGE_API_KEY = self._saved
+        for k, v in self._saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        self._tmp.cleanup()
+
+    def _write_settings(self):
+        with open(self.settings_path, "w", encoding="utf-8") as f:
+            json.dump(self._fixture, f, ensure_ascii=False)
+
+    def _post_request(self, content):
+        return _request("POST", "/request",
+                        payload={"body": {"messages": [{"role": "user", "content": content}]}})
+
+    def test_judge_input_uses_masked_text(self):
+        """外发前置脱敏（核心 AC）：/request 消息命中 L1 掩码（手机号）→ 假 judge 收到的文本
+        不含原值（只有掩码占位）；掩码动作本身的响应语义不变（MaskAction 照返）。"""
+        status, body = self._post_request("排期确认好了，打我手机 13800138000")
+        time.sleep(0.5)  # judge shadow 在响应后异步执行，等其落完
+        self.assertEqual(status, 200)
+        self.assertTrue(body["action"].get("reason", "").startswith("PII masked"))
+        sent = _FakeJudge.captured["messages"][2]["content"]
+        self.assertIn("【PII:手机号】", sent)
+        self.assertNotIn("13800138000", sent)
+
+    def test_judge_input_unmasked_when_no_mask_hit(self):
+        """掩码未命中时 masked_msgs==messages（语义不变）：judge 收到的就是原文。"""
+        status, body = self._post_request("普通业务咨询，请帮我写周报")
+        time.sleep(0.5)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["action"].get("reason"), "pass")
+        self.assertEqual(_FakeJudge.captured["messages"][2]["content"], "普通业务咨询，请帮我写周报")
+
+    def test_sample_rate_zero_skips_judge(self):
+        """judge.sample_rate=0 → 未中采样整体跳过：假 judge 零调用、不落 shadow_log 条
+        （skip 非层异常，不污染 #92 error_rate）、print skipped (sampling)。"""
+        self._fixture["judge"]["sample_rate"] = 0
+        self._write_settings()
+        with mock.patch("builtins.print") as m:
+            status, _ = self._post_request("普通业务咨询，请帮我写周报")
+            time.sleep(0.5)
+        self.assertEqual(status, 200)
+        self.assertEqual(_FakeJudge.captured, {})
+        self.assertFalse(os.path.exists(self.log_path))
+        printed = "\n".join(str(c.args[0]) for c in m.call_args_list if c.args)
+        self.assertIn("[semantic.shadow] skipped (sampling)", printed)
+
+    def test_concurrency_budget_full_skips_judge(self):
+        """judge.max_concurrency=1 且名额已占满 → 跳过判定：零调用、不落条、
+        print skipped (concurrency budget)。名额用计数器直接占（确定性，不用 threading 压）。"""
+        self._fixture["judge"]["max_concurrency"] = 1
+        self._write_settings()
+        self.assertTrue(shim_app.judge_budget_try_enter(1))  # 占满唯一名额
+        try:
+            with mock.patch("builtins.print") as m:
+                status, _ = self._post_request("普通业务咨询，请帮我写周报")
+                time.sleep(0.5)
+        finally:
+            shim_app.judge_budget_exit()
+        self.assertEqual(status, 200)
+        self.assertEqual(_FakeJudge.captured, {})
+        self.assertFalse(os.path.exists(self.log_path))
+        printed = "\n".join(str(c.args[0]) for c in m.call_args_list if c.args)
+        self.assertIn("[semantic.shadow] skipped (concurrency budget)", printed)
+
+    def test_budget_counter_logic(self):
+        """并发预算计数器纯逻辑：enter 到 limit 后拒绝；exit 释放后可再进；计数不泄漏。"""
+        try:
+            self.assertTrue(shim_app.judge_budget_try_enter(2))
+            self.assertTrue(shim_app.judge_budget_try_enter(2))
+            self.assertFalse(shim_app.judge_budget_try_enter(2))  # 满额拒绝且不占位
+            shim_app.judge_budget_exit()
+            self.assertTrue(shim_app.judge_budget_try_enter(2))
+        finally:
+            shim_app.judge_budget_exit()
+            shim_app.judge_budget_exit()
+
+    def test_judge_test_endpoint_masks_and_ignores_sampling(self):
+        """/judge-test 与链路同口径（AC）：text 包单条 messages 过同一掩码管线再送 judge；
+        直测显式触发不走采样（sample_rate=0 也照判）——semantic-eval 量的即生产输入。"""
+        self._fixture["judge"]["sample_rate"] = 0
+        self._write_settings()
+        status, body = _request("POST", "/judge-test", payload={"text": "打我手机 13800138000 聊排期"})
+        self.assertEqual(status, 200)
+        self.assertIsNotNone(body["verdict"])  # 直测不受采样限制，judge 被调用
+        sent = _FakeJudge.captured["messages"][2]["content"]
+        self.assertIn("【PII:手机号】", sent)
+        self.assertNotIn("13800138000", sent)
 
 
 class InjectionShadowSettingsTest(unittest.TestCase):
