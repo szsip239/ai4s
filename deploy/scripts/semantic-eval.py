@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""ai4s 商密语义层评估（issue #21 建，issue #99 门禁化 + 样本真实化 v2）。
+"""ai4s 商密语义层评估（issue #21 建，issue #99 门禁化 + 样本真实化 v2，issue #110 修正 bypass 合并口径）。
 
 经 shim /judge-test 直测 judge（当前=gpt-5.6-luna via axonhub；生产须换内网模型）：
   1. semantic_novel：真实化业务语料（代号自然使用 + 指代暗示，judge 的增量价值）
-  2. bypass 挽回：#20 中词表/regex 层绕过的变形样本（自动并自 dlp-vectors.json，expect=confidential）
+  2. bypass 挽回：#20 中词表/regex 层绕过的变形样本（自动并自 dlp-vectors.json，expect=confidential；
+     issue #110 起合并排除 layer=negative 负例，见 collect_bypass）
   3. negative_tricky：同名他物/相近话题但不涉密（误报率）
 
 水位门禁（issue #99，纳入 dlp 回归）：三组水位数字 + judge 异常率由纯函数 evaluate_gate 判定，
@@ -23,9 +24,11 @@ DEPLOY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SHIM = os.environ.get("SHIM_URL", "http://localhost:18080")
 
 # 水位门禁（issue #99）：基线见 docs/tests/2026-08-24-semantic-baseline.md，取略低于实测水位的保守值
-# novel 实测 14/14 → 线 12（留 2 条余量）；bypass 实测 3/9、可检出上限 4（issue #107 前置单趟解码后
-# base64 凤凰计划样本 conf 1.00 检出；sk-ant base64 仍 MISS——解码管线已闭合，残余根因在 judge
-# prompt 语义，挂账 follow-up；组内 5 条 #106 拼接雷负例是合并口径带入的永久 MISS）→ 线 3；
+# novel 实测 14/14 → 线 12（留 2 条余量）；bypass 组 4 条（issue #110 修正合并口径：layer=negative
+# 的 #106 拼接雷负例不再并入，组 9→4，口径回到真绕过变形样本）、可检出上限 4、实测 3/4（issue #107
+# 前置单趟解码后 base64 凤凰计划样本 conf 1.00 检出；sk-ant base64 仍 MISS——解码管线已闭合，残余
+# 根因在 judge prompt 语义，挂账 follow-up issue #109）→ 线 3 恰压水位（任一真绕过样本回归即破线，
+# 正是防回归语义；#109 修 prompt 语义把水位抬至 4/4 后，本线应同步抬 4 继续恰压）；
 # 误报实测 0/15 → 线 ≤1（judge 是 LLM，留 1 条抖动余量，稳定后可收紧为 0）；
 # judge 异常率 >20%（或零调用）exit 2——门禁不得因 judge 不可用而绿
 GATE_MIN_NOVEL_HIT = 12
@@ -66,14 +69,23 @@ def evaluate_gate(novel, bypass, negative, err, calls):
     return (0 if all(c[4] for c in checks) else 1), lines
 
 
+def collect_bypass(dlp):
+    """bypass 组合并（issue #99 建，#110 修正口径）：dlp-vectors.json 中 expect=pass 且有 note
+    的条目是规则层已文档化的绕过 gap，并入本组以 expect=confidential 考核 judge 的变形挽回；
+    但 layer=negative 的负例（#106 拼接雷 5 条）同样带 note，judge 对它们判 clean 才是正确
+    判定，并入只会制造永久 MISS、把组条数 4→9 稀释可检出上限——按 layer 字段排除负例。"""
+    return [{"name": v["name"], "content": v["content"], "expect": "confidential"}
+            for v in dlp if v.get("expect") == "pass" and v.get("note")
+            and v.get("layer") != "negative"]
+
+
 def main():
     out_json = "--json" in sys.argv
     out_path = sys.argv[sys.argv.index("--json") + 1] if out_json else None
 
     sem = json.load(open(os.path.join(DEPLOY_DIR, "tests", "semantic-vectors.json"), encoding="utf-8"))["vectors"]
     dlp = json.load(open(os.path.join(DEPLOY_DIR, "tests", "dlp-vectors.json"), encoding="utf-8"))["vectors"]
-    bypass = [{"name": v["name"], "content": v["content"], "expect": "confidential"}
-              for v in dlp if v.get("expect") == "pass" and v.get("note")]
+    bypass = collect_bypass(dlp)
 
     groups = [("semantic_novel", [v for v in sem if v["expect"] == "confidential"]),
               ("bypass 挽回（#20 变形样本）", bypass),
