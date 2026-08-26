@@ -925,6 +925,21 @@ class SecretBoundaryNormTest(unittest.TestCase):
     已知收窄（明示接受）：真 key 紧贴小写字母/数字词尾时（"task sk-abc" 归一化后前置是小写字母）
     shim 归一化层不再命中（大写前置词仍命中，残余面更窄）——原文形态由网关 `sk-(proj-)?[A-Za-z0-9_\\-]{20,}`
     兜底，仅"分隔符混淆 + 紧贴小写字母/数字词"的复合形态会漏（现向量集无此形态，见 issue #106 汇报）。
+
+    issue #108（全大写前缀三规则同面收口）：aws_key `(?:AKIA|ASIA)[0-9A-Z]{16}`、
+    aliyun_ak `LTAI[A-Za-z0-9]{12,}`、private_key `BEGIN[A-Z0-9]*PRIVATEKEY` 前缀全大写，
+    #106 的小写边界不适用。实测（normalize_hard + norm_secret_hits 直跑）：全大写英文句几乎必中——
+    "EAST ASIA SUMMIT…"（ASIA 跨词）、'USA KIA MOTORS…'（USA+KIA 拼 AKIA）、"BOLT AI MODEL…"
+    （BOLT+AI 拼 LTAI）、"PLEASE BEGIN PRIVATE KEY ROTATION…"（BEGIN…PRIVATEKEY 跨词）全族误报；
+    小写/混合大小写/中文文本零误中（pattern 大小写敏感）。决策：三规则加前置断言 (?<![A-Z0-9])——
+    危险粘接只来自大写前驱；小写前驱放行保真 key 检出（"aws key AKIA…" 归一化后前置 "y" 仍命中，
+    比 #106 收窄更小）。不加尾部断言：真 key 定长段后接大写英文词（"AKIA… IS OLD"）是常见形态，
+    尾部断言会把真检出打没，代价不对称。两处钉档见下。
+    已知收窄（对称 #106）：真 key 紧贴大写字母/数字词尾（"MY AWS KEY AKIA…"、"phase2 AKIA…"）
+    归一化层不命中，网关原文规则兜底。
+    残余面（明示接受）：归一化流串首/非大写标点后紧跟全大写拼接（"ASIA PACIFIC…" 串首、
+    "REVIEW: A KIA…" 冒号后、"BEGIN PRIVATE KEY ROTATION…" 串首）仍误中——封堵需尾部断言
+    （代价见上），概率已压至"全大写文本且前缀词恰在串首/标点后"，待真实误报再动。
     直接读仓库 deploy/dlp/format-rules.json（同 test_render_block_matches_current_gateway 先例），
     口径即现网口径。"""
 
@@ -975,6 +990,67 @@ class SecretBoundaryNormTest(unittest.TestCase):
         若后续加强归一化层口径（如双口径管线），本用例需同步翻转到命中。"""
         hits = self._hits("check task sk-a1b2c3d4e5f6g7h8i9j0k1l2m3n4 please")
         self.assertNotIn("secrets.openai_sk", hits)
+
+    def test_uppercase_splice_mines_pass(self):
+        """8 条全大写拼接雷负例（与 deploy/tests/dlp-vectors.json #108 负例同文）归一化后零命中。
+        误报机制：归一化剔空格后大写相邻词拼出全大写前缀——ASIA 跨词、USA+KIA→AKIA、
+        BOLT+AI→LTAI、BEGIN…PRIVATE KEY→BEGINPRIVATEKEY。前置断言 (?<![A-Z0-9]) 全部阻断。"""
+        mines = [
+            "EAST ASIA SUMMIT STATEMENT ON TRADE",
+            "USA KIA MOTORS PLANT IN GEORGIA EXPANDS OUTPUT",
+            "DRIVING A KIA SORENTO SUV ACROSS TEXAS HIGHWAYS",
+            "BOLT AI MODEL V2 RELEASE NOTES AND CHANGES",
+            "DEFAULT AI SETTINGS FOR ENTERPRISE APPS",
+            "COBALT AI CHIPS POWER NEW SERVERS",
+            "PLEASE BEGIN PRIVATE KEY ROTATION NEXT WEEK",
+            "WHEN YOU BEGIN PRIVATE KEY ROTATION ENSURE BACKUPS",
+        ]
+        for text in mines:
+            with self.subTest(text=text[:30]):
+                self.assertEqual(self._hits(text), [])
+
+    def test_uppercase_clean_keys_still_hit(self):
+        """干净形态真 key 检出不变：AKIA/ASIA/LTAI/BEGIN 各形态——独立、CJK/冒号/小写词尾紧贴
+        （前置断言只看大写前驱，小写 "aws key AKIA…" 归一化后前置 "y" 放行，比 #106 收窄更小）。"""
+        cases = [
+            ("AKIAIOSFODNN7EXAMPLE", "secrets.aws_key"),
+            ("ASIAIOSFODNN7EXAMPLE 是临时凭证", "secrets.aws_key"),
+            ("我的 aws key AKIAIOSFODNN7EXAMPLE 失效了", "secrets.aws_key"),
+            ("LTAI5tQp8kN2xYwV7mZbA1Cd 这个还能用吗", "secrets.aliyun_ak"),
+            ("aliyun ak: LTAI5tQp8kN2xYwV7mZbA1Cd", "secrets.aliyun_ak"),
+            ("-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA7", "secrets.private_key"),
+            ("看下这个\n-----BEGIN OPENSSH PRIVATE KEY-----", "secrets.private_key"),
+        ]
+        for text, code in cases:
+            with self.subTest(code=code, text=text[:20]):
+                self.assertIn(code, self._hits(text))
+
+    def test_uppercase_key_glued_after_uppercase_word_documented_gap(self):
+        """已知收窄钉档（对称 #106）：真 key 紧贴大写词尾归一化层不命中——
+        "MY AWS KEY AKIA…" 归一化后 AKIA 前置 "Y" 被 (?<![A-Z0-9]) 拦。原文形态（带空格/横线）
+        由网关 gateway_patterns 兜底（原文 "KEY AKIA…" 空格分隔直接命中）。若后续加强归一化层口径，
+        本用例需同步翻转到命中。"""
+        cases = [
+            ("MY AWS KEY AKIAIOSFODNN7EXAMPLE IS OLD", "secrets.aws_key"),
+            ("MY ALIYUN AK LTAI5tQp8kN2xYwV7mZbA1Cd IS OLD", "secrets.aliyun_ak"),
+            ("HERE IS THE KEY\n-----BEGIN PRIVATE KEY-----", "secrets.private_key"),
+        ]
+        for text, code in cases:
+            with self.subTest(code=code):
+                self.assertNotIn(code, self._hits(text))
+
+    def test_uppercase_splice_at_string_start_residual(self):
+        """残余误报面钉档（明示接受）：归一化流串首/非大写标点后无大写前驱，(?<![A-Z0-9]) 天然通过，
+        全大写拼接仍误中。不加尾部断言封堵的理由：真 key 定长段后接大写英文词（"AKIA… IS OLD"）
+        是常见形态，尾部断言会把真检出打没，代价不对称。若后续改双向边界，本用例需同步翻转到放行。"""
+        residual = [
+            ("ASIA PACIFIC ECONOMIC COOPERATION SUMMIT", "secrets.aws_key"),
+            ("A KIA SORENTO SUV IS A SOLID FAMILY CAR", "secrets.aws_key"),
+            ("BEGIN PRIVATE KEY ROTATION PROCEDURES NOW", "secrets.private_key"),
+        ]
+        for text, code in residual:
+            with self.subTest(code=code, text=text[:25]):
+                self.assertIn(code, self._hits(text))
 
 
 # EDM fixture（issue #34）：三条目覆盖三种形态——带 added_at、无 added_at（旧文档）、旧格式纯 shingle 数组

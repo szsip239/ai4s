@@ -330,6 +330,62 @@
       "note": "issue #106：ask+anthropic 归一化拼出 skanthropic… 误中 secrets.anthropic_sk（review 实测），修复后应放行"
     },
     {
+      "name": "negative: 全大写 EAST ASIA 拼接雷",
+      "layer": "negative",
+      "content": "EAST ASIA SUMMIT STATEMENT ON TRADE",
+      "expect": "pass",
+      "note": "issue #108：归一化剔空格后 EAST+ASIA 拼出 …ASIASUMMITSTATEMENTO…（ASIA+16 大写）曾误中 secrets.aws_key（实测），加 (?<![A-Z0-9]) 前置边界后应放行"
+    },
+    {
+      "name": "negative: 全大写 USA KIA 拼接雷",
+      "layer": "negative",
+      "content": "USA KIA MOTORS PLANT IN GEORGIA EXPANDS OUTPUT",
+      "expect": "pass",
+      "note": "issue #108：USA+KIA 归一化拼出 …USAKIAMOTORS…（内含 AKIA+16 大写）曾误中 secrets.aws_key（实测），修复后应放行"
+    },
+    {
+      "name": "negative: 全大写 A KIA 句中拼接雷",
+      "layer": "negative",
+      "content": "DRIVING A KIA SORENTO SUV ACROSS TEXAS HIGHWAYS",
+      "expect": "pass",
+      "note": "issue #108：A+KIA 归一化拼出 …AKIASORENTO… 曾误中 secrets.aws_key（实测）；句中形态前置大写字母被边界拦，应放行（串首/标点后同形态是钉档残余面，见 test_admin_api）"
+    },
+    {
+      "name": "negative: 全大写 BOLT AI 拼接雷",
+      "layer": "negative",
+      "content": "BOLT AI MODEL V2 RELEASE NOTES AND CHANGES",
+      "expect": "pass",
+      "note": "issue #108：BOLT+AI 归一化拼出 …LTAI… 曾误中 secrets.aliyun_ak（实测），修复后应放行"
+    },
+    {
+      "name": "negative: 全大写 DEFAULT AI 拼接雷",
+      "layer": "negative",
+      "content": "DEFAULT AI SETTINGS FOR ENTERPRISE APPS",
+      "expect": "pass",
+      "note": "issue #108：DEFAULT+AI 归一化拼出 …LTAI… 曾误中 secrets.aliyun_ak（实测），修复后应放行"
+    },
+    {
+      "name": "negative: 全大写 COBALT AI 拼接雷",
+      "layer": "negative",
+      "content": "COBALT AI CHIPS POWER NEW SERVERS",
+      "expect": "pass",
+      "note": "issue #108：COBALT+AI 归一化拼出 …LTAI… 曾误中 secrets.aliyun_ak（实测），修复后应放行"
+    },
+    {
+      "name": "negative: 全大写 BEGIN PRIVATE KEY 拼接雷",
+      "layer": "negative",
+      "content": "PLEASE BEGIN PRIVATE KEY ROTATION NEXT WEEK",
+      "expect": "pass",
+      "note": "issue #108：归一化剔空格后 BEGIN+PRIVATE+KEY 拼出 BEGINPRIVATEKEY 曾误中 secrets.private_key（实测，非 key 块的管理话术），修复后应放行"
+    },
+    {
+      "name": "negative: 全大写 WHEN YOU BEGIN 拼接雷",
+      "layer": "negative",
+      "content": "WHEN YOU BEGIN PRIVATE KEY ROTATION ENSURE BACKUPS",
+      "expect": "pass",
+      "note": "issue #108：同上 BEGIN…PRIVATEKEY 跨词拼接变体曾误中 secrets.private_key（实测），修复后应放行"
+    },
+    {
       "name": "response: 泄漏全家族(非流式)",
       "layer": "response",
       "content": "模拟泄漏测试",

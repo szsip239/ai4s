@@ -54,7 +54,7 @@
         "ASIA[0-9A-Z]{16}"
       ],
       "shim_patterns": [
-        "(?:AKIA|ASIA)[0-9A-Z]{16}"
+        "(?<![A-Z0-9])(?:AKIA|ASIA)[0-9A-Z]{16}"
       ]
     },
     {
@@ -67,7 +67,7 @@
         "-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----"
       ],
       "shim_patterns": [
-        "BEGIN[A-Z0-9]*PRIVATEKEY"
+        "(?<![A-Z0-9])BEGIN[A-Z0-9]*PRIVATEKEY"
       ]
     },
     {
@@ -80,7 +80,7 @@
         "LTAI[A-Za-z0-9]{12,}"
       ],
       "shim_patterns": [
-        "LTAI[A-Za-z0-9]{12,}"
+        "(?<![A-Z0-9])LTAI[A-Za-z0-9]{12,}"
       ]
     },
     {
