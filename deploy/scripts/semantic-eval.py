@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""ai4s 商密语义层评估（issue #21 建，issue #99 门禁化 + 样本真实化 v2，issue #110 修正 bypass 合并口径）。
+"""ai4s 商密语义层评估（issue #21 建，issue #99 门禁化 + 样本真实化 v2，issue #110 修正 bypass 合并口径，
+issue #109 judge 商密 prompt 增补密钥形态串语义、bypass 水位 4/4 后门禁线同步抬 4）。
 
 经 shim /judge-test 直测 judge（当前=gpt-5.6-luna via axonhub；生产须换内网模型）：
   1. semantic_novel：真实化业务语料（代号自然使用 + 指代暗示，judge 的增量价值）
@@ -25,14 +26,13 @@ SHIM = os.environ.get("SHIM_URL", "http://localhost:18080")
 
 # 水位门禁（issue #99）：基线见 docs/tests/2026-08-24-semantic-baseline.md，取略低于实测水位的保守值
 # novel 实测 14/14 → 线 12（留 2 条余量）；bypass 组 4 条（issue #110 修正合并口径：layer=negative
-# 的 #106 拼接雷负例不再并入，组 9→4，口径回到真绕过变形样本）、可检出上限 4、实测 3/4（issue #107
-# 前置单趟解码后 base64 凤凰计划样本 conf 1.00 检出；sk-ant base64 仍 MISS——解码管线已闭合，残余
-# 根因在 judge prompt 语义，挂账 follow-up issue #109）→ 线 3 恰压水位（任一真绕过样本回归即破线，
-# 正是防回归语义；#109 修 prompt 语义把水位抬至 4/4 后，本线应同步抬 4 继续恰压）；
-# 误报实测 0/15 → 线 ≤1（judge 是 LLM，留 1 条抖动余量，稳定后可收紧为 0）；
+# 的 #106 拼接雷负例不再并入，组 9→4，口径回到真绕过变形样本）、可检出上限 4、实测 4/4（issue #107
+# 前置单趟解码后 base64 凤凰计划样本 conf 1.00 检出；issue #109 judge 商密 prompt 增补「密钥形态串
+# 即涉密」语义后 sk-ant base64 样本翻转为检出 conf 0.99）→ 线 4 恰压水位（任一真绕过样本回归即破线，
+# 正是防回归语义）；误报实测 0/15 → 线 ≤1（judge 是 LLM，留 1 条抖动余量，稳定后可收紧为 0）；
 # judge 异常率 >20%（或零调用）exit 2——门禁不得因 judge 不可用而绿
 GATE_MIN_NOVEL_HIT = 12
-GATE_MIN_BYPASS_HIT = 3
+GATE_MIN_BYPASS_HIT = 4
 GATE_MAX_NEG_FP = 1
 GATE_MAX_ERR_RATE = 0.2
 

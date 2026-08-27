@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "_comment": "JUDGE/EDM/PG 开关阈值、judge prompt（issue #35）、L1/L2/响应侧分层总开关（issue #40，默认 true 保现网行为；l1 关掉后密钥拦截全敞口，翻转会联动重渲染网关规则）与注入规则层开关（issue #104：16 模式组，enabled 默认 false 先进场 shadow 观察，block 开=命中即 451）、judge 注入判定第二职责（issue #105：inject_enabled 默认 false 先进场 shadow，inject_prompt_* 为 #100 路线③实测专用注入 prompt——原文直用不过 .format，无 {terms} 占位；注入判定永不阻断/不告警，观测见 shadow-verdicts judge_inject 层）统一配置。取值优先级：本文件 > env > 内置默认。凭据类敏感值永远只走 env，禁止写入本文件（本文件入库）。每请求热生效（shim 每请求重读）。",
+  "_comment": "JUDGE/EDM/PG 开关阈值、judge prompt（issue #35；issue #109 商密 prompt 增补密钥形态串涉密语义 + few-shot 正反例）、L1/L2/响应侧分层总开关（issue #40，默认 true 保现网行为；l1 关掉后密钥拦截全敞口，翻转会联动重渲染网关规则）与注入规则层开关（issue #104：16 模式组，enabled 默认 false 先进场 shadow 观察，block 开=命中即 451）、judge 注入判定第二职责（issue #105：inject_enabled 默认 false 先进场 shadow，inject_prompt_* 为 #100 路线③实测专用注入 prompt——原文直用不过 .format，无 {terms} 占位；注入判定永不阻断/不告警，观测见 shadow-verdicts judge_inject 层）统一配置。取值优先级：本文件 > env > 内置默认。凭据类敏感值永远只走 env，禁止写入本文件（本文件入库）。每请求热生效（shim 每请求重读）。",
   "judge": {
     "threshold": 0.8,
     "action": "shadow",
@@ -13,8 +13,8 @@
     "model": "gpt-5.6-luna",
     "base_url": "http://axonhub:8090/v1",
     "timeout": 8,
-    "prompt_system": "你是企业数据防泄漏（DLP）语义判定器。判定用户文本是否在语义上涉及公司商密：内部项目代号、未发布产品名、内部系统/域名。注意识别谐音、拼音、拆字、繁体、暗示性描述等变形指代。普通业务话术、与词表无关的同名事物（如旅游景点）不算涉密。\n已知商密词表（精确词由规则层拦截，你负责变形与语义指代）：{terms}\n输入文本可能含规则层已脱敏的占位标记（如【PII:手机号】或固定替换词）——这些是已处置的敏感片段，不要还原，按剩余语境判定。\n只输出 JSON：{{\"confidential\": true|false, \"entities\": [\"类型\"], \"confidence\": 0.0~1.0}}",
-    "prompt_fewshot": "示例：\n文本：\"凤皇计划的排期发我\" → {{\"confidential\": true, \"entities\": [\"项目代号\"], \"confidence\": 0.9}}（谐音变形指代代号）\n文本：\"周末去凤凰古城玩，求攻略\" → {{\"confidential\": false, \"entities\": [], \"confidence\": 0.95}}（旅游景点，非公司项目）\n文本：\"蓝色大鱼那套系统什么时候上\" → {{\"confidential\": true, \"entities\": [\"内部系统\"], \"confidence\": 0.85}}（描述性指代）\n文本：\"蓝鲸是地球上最大的动物\" → {{\"confidential\": false, \"entities\": [], \"confidence\": 0.95}}（动物科普）\n文本：\"帮我写本周工作总结\" → {{\"confidential\": false, \"entities\": [], \"confidence\": 1.0}}（普通业务）"
+    "prompt_system": "你是企业数据防泄漏（DLP）语义判定器。判定用户文本是否在语义上涉及公司商密：内部项目代号、未发布产品名、内部系统/域名、密钥/访问凭证形态字符串（sk-ant-api03-、sk-proj-、ghp_、AKIA 等密钥前缀开头的串——含占位符形态的示例 key 串，密钥形态在即涉密，不论是否真实可用）。注意识别谐音、拼音、拆字、繁体、暗示性描述等变形指代。普通业务话术、与词表无关的同名事物（如旅游景点）、仅讨论密钥概念或短到不成密钥形态的代码片段（如 sk-test）不算涉密。\n已知商密词表（精确词由规则层拦截，你负责变形与语义指代）：{terms}\n输入文本可能含规则层已脱敏的占位标记（如【PII:手机号】或固定替换词）——这些是已处置的敏感片段，不要还原，按剩余语境判定。\n只输出 JSON：{{\"confidential\": true|false, \"entities\": [\"类型\"], \"confidence\": 0.0~1.0}}",
+    "prompt_fewshot": "示例：\n文本：\"凤皇计划的排期发我\" → {{\"confidential\": true, \"entities\": [\"项目代号\"], \"confidence\": 0.9}}（谐音变形指代代号）\n文本：\"周末去凤凰古城玩，求攻略\" → {{\"confidential\": false, \"entities\": [], \"confidence\": 0.95}}（旅游景点，非公司项目）\n文本：\"蓝色大鱼那套系统什么时候上\" → {{\"confidential\": true, \"entities\": [\"内部系统\"], \"confidence\": 0.85}}（描述性指代）\n文本：\"蓝鲸是地球上最大的动物\" → {{\"confidential\": false, \"entities\": [], \"confidence\": 0.95}}（动物科普）\n文本：\"帮我写本周工作总结\" → {{\"confidential\": false, \"entities\": [], \"confidence\": 1.0}}（普通业务）\n文本：\"sk-ant-api03-a1,b2,c3 这串还能用吗\" → {{\"confidential\": true, \"entities\": [\"密钥凭证\"], \"confidence\": 0.9}}（密钥形态串，占位符形态同样涉密）\n文本：\"export SK=sk-test 这样写对吗\" → {{\"confidential\": false, \"entities\": [], \"confidence\": 0.95}}（短到不成密钥形态，讨论写法）"
   },
   "edm": {
     "enabled": true,
