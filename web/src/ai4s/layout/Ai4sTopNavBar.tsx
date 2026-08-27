@@ -40,13 +40,15 @@ import { useRoutePermissions } from '@/hooks/useRoutePermissions';
  * issue #74 评审 P2：「我的 Key」图标改用 IconId（身份语义），与「Key 管理」的 IconKey 区分。
  * issue #79：新增管理组「Key 审批」入口（/key-requests，label 复用 sidebar.items.keyRequests）——
  * 控制台申请通道的点批页；审批卡 link 按钮落点同此页。
+ * issue #113：Playground 接入「接入管理」页内 Tab 组（/project/playground），
+ * match 同步加 '/project/playground'——直达 Playground 时顶栏高亮「接入管理」。
  */
 
 const NAV_ITEMS = [
   { labelKey: 'ai4s.topnav.dashboard', href: '/', match: ['/'], icon: IconDashboard },
   { labelKey: 'ai4s.topnav.myKeys', href: '/project/api-keys', match: ['/project/api-keys'], icon: IconKey },
   { labelKey: 'sidebar.items.myKeys', href: '/project/my-keys', match: ['/project/my-keys'], icon: IconId },
-  { labelKey: 'sidebar.items.accessManagement', href: '/channels', match: ['/channels', '/models'], icon: IconRoute },
+  { labelKey: 'sidebar.items.accessManagement', href: '/channels', match: ['/channels', '/models', '/project/playground'], icon: IconRoute },
   { labelKey: 'ai4s.topnav.promptProtectionRules', href: '/prompt-protection-rules', match: ['/prompt-protection-rules'], icon: IconShield },
   { labelKey: 'sidebar.items.keyRequests', href: '/key-requests', match: ['/key-requests'], icon: IconClipboardCheck },
   { labelKey: 'sidebar.items.observability', href: '/project/requests', match: ['/project/requests', '/project/usage-stats', '/project/traces', '/project/threads'], icon: IconFileText },

@@ -13,10 +13,11 @@ export interface PageTab {
  * label 复用 sidebar.items.* 既有 locale 键（与侧栏同源，不产生新翻译负担）。
  */
 export const pageTabGroups = {
-  /** 接入管理：渠道 | 模型 */
+  /** 接入管理：渠道 | 模型 | Playground（issue #113，label 复用 sidebar.items.playground） */
   access: (t: (key: string) => string): PageTab[] => [
     { label: t('sidebar.items.channels'), url: '/channels' },
     { label: t('sidebar.items.models'), url: '/models' },
+    { label: t('sidebar.items.playground'), url: '/project/playground' },
   ],
   /** 人员（issue #65 合并全局/项目两域，取代旧 usersRoles/members 两组；
       issue #66 去 Tab 化四→二：只留有内容的两页——用户（全局 /users）| 角色（项目角色页 /project/roles）；

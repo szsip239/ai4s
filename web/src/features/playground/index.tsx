@@ -14,6 +14,8 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { TooltipProvider } from '@/components/ui/tooltip';
+import { Ai4sPageTabs } from '@/ai4s/components/Ai4sPageTabs';
+import { pageTabGroups } from '@/ai4s/components/page-tab-groups';
 import { Actions, Action } from '@/components/ai-elements/actions';
 import { Conversation, ConversationContent, ConversationEmptyState, ConversationScrollButton } from '@/components/ai-elements/conversation';
 import { Loader } from '@/components/ai-elements/loader';
@@ -319,7 +321,13 @@ export default function Playground() {
           enabled={true}
         />
       )} */}
-      <div className='bg-background flex h-screen w-full flex-col md:flex-row'>
+      {/* issue #113：挂接入管理页内 Tab 组（渠道 | 模型 | Playground，与 channels/models 页同组）。
+          本页无 Header/Main，Tab 栏置于根列顶部；原横向 flex 主体下移一层，以 min-h-0 flex-1 保持原满高布局 */}
+      <div className='bg-background flex h-screen w-full flex-col'>
+        <div className='shrink-0 px-4 pt-4'>
+          <Ai4sPageTabs tabs={pageTabGroups.access(t)} />
+        </div>
+        <div className='flex min-h-0 w-full flex-1 flex-col md:flex-row'>
         {/* Settings Sidebar */}
 
         <div className='bg-card shadow-soft border-border m-4 flex max-h-[60vh] w-auto flex-col rounded-2xl border border-r md:max-h-none md:w-[340px] md:min-w-[280px] md:max-w-[400px]'>
@@ -546,6 +554,7 @@ export default function Playground() {
               />
             </PromptInput>
           </div>
+        </div>
         </div>
       </div>
     </TooltipProvider>
