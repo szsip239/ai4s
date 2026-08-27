@@ -26,6 +26,21 @@ axonhub 无事件源的事务靠主动轮询补齐。巡检项（状态翻转才
      （脱敏：项目/confidence/实体命中数/请求模型名/时间，绝无原文无 key 无实体字符串）——
      同款事件型游标模型（judge_warn_cursor），发送成功才推进、失败下轮重试；
      单轮条数封顶 JUDGE_WARN_ALERT_BATCH。warn 只告警不拦截（契约「语义层永不阻断」）
+  7. 模型卡片自动同步（issue #112）：queryUnassociatedChannels 检出「渠道有、卡片库无」的
+     模型 → createModel 一次带 associations 原子建卡（裸启用卡=该模型路由全灭，spike 实证：
+     selector 查到 enabled 卡即不走 legacy 回退，卡无关联则 candidates 空）→ 多渠道同名模型
+     一卡聚合、增量补挂（updateModel 的 settings 为全量覆盖语义，实证；回写=既有+新增合并
+     全量，防丢既有关联）→ 关联只挂 enabled 渠道：纯 disabled 渠道的模型建 disabled 卡、
+     空关联，渠道启用后下轮补挂+启用。关联 type 字面量必须 snake_case channel_model
+     （MatchAssociations 字面量精确匹配；落库层不归一化——beta6 objects.ModelSettings 无
+     UnmarshalJSON，main 分支归一化也只动 routing policy 字段，源码实证；camelCase 落库
+     =路由全灭，实网实证）——存库非规范字面量的卡自动出修复性补挂回写。评审增补：
+     P1-1 settings 整 struct 覆盖语义下 attach 透传卡级兄弟字段与关联级 when（when 嵌套
+     超读取深度 fail-closed）；P1-2 updateModelStatus 失败补偿（disabled 卡+关联齐+渠道
+     enabled → 下轮补启用，渠道实况缺失不盲启用）；P2-1 archived 卡不自动复活。
+     事件型通知（有建卡/变更才发，一轮汇总一条带模型/一轮汇总一条带模型/
+     渠道明细；发送失败明细存 state["card_sync_pending"] 下轮补发，成功才清除——与其他
+     巡检项「发送失败不推进状态」同语义）。幂等：按 modelID 查卡，已存在只补缺失关联。
 
 审批同步（issue #19 提额 + issue #72 新建，approval_sync 泛化为多定义并存）：
   轮询飞书审批实例（APPROVAL_QUOTA_CODE / APPROVAL_KEY_CODE 两个定义各自轮询）：
@@ -68,6 +83,7 @@ axonhub 无事件源的事务靠主动轮询补齐。巡检项（状态翻转才
 隔离纪律（issue #56）：本模块只被 app.py __main__ 以 daemon 线程启动（import app 不起线程，
 单测环境安全）；轮询循环体整体 try/except，单轮异常只记日志不杀线程、绝不影响检测路径。
 """
+import copy
 import json
 import os
 import threading
@@ -935,6 +951,264 @@ def judge_warn_pending(recs: list, cursor: float) -> list:
     return out[:JUDGE_WARN_ALERT_BATCH]
 
 
+# ---- 模型卡片自动同步（issue #112）----
+
+UNASSOCIATED_CHANNELS_QUERY = (
+    "query { queryUnassociatedChannels { channel { id name status } models } }"
+)
+# 已有卡查询：settings 需读全量可写字段——updateModel 的 settings 是整 struct 覆盖
+# （beta6 源码 UpdateModel→SetSettings 实证），attach 回写必须原样透传：
+# 卡级兄弟字段 disableDeveloperSettingsInheritance（beta6 GraphQL 仅此一个兄弟字段；
+# loadBalancerStrategy/traceStickyMode 是 main 分支新增，升级 axonhub 后本查询须同步补取），
+# 关联级 priority/disabled/when（when.condition 递归 FilterCondition，读写形状同名——
+# 定深 4 层读取，更深由 _cond_too_deep fail-closed 防静默截断）
+MODELS_WITH_ASSOCS_QUERY = (
+    "query { models(first: 1000) { edges { node { id modelID status settings { "
+    "disableDeveloperSettingsInheritance "
+    "associations { type priority disabled channelModel { channelId modelId } "
+    "when { enabled condition { type logic field operator value "
+    "conditions { type logic field operator value "
+    "conditions { type logic field operator value "
+    "conditions { type logic field operator value } } } } } } } } } } }"
+)
+# enable 补偿（评审 P1-2）的渠道路径状态表：disabled 卡的关联指向 enabled 渠道才补启用。
+# first:100 硬上限与 ENABLED_API_KEYS_QUERY 同款约束（渠道数远超需改分页）
+CHANNELS_STATUS_QUERY = (
+    "query { queryChannels(input: {first: 100}) { edges { node { id status } } } }"
+)
+CREATE_MODEL_MUTATION = (
+    "mutation($input: CreateModelInput!) { createModel(input: $input) { id modelID status } }"
+)
+UPDATE_MODEL_MUTATION = (
+    "mutation($id: ID!, $input: UpdateModelInput!) { updateModel(id: $id, input: $input) { id } }"
+)
+UPDATE_MODEL_STATUS_MUTATION = (
+    "mutation($id: ID!, $status: ModelStatus!) { updateModelStatus(id: $id, status: $status) }"
+)
+
+
+def _channel_model_pair(assoc: dict):
+    """读侧关联 → (channelId, modelId)；非 channelModel 关联（或形状残缺）返回 None。
+    type 原样读回落库值：beta6 objects.ModelSettings 无 UnmarshalJSON（main 分支的归一化
+    也只动 routing policy 字段，association Type 不动），源码实证——spike 的 echo-test 是
+    写入时就是 snake 才存 snake；camelCase 落库即原样存（2026-08-27 事故实证），故读侧
+    必须兼容两形态，写侧统一 snake。"""
+    if not isinstance(assoc, dict):
+        return None
+    t = (assoc.get("type") or "").replace("_", "").lower()
+    cm = assoc.get("channelModel")
+    if t != "channelmodel" or not isinstance(cm, dict):
+        return None
+    if cm.get("channelId") is None or cm.get("modelId") is None:
+        return None
+    return (cm["channelId"], cm["modelId"])
+
+
+def _cond_too_deep(cond, depth: int = 0) -> bool:
+    """when.condition 嵌套深度守卫（评审 P1-1）：MODELS_WITH_ASSOCS_QUERY 定深 4 层读取，
+    第 4 层仍有非空 conditions 说明可能被截断——透传会静默丢条件，调用方 fail-closed skip。"""
+    if not isinstance(cond, dict):
+        return False
+    children = [c for c in (cond.get("conditions") or []) if isinstance(c, dict)]
+    if depth >= 3:  # root=depth0，第 4 层（depth3）不允许再有非空 conditions
+        return bool(children)
+    return any(_cond_too_deep(c, depth + 1) for c in children)
+
+
+def plan_card_sync(unassociated: list, existing: list, channels: list = None) -> list:
+    """模型卡片同步计划（纯函数，issue #112）：
+    queryUnassociatedChannels 清单 + 已有卡 + 渠道状态表 → [动作]（确定性）。
+    动作形状：
+      create：{"kind", "modelID", "input"（CreateModelInput 全字段，associations 随卡原子建——
+               裸启用卡=路由全灭，绝不分两步）, "enable"（有 enabled 渠道关联才启用）, "detail"}
+      attach：{"kind", "modelID", "card_id", "merged"（settings.associations 全量=既有透传
+               +新增，整 struct 覆盖语义防丢：priority/disabled/when 原样保留）,
+               "siblings"（卡级 settings 兄弟字段透传——评审 P1-1）, "added", "names",
+               "enable"（有新增关联且卡 disabled 才启用——纯 type 修复不动 disabled 卡）, "detail"}
+      enable：{"kind", "modelID", "card_id", "detail"}——评审 P1-2 补偿：disabled 卡 +
+               关联已齐 + 关联指向 enabled 渠道（create/attach 后 updateModelStatus 失败的
+               下轮自愈）；channels 缺省/空 = 无渠道实况，fail-closed 不盲启用
+      skip：  {"kind", "modelID", "card_id", "detail"}——fail-closed 不改写：卡含非
+               channelModel 关联 / when 嵌套超读取深度（防截断丢条件）/ 卡已 archived
+               （评审 P2-1：不自动复活归档卡），执行层只记日志。
+    写侧 type 字面量纪律：必须为 snake_case "channel_model"——MatchAssociations 按字面量精确
+    匹配（axonhub 源码 switch assoc.Type 实证），落库层不归一化（beta6 objects.ModelSettings
+    无 UnmarshalJSON，main 分支的归一化也只动 routing policy 字段），camelCase 原样落库后
+    永不命中（enabled 卡+零解析=路由全灭，2026-08-27 实网事故实证）。存库非规范字面量的卡
+    出自愈合 attach 修复回写。
+    幂等：按 modelID 查卡；关联按 (channelId, modelId) 对去重，只补缺失；disabled 渠道永不挂
+    关联（resolveAssociations 只匹配 enabled 渠道）但仍需建卡（disabled 态、空关联）。"""
+    by_model = {}
+    for entry in unassociated or []:
+        ch = (entry or {}).get("channel") or {}
+        try:
+            cid = int(str(ch.get("id") or "").rsplit("/", 1)[1])  # gid → int（channelId 要 Int）
+        except (ValueError, IndexError):
+            continue  # 畸形 gid 只丢该渠道条目，不炸整轮计划
+        cname = ch.get("name") or str(ch.get("id"))
+        for mid in entry.get("models") or []:
+            slot = by_model.setdefault(mid, {"assocs": [], "names": [], "disabled_names": []})
+            if ch.get("status") == "enabled":
+                if (cid, mid) not in slot["assocs"]:
+                    slot["assocs"].append((cid, mid))
+                    slot["names"].append(cname)
+            elif cname not in slot["disabled_names"]:
+                slot["disabled_names"].append(cname)
+    cards = {c.get("modelID"): c for c in existing or [] if isinstance(c, dict)}
+    actions = []
+    for mid in sorted(by_model):
+        slot = by_model[mid]
+        card = cards.get(mid)
+        if card is None:
+            enable = bool(slot["assocs"])
+            input_ = {
+                "developer": "ai4s", "modelID": mid, "type": "chat", "name": mid,
+                "icon": "", "group": "default", "modelCard": {},
+                "settings": {"associations": [
+                    {"type": "channel_model", "channelModel": {"channelId": c, "modelId": m}}
+                    for c, m in slot["assocs"]]},
+                "remark": "alert_poller 自动建卡（issue #112）：渠道在用、卡片库缺失",
+            }
+            if enable:
+                detail = f"建卡+启用 {mid}（渠道: {', '.join(slot['names'])}）"
+            else:
+                detail = f"建卡（disabled，渠道均未启用）{mid}（渠道: {', '.join(slot['disabled_names'])}）"
+            actions.append({"kind": "create", "modelID": mid, "input": input_,
+                            "enable": enable, "detail": detail})
+            continue
+        if card.get("status") == "archived":
+            # 评审 P2-1：归档卡 fail-closed——不 create（撞 modelID）不 attach 不 enable，
+            # 记日志让管理员感知（自动复活归档卡会违背人工归档意图）
+            actions.append({"kind": "skip", "modelID": mid, "card_id": card.get("id"),
+                            "detail": f"跳过 {mid}（卡已归档 archived，不自动复活，需人工处理）"})
+            continue
+        assocs = (card.get("settings") or {}).get("associations") or []
+        pairs, foreign, when_deep = set(), False, False
+        for a in assocs:
+            p = _channel_model_pair(a)
+            if p is None:
+                foreign = True  # 非 channelModel 关联（或残缺形状）：改写有丢数据风险
+            else:
+                pairs.add(p)
+                w = a.get("when")
+                if isinstance(w, dict) and _cond_too_deep(w.get("condition")):
+                    when_deep = True  # when 嵌套超读取深度：透传会静默截断丢条件
+        missing = [(c, m) for c, m in slot["assocs"] if (c, m) not in pairs]
+        # 自愈合：存库 type 非规范字面量 channel_model 的 channelModel 关联不匹配
+        # MatchAssociations（字面量精确匹配）——配对虽齐仍需修复性回写（路由全灭实证）
+        type_fix = any(_channel_model_pair(a) is not None and a.get("type") != "channel_model"
+                       for a in assocs)
+        if not missing and not type_fix:
+            continue  # 幂等：关联齐全且字面量规范 → 零动作（含 disabled 渠道稳态——永不挂、永不报）
+        if foreign or when_deep:
+            why = "卡含非 channelModel 关联" if foreign else "关联 when 条件嵌套超读取深度"
+            actions.append({"kind": "skip", "modelID": mid, "card_id": card.get("id"),
+                            "detail": f"跳过 {mid}（{why}，需人工核对）"})
+            continue
+        # 评审 P1-1：整 struct 覆盖语义下全量透传——卡级兄弟字段 + 关联级 when 原样回写
+        siblings = {}
+        if (card.get("settings") or {}).get("disableDeveloperSettingsInheritance") is not None:
+            siblings["disableDeveloperSettingsInheritance"] = bool(
+                card["settings"]["disableDeveloperSettingsInheritance"])
+        merged = []
+        for a in assocs:
+            na = {"type": "channel_model", "priority": a.get("priority") or 0,
+                  "disabled": bool(a.get("disabled")),
+                  "channelModel": {"channelId": a["channelModel"]["channelId"],
+                                   "modelId": a["channelModel"]["modelId"]}}
+            if a.get("when") is not None:
+                na["when"] = copy.deepcopy(a["when"])  # 读写形状同名（内省实证），深拷贝透传
+            merged.append(na)
+        merged += [{"type": "channel_model", "channelModel": {"channelId": c, "modelId": m}}
+                   for c, m in missing]
+        names = [slot["names"][slot["assocs"].index(p)] for p in missing]
+        # 渠道启用场景：有新增关联且卡 disabled → 补挂后启用；纯 type 修复不动 disabled 卡
+        enable = bool(missing) and card.get("status") != "enabled"
+        if missing:
+            head = "补挂关联并启用" if enable else "补挂关联"
+            detail = f"{head} {mid}（+= {', '.join(names)}）"
+            if type_fix:
+                detail += "；同时修正关联 type 字面量"
+        else:
+            detail = f"修正关联 type 字面量 {mid}（归一 channel_model，修复路由匹配）"
+        actions.append({"kind": "attach", "modelID": mid, "card_id": card["id"],
+                        "merged": merged, "siblings": siblings, "added": missing,
+                        "names": names, "enable": enable, "detail": detail})
+    # enable 补偿（评审 P1-2）：create/attach 后 updateModelStatus 失败 → 卡 disabled 但关联
+    # 已齐、模型退出未关联清单 → 上方分支零动作 → 卡永久 disabled 且无人感知。遍历 existing
+    # 兜底：disabled 卡 + channelModel 关联指向 enabled 渠道 → 补启用（天然幂等：已 enabled
+    # 不命中；无关联的 tokenhub 稳态卡不命中；channels 实况缺失 fail-closed 不盲启用）。
+    enabled_cids = set()
+    for c in channels or []:
+        try:
+            if (c or {}).get("status") == "enabled":
+                enabled_cids.add(int(str(c.get("id") or "").rsplit("/", 1)[1]))
+        except (ValueError, IndexError):
+            continue
+    if enabled_cids:
+        handled = {a["card_id"] for a in actions if a.get("card_id")}  # attach/skip 已判定的卡不重复
+        for card in existing or []:
+            if not isinstance(card, dict) or card.get("status") != "disabled":
+                continue  # 幂等（已 enabled 不出动作）；archived 天然不命中（P2-1）
+            if card.get("id") in handled:
+                continue
+            pairs = [p for p in (_channel_model_pair(a) for a in
+                                 (card.get("settings") or {}).get("associations") or []) if p]
+            if pairs and any(cid in enabled_cids for cid, _ in pairs):
+                mid = card.get("modelID")
+                actions.append({"kind": "enable", "modelID": mid, "card_id": card["id"],
+                                "detail": f"补偿启用 {mid}（卡 disabled 但关联已齐且渠道 enabled——疑首轮启用失败）"})
+    return actions
+
+
+def sync_model_cards(ax: Axonhub, state: dict):
+    """一轮模型卡片同步（issue #112 巡检项 7 执行体）：计划 → 逐动作执行 → 事件型通知。
+    纪律：单模型失败只记日志不阻塞其余（幂等天然成立——卡存在性在 axonhub 侧，下轮重试）；
+    通知一轮汇总一条（有建卡/变更才发），发送失败明细存 state["card_sync_pending"] 下轮
+    补发、成功才清除（与翻转项「发送失败不推进状态」同语义）。"""
+    unassoc = ax.gql(UNASSOCIATED_CHANNELS_QUERY).get("queryUnassociatedChannels") or []
+    models_data = ax.gql(MODELS_WITH_ASSOCS_QUERY).get("models") or {}
+    existing = [e["node"] for e in models_data.get("edges") or []]
+    try:
+        channels = [e["node"] for e in
+                    (ax.gql(CHANNELS_STATUS_QUERY).get("queryChannels") or {}).get("edges") or []]
+    except Exception as e:
+        # 渠道实况查询失败：enable 补偿 fail-closed（channels=None 不盲启用），建卡/补挂主流程照走
+        channels = None
+        print(f"[alert] 渠道路径状态查询失败（本轮 enable 补偿停用）: {type(e).__name__}", flush=True)
+    done = []
+    for a in plan_card_sync(unassoc, existing, channels):
+        if a["kind"] == "skip":
+            print(f"[alert] 模型卡片同步: {a['detail']}", flush=True)
+            continue
+        try:
+            if a["kind"] == "create":
+                card_id = ax.gql(CREATE_MODEL_MUTATION, {"input": a["input"]})["createModel"]["id"]
+            elif a["kind"] == "enable":
+                card_id = a["card_id"]  # 补偿启用（评审 P1-2）：无 settings 变更，直启
+            else:
+                ax.gql(UPDATE_MODEL_MUTATION,
+                       {"id": a["card_id"],
+                        "input": {"settings": {**a.get("siblings", {}),
+                                               "associations": a["merged"]}}})
+                card_id = a["card_id"]
+            if a.get("enable") or a["kind"] == "enable":
+                ax.gql(UPDATE_MODEL_STATUS_MUTATION, {"id": card_id, "status": "enabled"})
+            done.append(a["detail"])
+            print(f"[alert] 模型卡片同步: {a['detail']}", flush=True)
+        except Exception as e:
+            print(f"[alert] 模型卡片同步失败 {a['modelID']}: {type(e).__name__}: {e}", flush=True)
+    pending = (state.get("card_sync_pending") or []) + done
+    if not pending:
+        return
+    text = ("[ai4s 模型卡片同步] 渠道模型自动建卡/补挂变更\n"
+            + "\n".join(f"- {d}" for d in pending) + f"\n时间: {now_str()}")
+    if send_feishu(text):
+        state.pop("card_sync_pending", None)
+    else:
+        state["card_sync_pending"] = pending
+
+
 def check_cycle(ax: Axonhub, state: dict) -> dict:
     """一轮巡检；返回新状态。finding: key -> (bad: bool, 告警文本, 恢复文本)"""
     findings = {}
@@ -1062,6 +1336,13 @@ def check_cycle(ax: Axonhub, state: dict) -> dict:
             print(f"[alert] 已告警: judge warn ts={ts}", flush=True)
     except Exception as e:
         print(f"[alert] judge warn 巡检失败: {type(e).__name__}: {e}", flush=True)
+
+    # 7) 模型卡片自动同步（issue #112）：渠道模型 → /models 卡片库。查询/执行/通知整体
+    # try/except——单轮异常只记日志不杀线程、不影响其余巡检项（与其他六项同款隔离纪律）
+    try:
+        sync_model_cards(ax, state)
+    except Exception as e:
+        print(f"[alert] 模型卡片同步失败: {type(e).__name__}: {e}", flush=True)
     return state
 
 

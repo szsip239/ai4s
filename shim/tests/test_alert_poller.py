@@ -22,6 +22,12 @@ issue #101 增补：judge warn 事件巡检（judge_warn_pending 纯函数同款
 judge_warn_cursor 推进/重试）。
 issue #111 增补：渠道额度告警明细（channel_quota_detail 两实网形态/未知形态不炸、
 check_cycle 告警/恢复文本接线）、Key 耗尽告警百分比断言。
+issue #112 增补：模型卡片自动同步（plan_card_sync 纯函数——建卡/补挂/启停计划、
+多渠道聚合、幂等、畸形 gid 容错、非 channelModel 关联 fail-closed；check_cycle 接线——
+原子建卡带关联、settings 全量合并回写、事件型通知失败存 state 补发、单模型失败不阻塞）。
+评审增补：P1-1 settings 整 struct 覆盖语义下卡级兄弟字段/关联级 when 透传（when 超深
+fail-closed）；P1-2 enable 失败补偿重试（disabled 卡+关联齐+渠道 enabled → 补偿动作，
+渠道实况缺失 fail-closed 不盲启用）；P2-1 archived 卡 fail-closed 不自动复活。
 """
 import json
 import io
@@ -1573,6 +1579,499 @@ class TestCheckCycleChannelQuotaAlertText(unittest.TestCase):
         _, sends = self._cycle(state, TestChannelQuotaDetail.CODEX_QS)
         recover = next(t for t in sends if "上游渠道额度恢复" in t)
         self.assertIn("token 用量 29%", recover)
+
+
+def _unassoc_entry(cid, name, status, models):
+    """queryUnassociatedChannels 条目夹具（issue #112）。"""
+    return {"channel": {"id": f"gid://axonhub/Channel/{cid}", "name": name, "status": status},
+            "models": models}
+
+
+def _card_node(nid, mid, status="enabled", assocs=(), inherit_disabled=False, whens=None):
+    """models 查询节点夹具（issue #112）：assocs=[(channelId, modelId)]；读侧 type 原样读回
+    落库值——beta6 objects.ModelSettings 无 UnmarshalJSON 归一化（main 分支的归一化也只动
+    routing policy 字段，association Type 不落），源码实证；echo-test 的 snake 是 spike 写入
+    时就是 snake。inherit_disabled/whens 模拟人工配置的卡级兄弟字段与关联级 when 条件。"""
+    return {"id": f"gid://axonhub/Model/{nid}", "modelID": mid, "status": status,
+            "settings": {"disableDeveloperSettingsInheritance": inherit_disabled,
+                         "associations": [
+                {"type": "channel_model", "priority": 0, "disabled": False,
+                 "when": (whens or {}).get(i),
+                 "channelModel": {"channelId": c, "modelId": m}}
+                for i, (c, m) in enumerate(assocs)]}}
+
+
+class TestPlanCardSync(unittest.TestCase):
+    """issue #112：plan_card_sync 纯函数——未关联清单 + 已有卡 → 建卡/补挂/启停计划。
+    设计事实（实网 spike）：建卡必须与关联原子完成（create 一次带 associations，裸启用卡
+    =路由全灭）；关联只挂 enabled 渠道；多渠道同名模型一卡聚合增量补挂；按 modelID 幂等。"""
+
+    def test_empty_inputs_no_actions(self):
+        self.assertEqual(ap.plan_card_sync([], []), [])
+
+    def test_new_enabled_channel_model_creates_enabled_card(self):
+        # 建卡入参原子带关联（防裸启用卡）；有 enabled 渠道关联 → 建后启用
+        acts = ap.plan_card_sync([_unassoc_entry(2, "codex-main", "enabled", ["gpt-5.6-sol"])], [])
+        self.assertEqual(len(acts), 1)
+        a = acts[0]
+        self.assertEqual(a["kind"], "create")
+        self.assertEqual(a["modelID"], "gpt-5.6-sol")
+        self.assertTrue(a["enable"])
+        inp = a["input"]
+        # CreateModelInput 必填字段一个不落（内省实证 developer/modelID/name/icon/group/
+        # modelCard/settings NON_NULL）
+        self.assertEqual(inp["developer"], "ai4s")
+        self.assertEqual(inp["modelID"], "gpt-5.6-sol")
+        self.assertEqual(inp["type"], "chat")
+        self.assertEqual(inp["name"], "gpt-5.6-sol")
+        self.assertEqual(inp["icon"], "")
+        self.assertEqual(inp["group"], "default")
+        self.assertEqual(inp["modelCard"], {})
+        # 写侧 type 字面量必须 snake_case channel_model——MatchAssociations 按字面量精确
+        # 匹配（源码实证 switch assoc.Type case "channel_model"），camelCase 落库即路由全灭
+        self.assertEqual(inp["settings"]["associations"], [
+            {"type": "channel_model", "channelModel": {"channelId": 2, "modelId": "gpt-5.6-sol"}}])
+        self.assertIn("gpt-5.6-sol", a["detail"])
+        self.assertIn("codex-main", a["detail"])
+        self.assertIn("启用", a["detail"])
+
+    def test_disabled_only_channel_creates_disabled_card_no_assoc(self):
+        # tokenhub 形态：渠道 disabled → 建卡但保持 disabled、空关联（resolveAssociations
+        # 只匹配 enabled 渠道，挂了也白挂；渠道启用后下轮补挂+启用）
+        acts = ap.plan_card_sync([_unassoc_entry(8, "tokenhub", "disabled", ["glm-5.2"])], [])
+        self.assertEqual(len(acts), 1)
+        a = acts[0]
+        self.assertEqual(a["kind"], "create")
+        self.assertFalse(a["enable"])
+        self.assertEqual(a["input"]["settings"]["associations"], [])
+        self.assertIn("disabled", a["detail"])
+        self.assertIn("tokenhub", a["detail"])
+
+    def test_multi_channel_same_model_one_card_aggregates(self):
+        # 多渠道同名模型（mock-gpt 在 codex-main + tracer 均 enabled）：一张卡聚合两条关联
+        acts = ap.plan_card_sync([
+            _unassoc_entry(2, "codex-main", "enabled", ["mock-gpt"]),
+            _unassoc_entry(9, "mock-upstream-tracer", "enabled", ["mock-gpt"]),
+        ], [])
+        self.assertEqual(len(acts), 1)
+        a = acts[0]
+        self.assertEqual(a["kind"], "create")
+        pairs = {(x["channelModel"]["channelId"], x["channelModel"]["modelId"])
+                 for x in a["input"]["settings"]["associations"]}
+        self.assertEqual(pairs, {(2, "mock-gpt"), (9, "mock-gpt")})
+        self.assertTrue(a["enable"])
+
+    def test_mixed_enabled_disabled_only_enabled_attached(self):
+        # 同名模型跨 enabled（deepseek）+ disabled（tokenhub）：关联只挂 enabled 渠道
+        acts = ap.plan_card_sync([
+            _unassoc_entry(8, "tokenhub", "disabled", ["deepseek-v4-flash"]),
+            _unassoc_entry(5, "deepseek", "enabled", ["deepseek-v4-flash"]),
+        ], [])
+        self.assertEqual(len(acts), 1)
+        a = acts[0]
+        self.assertEqual(a["input"]["settings"]["associations"], [
+            {"type": "channel_model", "channelModel": {"channelId": 5, "modelId": "deepseek-v4-flash"}}])
+        self.assertTrue(a["enable"])
+        self.assertIn("deepseek", a["detail"])
+
+    def test_existing_card_complete_no_action(self):
+        # 幂等：卡已存在且关联齐全（含模型不在未关联清单的常见情形）→ 零动作
+        acts = ap.plan_card_sync(
+            [_unassoc_entry(2, "codex-main", "enabled", ["mock-gpt"])],
+            [_card_node(1, "mock-gpt", "enabled", assocs=((2, "mock-gpt"),))])
+        self.assertEqual(acts, [])
+
+    def test_existing_card_disabled_channel_only_no_action(self):
+        # 幂等（tokenhub 稳态）：卡已建 disabled 无关联，渠道仍 disabled → 零动作
+        acts = ap.plan_card_sync(
+            [_unassoc_entry(8, "tokenhub", "disabled", ["glm-5.2"])],
+            [_card_node(3, "glm-5.2", "disabled")])
+        self.assertEqual(acts, [])
+
+    def test_attach_missing_assoc_merged_full_list(self):
+        # 增量补挂：settings 全量覆盖语义（实证）——回写必须是 既有+新增 全量，防丢既有关联
+        acts = ap.plan_card_sync(
+            [_unassoc_entry(9, "mock-upstream-tracer", "enabled", ["mock-gpt"])],
+            [_card_node(2, "mock-gpt", "enabled", assocs=((2, "mock-gpt"),))])
+        self.assertEqual(len(acts), 1)
+        a = acts[0]
+        self.assertEqual(a["kind"], "attach")
+        self.assertEqual(a["card_id"], "gid://axonhub/Model/2")
+        self.assertEqual(a["added"], [(9, "mock-gpt")])
+        pairs = {(x["channelModel"]["channelId"], x["channelModel"]["modelId"]) for x in a["merged"]}
+        self.assertEqual(pairs, {(2, "mock-gpt"), (9, "mock-gpt")})
+        self.assertFalse(a["enable"])  # 卡已 enabled，不动状态
+        self.assertIn("补挂", a["detail"])
+        self.assertIn("mock-upstream-tracer", a["detail"])
+
+    def test_attach_preserves_priority_disabled(self):
+        # 既有 channelModel 关联的 priority/disabled 原样透传（全量覆盖下不丢字段）
+        card = _card_node(2, "mock-gpt", "enabled", assocs=((2, "mock-gpt"),))
+        card["settings"]["associations"][0]["priority"] = 7
+        card["settings"]["associations"][0]["disabled"] = True
+        acts = ap.plan_card_sync(
+            [_unassoc_entry(9, "tracer", "enabled", ["mock-gpt"])], [card])
+        merged = acts[0]["merged"]
+        old = next(x for x in merged if x["channelModel"]["channelId"] == 2)
+        self.assertEqual(old["priority"], 7)
+        self.assertEqual(old["disabled"], True)
+
+    def test_camelcase_stored_type_triggers_repair_attach(self):
+        # 自愈合：历史 camelCase（channelModel）落库关联不匹配 MatchAssociations（按字面量
+        # 精确匹配 channel_model，源码实证）——读侧兼容两形态所以关联"对齐全"，但存库 type
+        # 非规范 → 修复性 attach 全量回写 snake（merged 不丢 priority/disabled），卡已 enabled
+        # 不动状态
+        card = _card_node(2, "mock-gpt", "enabled", assocs=((2, "mock-gpt"),))
+        card["settings"]["associations"][0]["type"] = "channelModel"  # 历史错误落库形态
+        acts = ap.plan_card_sync(
+            [_unassoc_entry(2, "codex-main", "enabled", ["mock-gpt"])], [card])
+        self.assertEqual(len(acts), 1)
+        a = acts[0]
+        self.assertEqual(a["kind"], "attach")
+        self.assertFalse(a["enable"])
+        self.assertEqual(a["merged"], [
+            {"type": "channel_model", "priority": 0, "disabled": False,
+             "channelModel": {"channelId": 2, "modelId": "mock-gpt"}}])
+        self.assertIn("修正", a["detail"])
+
+    def test_attach_preserves_settings_sibling_fields(self):
+        """评审 P1-1：updateModel 的 settings 是整 struct 覆盖（beta6 源码 SetSettings 实证）——
+        补挂回写必须透传卡级兄弟字段 disableDeveloperSettingsInheritance，否则人工配置被静默重置。
+        （loadBalancerStrategy/traceStickyMode 为 main 分支字段，beta6 读写两侧均无——升级后
+        读查询需同步补取，代码注释已标注）。"""
+        card = _card_node(2, "mock-gpt", "enabled", assocs=((2, "mock-gpt"),), inherit_disabled=True)
+        acts = ap.plan_card_sync(
+            [_unassoc_entry(9, "tracer", "enabled", ["mock-gpt"])], [card])
+        self.assertEqual(len(acts), 1)
+        a = acts[0]
+        self.assertEqual(a["kind"], "attach")
+        self.assertEqual(a["siblings"], {"disableDeveloperSettingsInheritance": True})
+
+    def test_attach_preserves_association_when(self):
+        """评审 P1-1：关联级 when 条件（prompt_tokens/stream/has_image 等）原样透传——
+        补挂回写不抹人工配置的路由条件。"""
+        when = {"enabled": True,
+                "condition": {"type": "group", "logic": "and", "field": None, "operator": None,
+                              "value": None,
+                              "conditions": [{"type": "condition", "logic": None,
+                                              "field": "stream", "operator": "eq", "value": True,
+                                              "conditions": None}]}}
+        card = _card_node(2, "mock-gpt", "enabled", assocs=((2, "mock-gpt"),), whens={0: when})
+        acts = ap.plan_card_sync(
+            [_unassoc_entry(9, "tracer", "enabled", ["mock-gpt"])], [card])
+        merged = acts[0]["merged"]
+        old = next(x for x in merged if x["channelModel"]["channelId"] == 2)
+        self.assertEqual(old["when"], when)       # 原样保留
+        self.assertIsNot(old["when"], when)       # 深拷贝，不共享引用
+        new = next(x for x in merged if x["channelModel"]["channelId"] == 9)
+        self.assertNotIn("when", new)             # 巡检新建的关联不臆造 when
+
+    def test_attach_when_too_deep_fail_closed(self):
+        """评审 P1-1 防御：when.condition 嵌套超读查询深度（4 层）仍有 conditions →
+        fail-closed skip（防静默截断丢条件），不丢进 merged。"""
+        deep = {"type": "condition", "field": "stream", "operator": "eq", "value": True}
+        for _ in range(6):
+            deep = {"type": "group", "logic": "and", "conditions": [deep]}
+        card = _card_node(2, "mock-gpt", "enabled", assocs=((2, "mock-gpt"),),
+                          whens={0: {"enabled": True, "condition": deep}})
+        acts = ap.plan_card_sync(
+            [_unassoc_entry(9, "tracer", "enabled", ["mock-gpt"])], [card])
+        self.assertEqual(len(acts), 1)
+        self.assertEqual(acts[0]["kind"], "skip")
+        self.assertIn("when", acts[0]["detail"])
+
+    def test_enable_compensation_after_status_failure(self):
+        """评审 P1-2：disabled 卡 + 关联已齐（模型已退出未关联清单）+ 关联指向 enabled 渠道
+        → 补偿 enable 动作（create/attach 后 updateModelStatus 失败的下轮自愈，管理员可感知）。"""
+        card = _card_node(2, "mock-gpt", "disabled", assocs=((2, "mock-gpt"),))
+        acts = ap.plan_card_sync(
+            [], [card], channels=[{"id": "gid://axonhub/Channel/2", "status": "enabled"}])
+        self.assertEqual(len(acts), 1)
+        a = acts[0]
+        self.assertEqual(a["kind"], "enable")
+        self.assertEqual(a["card_id"], "gid://axonhub/Model/2")
+        self.assertIn("启用", a["detail"])
+
+    def test_enable_compensation_fail_closed_without_channels(self):
+        """评审 P1-2：渠道实况不可得（channels 缺省/空）→ 不盲启用（fail-closed）。"""
+        card = _card_node(2, "mock-gpt", "disabled", assocs=((2, "mock-gpt"),))
+        self.assertEqual(ap.plan_card_sync([], [card]), [])
+        self.assertEqual(ap.plan_card_sync([], [card], channels=[]), [])
+
+    def test_enable_compensation_only_disabled_channels_noop(self):
+        """评审 P1-2：关联指向的渠道全 disabled → 不启用（tokenhub 模型渠道仍 disabled 的场景）。"""
+        card = _card_node(2, "mock-gpt", "disabled", assocs=((8, "mock-gpt"),))
+        acts = ap.plan_card_sync(
+            [], [card], channels=[{"id": "gid://axonhub/Channel/8", "status": "disabled"}])
+        self.assertEqual(acts, [])
+
+    def test_enable_compensation_skips_enabled_and_no_assoc_cards(self):
+        """评审 P1-2 幂等：已 enabled 卡不出动作；disabled 无关联卡（tokenhub 稳态）不出动作。"""
+        enabled_card = _card_node(1, "echo-test", "enabled", assocs=((7, "echo-test"),))
+        no_assoc = _card_node(3, "glm-5.2", "disabled")
+        ch = [{"id": "gid://axonhub/Channel/7", "status": "enabled"}]
+        self.assertEqual(ap.plan_card_sync([], [enabled_card, no_assoc], channels=ch), [])
+
+    def test_enable_compensation_not_duplicated_with_attach(self):
+        """评审 P1-2：本轮 attach 分支已判定 enable 的卡，尾部补偿不重复出动作。"""
+        card = _card_node(3, "glm-5.2", "disabled")
+        ch = [{"id": "gid://axonhub/Channel/8", "status": "enabled"}]
+        acts = ap.plan_card_sync(
+            [_unassoc_entry(8, "tokenhub", "enabled", ["glm-5.2"])], [card], channels=ch)
+        self.assertEqual([a["kind"] for a in acts], ["attach"])  # attach 内含 enable=True，无第二个动作
+        self.assertTrue(acts[0]["enable"])
+
+    def test_archived_card_fail_closed(self):
+        """评审 P2-1：archived 卡 fail-closed——不 create/attach/enable（不自动复活归档卡），
+        出 skip 记日志让管理员感知。"""
+        card = _card_node(2, "mock-gpt", "archived", assocs=((2, "mock-gpt"),))
+        ch = [{"id": "gid://axonhub/Channel/2", "status": "enabled"},
+              {"id": "gid://axonhub/Channel/9", "status": "enabled"}]
+        acts = ap.plan_card_sync(
+            [_unassoc_entry(9, "tracer", "enabled", ["mock-gpt"])], [card], channels=ch)
+        self.assertEqual(len(acts), 1)
+        self.assertEqual(acts[0]["kind"], "skip")
+        self.assertIn("archived", acts[0]["detail"])
+
+    def test_attach_disabled_card_enables(self):
+        # 渠道启用场景（tokenhub 转正）：卡 disabled 无关联 → 补挂 + 启用
+        acts = ap.plan_card_sync(
+            [_unassoc_entry(8, "tokenhub", "enabled", ["glm-5.2"])],
+            [_card_node(3, "glm-5.2", "disabled")])
+        self.assertEqual(len(acts), 1)
+        a = acts[0]
+        self.assertEqual(a["kind"], "attach")
+        self.assertTrue(a["enable"])
+        self.assertIn("启用", a["detail"])
+
+    def test_foreign_association_fail_closed_skip(self):
+        # 卡含非 channelModel 关联（如人工配的 regex）：settings 全量覆盖语义下补挂会丢
+        # 该关联 → fail-closed 跳过，只出 skip 动作（执行层记日志），绝不改写
+        card = _card_node(2, "mock-gpt", "enabled", assocs=((2, "mock-gpt"),))
+        card["settings"]["associations"].append(
+            {"type": "regex", "priority": 0, "disabled": False, "channelModel": None})
+        acts = ap.plan_card_sync(
+            [_unassoc_entry(9, "tracer", "enabled", ["mock-gpt"])], [card])
+        self.assertEqual(len(acts), 1)
+        self.assertEqual(acts[0]["kind"], "skip")
+        self.assertNotIn("merged", acts[0])
+
+    def test_malformed_channel_gid_skipped(self):
+        # 畸形 channel gid 只丢该渠道条目，不炸整轮计划
+        acts = ap.plan_card_sync(
+            [{"channel": {"id": "not-a-gid", "name": "broken", "status": "enabled"}, "models": ["m1"]},
+             _unassoc_entry(2, "codex-main", "enabled", ["m2"])], [])
+        self.assertEqual([a["modelID"] for a in acts], ["m2"])
+
+    def test_actions_sorted_by_model_id(self):
+        acts = ap.plan_card_sync(
+            [_unassoc_entry(2, "codex-main", "enabled", ["zz-model", "aa-model"])], [])
+        self.assertEqual([a["modelID"] for a in acts], ["aa-model", "zz-model"])
+
+
+class TestCheckCycleCardSync(unittest.TestCase):
+    """issue #112：check_cycle 巡检项 7 接线——queryUnassociatedChannels/models 两查询 →
+    计划执行（createModel 原子带关联 / updateModel 全量合并 / updateModelStatus 启停）→
+    事件型飞书通知（有变更才发，发送失败存 card_sync_pending 下轮补发）。"""
+
+    def _cycle(self, state, unassoc, existing, send_results=(), fail_on_create=None,
+               channels=(), fail_on_status=False):
+        sends, creates, updates, status_calls = [], [], [], []
+
+        def fake_gql(query, variables=None):
+            if "queryUnassociatedChannels" in query:
+                return {"queryUnassociatedChannels": unassoc}
+            if "updateModelStatus" in query:  # 先判：updateModel 是其子串
+                status_calls.append(variables)  # 先记尝试，再模拟失败（失败也留痕）
+                if fail_on_status:
+                    raise RuntimeError("status boom")
+                return {"updateModelStatus": True}
+            if "createModel" in query:
+                gid = f"gid://axonhub/Model/{100 + len(creates)}"
+                creates.append(variables)  # 先记尝试，再模拟失败（失败也留痕）
+                if fail_on_create and variables["input"]["modelID"] == fail_on_create:
+                    raise RuntimeError("create boom")
+                return {"createModel": {"id": gid,
+                                        "modelID": variables["input"]["modelID"], "status": "disabled"}}
+            if "updateModel" in query:
+                updates.append(variables)
+                return {"updateModel": {"id": variables["id"]}}
+            if "models(" in query:
+                return {"models": {"edges": [{"node": c} for c in existing]}}
+            if "queryChannels" in query and "providerQuotaStatus" not in query:
+                # 卡片同步的渠道路径状态表（P1-2 enable 补偿判定用）；额度巡检项 2 的
+                # queryChannels 带 providerQuotaStatus，形状不同分开派
+                return {"queryChannels": {"edges": [{"node": c} for c in channels]}}
+            if "queryChannels" in query:
+                return {"queryChannels": {"edges": []}}
+            if "myProjects" in query:
+                return {"myProjects": []}
+            if "apiKeys(" in query:
+                return {"apiKeys": {"edges": []}}
+            raise AssertionError(f"unexpected gql: {query[:60]}")
+
+        ax = mock.Mock()
+        ax.gql = fake_gql
+        send_iter = iter(send_results)
+
+        def fake_send(text):
+            sends.append(text)
+            return next(send_iter, True)
+
+        with mock.patch.object(ap, "http_get", return_value=True), \
+             mock.patch.object(ap.shadow_log, "stats",
+                               side_effect=lambda layer, window=0: _shadow_stats(0, 0)), \
+             mock.patch.object(ap.shadow_log, "tail", return_value=[]), \
+             mock.patch.object(ap, "send_feishu", side_effect=fake_send):
+            new_state = ap.check_cycle(ax, state)
+        return new_state, sends, {"creates": creates, "updates": updates, "status": status_calls}
+
+    def test_first_round_backfill_create_enable_notify(self):
+        # 首轮回填：enabled 渠道模型建卡（原子带关联）+ 启用 + 通知带模型/渠道明细
+        state, sends, ops = self._cycle(
+            {}, [_unassoc_entry(5, "deepseek", "enabled", ["deepseek-v4-flash"])], [])
+        self.assertEqual(len(ops["creates"]), 1)
+        inp = ops["creates"][0]["input"]
+        self.assertEqual(inp["modelID"], "deepseek-v4-flash")
+        self.assertEqual(inp["settings"]["associations"], [
+            {"type": "channel_model", "channelModel": {"channelId": 5, "modelId": "deepseek-v4-flash"}}])
+        self.assertEqual(ops["status"], [{"id": "gid://axonhub/Model/100", "status": "enabled"}])
+        self.assertEqual(len(sends), 1)
+        self.assertIn("模型卡片同步", sends[0])
+        self.assertIn("deepseek-v4-flash", sends[0])
+        self.assertIn("deepseek", sends[0])
+        self.assertNotIn("card_sync_pending", state)  # 发送成功不留补发队列
+
+    def test_disabled_channel_card_disabled_no_status_call(self):
+        # tokenhub 形态：建 disabled 卡、空关联、不调 updateModelStatus；通知仍发（建卡事件）
+        state, sends, ops = self._cycle(
+            {}, [_unassoc_entry(8, "tokenhub", "disabled", ["glm-5.2"])], [])
+        self.assertEqual(len(ops["creates"]), 1)
+        self.assertEqual(ops["creates"][0]["input"]["settings"]["associations"], [])
+        self.assertEqual(ops["status"], [])
+        self.assertEqual(len(sends), 1)
+        self.assertIn("disabled", sends[0])
+        self.assertIn("tokenhub", sends[0])
+
+    def test_idempotent_second_round_zero_mutation_zero_notify(self):
+        # 二轮幂等：卡已存在关联齐全（echo-test 已建卡且其渠道不在清单）+ tokenhub 稳态
+        # （disabled 渠道模型仍在清单但卡已建）→ 零 mutation 零通知
+        existing = [_card_node(1, "echo-test", "enabled", assocs=((7, "echo-test"),)),
+                    _card_node(3, "glm-5.2", "disabled")]
+        state, sends, ops = self._cycle(
+            {}, [_unassoc_entry(8, "tokenhub", "disabled", ["glm-5.2"])], existing)
+        self.assertEqual(ops["creates"], [])
+        self.assertEqual(ops["updates"], [])
+        self.assertEqual(ops["status"], [])
+        self.assertEqual(sends, [])
+
+    def test_attach_incremental_merged_full_list(self):
+        # 多渠道增量补挂：updateModel 回写 既有+新增 全量（settings 全量覆盖语义防丢关联）
+        existing = [_card_node(2, "mock-gpt", "enabled", assocs=((2, "mock-gpt"),))]
+        state, sends, ops = self._cycle(
+            {}, [_unassoc_entry(9, "mock-upstream-tracer", "enabled", ["mock-gpt"])], existing)
+        self.assertEqual(ops["creates"], [])
+        self.assertEqual(len(ops["updates"]), 1)
+        v = ops["updates"][0]
+        self.assertEqual(v["id"], "gid://axonhub/Model/2")
+        pairs = {(x["channelModel"]["channelId"], x["channelModel"]["modelId"])
+                 for x in v["input"]["settings"]["associations"]}
+        self.assertEqual(pairs, {(2, "mock-gpt"), (9, "mock-gpt")})
+        self.assertEqual(ops["status"], [])  # 卡已 enabled 不动状态
+        # 评审 P1-1：settings 整 struct 覆盖语义下，卡级兄弟字段随回写透传（不被重置）
+        self.assertEqual(
+            v["input"]["settings"]["disableDeveloperSettingsInheritance"], False)
+        self.assertEqual(len(sends), 1)
+        self.assertIn("补挂", sends[0])
+        self.assertIn("mock-upstream-tracer", sends[0])
+
+    def test_enable_failure_retried_next_round(self):
+        """评审 P1-2 接线：create 成功但 updateModelStatus 失败 → 当轮不计入通知明细；
+        下轮（模型已退出未关联清单）plan 尾部补偿出 enable 动作自动补上并通知。"""
+        # 轮 1：建卡成功、启用失败
+        state, sends, ops = self._cycle(
+            {}, [_unassoc_entry(2, "codex-main", "enabled", ["mock-gpt"])], [],
+            fail_on_status=True)
+        self.assertEqual(len(ops["creates"]), 1)
+        self.assertEqual(len(ops["status"]), 1)  # 启用尝试过但失败
+        self.assertEqual(sends, [])               # 动作未完整执行，不进通知明细
+        # 轮 2：卡已建 disabled 且关联齐（模型退出清单），渠道实况 enabled → 补偿启用
+        existing = [_card_node(100, "mock-gpt", "disabled", assocs=((2, "mock-gpt"),))]
+        state, sends, ops = self._cycle(
+            state, [], existing,
+            channels=[{"id": "gid://axonhub/Channel/2", "status": "enabled"}])
+        self.assertEqual(ops["creates"], [])
+        self.assertEqual(ops["updates"], [])
+        self.assertEqual(ops["status"], [{"id": "gid://axonhub/Model/100", "status": "enabled"}])
+        self.assertEqual(len(sends), 1)
+        self.assertIn("启用", sends[0])
+        self.assertIn("mock-gpt", sends[0])
+        # 轮 3：卡已 enabled → 零动作零通知（幂等）
+        existing = [_card_node(100, "mock-gpt", "enabled", assocs=((2, "mock-gpt"),))]
+        state, sends, ops = self._cycle(
+            state, [], existing,
+            channels=[{"id": "gid://axonhub/Channel/2", "status": "enabled"}])
+        self.assertEqual(ops["status"], [])
+        self.assertEqual(sends, [])
+
+    def test_channel_turned_enabled_attach_and_enable(self):
+        # tokenhub 渠道启用场景：下轮补挂关联 + 启用卡
+        existing = [_card_node(3, "glm-5.2", "disabled")]
+        state, sends, ops = self._cycle(
+            {}, [_unassoc_entry(8, "tokenhub", "enabled", ["glm-5.2"])], existing)
+        self.assertEqual(len(ops["updates"]), 1)
+        self.assertEqual(ops["status"], [{"id": "gid://axonhub/Model/3", "status": "enabled"}])
+        self.assertIn("启用", sends[0])
+
+    def test_send_failure_pending_resent_next_round(self):
+        # 通知发送失败：明细存 card_sync_pending（不推进=不丢事件）；下轮无新变更也补发，
+        # 补发成功才清除
+        state, sends, _ = self._cycle(
+            {}, [_unassoc_entry(5, "deepseek", "enabled", ["deepseek-v4-pro"])], [],
+            send_results=[False])
+        self.assertEqual(len(sends), 1)
+        pending = state.get("card_sync_pending")
+        self.assertTrue(pending)
+        self.assertIn("deepseek-v4-pro", pending[0])
+        # 下轮：无未关联、无新动作 → 仍补发上轮明细
+        state, sends, ops = self._cycle(state, [], [], send_results=[True])
+        self.assertEqual(ops["creates"], [])
+        self.assertEqual(len(sends), 1)
+        self.assertIn("deepseek-v4-pro", sends[0])
+        self.assertNotIn("card_sync_pending", state)
+
+    def test_single_model_failure_not_blocking(self):
+        # 单模型建卡失败只记日志：其余模型照常建卡+通知；失败模型仍在未关联清单下轮重试
+        state, sends, ops = self._cycle(
+            {}, [_unassoc_entry(2, "codex-main", "enabled", ["bad-model", "good-model"])], [],
+            fail_on_create="bad-model")
+        self.assertEqual([c["input"]["modelID"] for c in ops["creates"]],
+                         ["bad-model", "good-model"])  # 两个都尝试了
+        self.assertEqual(len(ops["status"]), 1)  # 只有 good-model 走到启用
+        self.assertEqual(len(sends), 1)
+        self.assertIn("good-model", sends[0])
+        self.assertNotIn("bad-model", sends[0])
+
+    def test_sync_query_constants_balanced_braces(self):
+        """查询常量括号配对守卫：单测 mock gql 从不解析查询串，手拼多层嵌套串少一层闭括号
+        要到实网 422 才暴露（评审修复期实证 P1-1 读查询即踩中）——配对断言堵住该类 bug。"""
+        for q in (ap.UNASSOCIATED_CHANNELS_QUERY, ap.MODELS_WITH_ASSOCS_QUERY,
+                  ap.CHANNELS_STATUS_QUERY, ap.CREATE_MODEL_MUTATION,
+                  ap.UPDATE_MODEL_MUTATION, ap.UPDATE_MODEL_STATUS_MUTATION):
+            self.assertEqual(q.count("{"), q.count("}"), q[:60])
+
+    def test_sync_query_failure_does_not_break_cycle(self):
+        # 同步查询本身挂掉：只记日志，巡检循环不抛、状态不污染
+        ax = mock.Mock()
+        ax.gql.side_effect = RuntimeError("axonhub down")
+        with mock.patch.object(ap, "http_get", return_value=True), \
+             mock.patch.object(ap.shadow_log, "stats",
+                               side_effect=lambda layer, window=0: _shadow_stats(0, 0)), \
+             mock.patch.object(ap.shadow_log, "tail", return_value=[]), \
+             mock.patch.object(ap, "send_feishu", return_value=True) as s:
+            state = ap.check_cycle(ax, {})
+        self.assertEqual(state, {})
+        s.assert_not_called()
 
 
 if __name__ == "__main__":
