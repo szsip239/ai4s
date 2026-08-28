@@ -177,6 +177,22 @@ export function normalizeJudge(judge: Partial<JudgeSettings> | undefined): Judge
     inject_prompt_fewshot: judge?.inject_prompt_fewshot ?? '',
   };
 }
+/** 智能路由节（issue #117 五键必填 + issue #119 五扩展键可选）：settings 可选节
+ * （缺席=关态合法，shim 运行侧 routing.enabled 缺省 false）；出席即五键齐全校验。
+ * 面板读侧经 smart-routing/api.ts normalizeRouting 补默认后十键齐全；扩展键在
+ * normalize 后总是出席（保存即显式落盘，与 shim 出席才校验语义兼容） */
+export interface RoutingSettings {
+  enabled: boolean;
+  threshold: number; // p_complex ≥ 阈值判 complex（0~1）
+  tiers: { simple: string; complex: string }; // 两档→真实模型映射（字符白名单进响应头，shim 严校）
+  timeout: number; // 分类调用超时秒（>0）
+  max_concurrency: number; // 分类并发预算（≥1 整数，独立于 judge.max_concurrency）
+  prompt: string; // issue #119：分类系统提示（缺省=shim ROUTER_PROMPT_SYSTEM）
+  escalate_conf: number; // issue #119：升档强置信门槛（0~1，缺省 0.85）
+  session_ttl: number; // issue #119：会话档位 TTL 秒（>0，缺省 3600）
+  tool_loop_lock: boolean; // issue #119：tool-loop 锁（缺省 true）
+  thinking_lock: boolean; // issue #119：thinking 锁（缺省 true）
+}
 /** 分层总开关（issue #40）：单键段；旧 settings.json 可能缺段（shim 侧缺段默认 true），
  * 故读侧按可选处理、展示缺省回退 true 与服务端语义对齐 */
 export interface LayerSwitchSettings {
@@ -192,6 +208,9 @@ export interface DlpSettings {
   l1?: LayerSwitchSettings;
   l2?: LayerSwitchSettings;
   response?: LayerSwitchSettings;
+  /** issue #117/#119：智能路由可选节（缺席=关态合法，读侧不在本页 normalize——
+   * rules 页整体 PUT 原样透传；配置读写走智能路由页（issue #120）normalizeRouting 补默认） */
+  routing?: RoutingSettings;
 }
 
 // ---- query keys ----

@@ -66,6 +66,12 @@ export const routeConfigs: RouteGroup[] = [
         mode: 'hidden',
       },
       {
+        path: '/smart-routing',
+        // 智能路由（issue #120）：shim settings routing 节配置 + router 层决策日志观测，读级与 shim 对齐
+        requiredScopes: ['read_channels'],
+        mode: 'hidden',
+      },
+      {
         path: '/data-storages',
         requiredScopes: ['read_data_storages'],
         mode: 'hidden',

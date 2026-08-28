@@ -24,6 +24,7 @@ import { Route as authForgotPasswordRouteImport } from './routes/(auth)/forgot-p
 import { Route as AuthenticatedSettingsRouteRouteImport } from './routes/_authenticated/settings/route'
 import { Route as AuthenticatedUsersIndexRouteImport } from './routes/_authenticated/users/index'
 import { Route as AuthenticatedSystemIndexRouteImport } from './routes/_authenticated/system/index'
+import { Route as AuthenticatedSmartRoutingIndexRouteImport } from './routes/_authenticated/smart-routing/index'
 import { Route as AuthenticatedSettingsIndexRouteImport } from './routes/_authenticated/settings/index'
 import { Route as AuthenticatedRolesIndexRouteImport } from './routes/_authenticated/roles/index'
 import { Route as AuthenticatedPromptProtectionRulesIndexRouteImport } from './routes/_authenticated/prompt-protection-rules/index'
@@ -131,6 +132,12 @@ const AuthenticatedSystemIndexRoute =
   AuthenticatedSystemIndexRouteImport.update({
     id: '/system/',
     path: '/system/',
+    getParentRoute: () => AuthenticatedRouteRoute,
+  } as any)
+const AuthenticatedSmartRoutingIndexRoute =
+  AuthenticatedSmartRoutingIndexRouteImport.update({
+    id: '/smart-routing/',
+    path: '/smart-routing/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
 const AuthenticatedSettingsIndexRoute =
@@ -356,6 +363,7 @@ export interface FileRoutesByFullPath {
   '/prompt-protection-rules/': typeof AuthenticatedPromptProtectionRulesIndexRoute
   '/roles/': typeof AuthenticatedRolesIndexRoute
   '/settings/': typeof AuthenticatedSettingsIndexRoute
+  '/smart-routing/': typeof AuthenticatedSmartRoutingIndexRoute
   '/system/': typeof AuthenticatedSystemIndexRoute
   '/users/': typeof AuthenticatedUsersIndexRoute
   '/project/requests/$requestId': typeof AuthenticatedProjectRequestsRequestIdRoute
@@ -403,6 +411,7 @@ export interface FileRoutesByTo {
   '/prompt-protection-rules': typeof AuthenticatedPromptProtectionRulesIndexRoute
   '/roles': typeof AuthenticatedRolesIndexRoute
   '/settings': typeof AuthenticatedSettingsIndexRoute
+  '/smart-routing': typeof AuthenticatedSmartRoutingIndexRoute
   '/system': typeof AuthenticatedSystemIndexRoute
   '/users': typeof AuthenticatedUsersIndexRoute
   '/project/requests/$requestId': typeof AuthenticatedProjectRequestsRequestIdRoute
@@ -453,6 +462,7 @@ export interface FileRoutesById {
   '/_authenticated/prompt-protection-rules/': typeof AuthenticatedPromptProtectionRulesIndexRoute
   '/_authenticated/roles/': typeof AuthenticatedRolesIndexRoute
   '/_authenticated/settings/': typeof AuthenticatedSettingsIndexRoute
+  '/_authenticated/smart-routing/': typeof AuthenticatedSmartRoutingIndexRoute
   '/_authenticated/system/': typeof AuthenticatedSystemIndexRoute
   '/_authenticated/users/': typeof AuthenticatedUsersIndexRoute
   '/_authenticated/project/requests/$requestId': typeof AuthenticatedProjectRequestsRequestIdRoute
@@ -503,6 +513,7 @@ export interface FileRouteTypes {
     | '/prompt-protection-rules/'
     | '/roles/'
     | '/settings/'
+    | '/smart-routing/'
     | '/system/'
     | '/users/'
     | '/project/requests/$requestId'
@@ -550,6 +561,7 @@ export interface FileRouteTypes {
     | '/prompt-protection-rules'
     | '/roles'
     | '/settings'
+    | '/smart-routing'
     | '/system'
     | '/users'
     | '/project/requests/$requestId'
@@ -599,6 +611,7 @@ export interface FileRouteTypes {
     | '/_authenticated/prompt-protection-rules/'
     | '/_authenticated/roles/'
     | '/_authenticated/settings/'
+    | '/_authenticated/smart-routing/'
     | '/_authenticated/system/'
     | '/_authenticated/users/'
     | '/_authenticated/project/requests/$requestId'
@@ -735,6 +748,13 @@ declare module '@tanstack/react-router' {
       path: '/system'
       fullPath: '/system/'
       preLoaderRoute: typeof AuthenticatedSystemIndexRouteImport
+      parentRoute: typeof AuthenticatedRouteRoute
+    }
+    '/_authenticated/smart-routing/': {
+      id: '/_authenticated/smart-routing/'
+      path: '/smart-routing'
+      fullPath: '/smart-routing/'
+      preLoaderRoute: typeof AuthenticatedSmartRoutingIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/settings/': {
@@ -1004,6 +1024,7 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedProjectsIndexRoute: typeof AuthenticatedProjectsIndexRoute
   AuthenticatedPromptProtectionRulesIndexRoute: typeof AuthenticatedPromptProtectionRulesIndexRoute
   AuthenticatedRolesIndexRoute: typeof AuthenticatedRolesIndexRoute
+  AuthenticatedSmartRoutingIndexRoute: typeof AuthenticatedSmartRoutingIndexRoute
   AuthenticatedSystemIndexRoute: typeof AuthenticatedSystemIndexRoute
   AuthenticatedUsersIndexRoute: typeof AuthenticatedUsersIndexRoute
   AuthenticatedProjectRequestsRequestIdRoute: typeof AuthenticatedProjectRequestsRequestIdRoute
@@ -1040,6 +1061,7 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedPromptProtectionRulesIndexRoute:
     AuthenticatedPromptProtectionRulesIndexRoute,
   AuthenticatedRolesIndexRoute: AuthenticatedRolesIndexRoute,
+  AuthenticatedSmartRoutingIndexRoute: AuthenticatedSmartRoutingIndexRoute,
   AuthenticatedSystemIndexRoute: AuthenticatedSystemIndexRoute,
   AuthenticatedUsersIndexRoute: AuthenticatedUsersIndexRoute,
   AuthenticatedProjectRequestsRequestIdRoute:

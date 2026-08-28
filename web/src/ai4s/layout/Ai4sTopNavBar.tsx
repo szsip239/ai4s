@@ -12,6 +12,7 @@ import {
   IconDatabase,
   IconSettings,
   IconClipboardCheck,
+  IconArrowsShuffle,
 } from '@tabler/icons-react';
 import { cn } from '@/lib/utils';
 import { usePermissions } from '@/hooks/usePermissions';
@@ -42,6 +43,8 @@ import { useRoutePermissions } from '@/hooks/useRoutePermissions';
  * 控制台申请通道的点批页；审批卡 link 按钮落点同此页。
  * issue #113：Playground 接入「接入管理」页内 Tab 组（/project/playground），
  * match 同步加 '/project/playground'——直达 Playground 时顶栏高亮「接入管理」。
+ * issue #120：新增管理组「智能路由」入口（/smart-routing，label 复用 sidebar.items.smartRouting）——
+ * shim routing 节配置 + router 层决策日志观测页；权限过滤走 routeConfigs 同名条目（read_channels）。
  */
 
 const NAV_ITEMS = [
@@ -51,6 +54,7 @@ const NAV_ITEMS = [
   { labelKey: 'sidebar.items.accessManagement', href: '/channels', match: ['/channels', '/models', '/project/playground'], icon: IconRoute },
   { labelKey: 'ai4s.topnav.promptProtectionRules', href: '/prompt-protection-rules', match: ['/prompt-protection-rules'], icon: IconShield },
   { labelKey: 'sidebar.items.keyRequests', href: '/key-requests', match: ['/key-requests'], icon: IconClipboardCheck },
+  { labelKey: 'sidebar.items.smartRouting', href: '/smart-routing', match: ['/smart-routing'], icon: IconArrowsShuffle },
   { labelKey: 'sidebar.items.observability', href: '/project/requests', match: ['/project/requests', '/project/usage-stats', '/project/traces', '/project/threads'], icon: IconFileText },
   { labelKey: 'sidebar.items.projects', href: '/projects', match: ['/projects'], icon: IconFolders },
   { labelKey: 'sidebar.items.people', href: '/users', match: ['/users', '/roles', '/project/users', '/project/roles'], icon: IconUsersGroup },

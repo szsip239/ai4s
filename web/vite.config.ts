@@ -55,6 +55,11 @@ export default defineConfig({
         target: process.env.VITE_API_URL || 'http://localhost:3000',
         changeOrigin: true,
       },
+      // DLP 管理平面（issue #120 补既有缺口）：经本地网关到 shim /dlp-admin/*（脱敏规则/智能路由页同源调用）
+      '/dlp-admin': {
+        target: process.env.VITE_API_URL || 'http://localhost:3000',
+        changeOrigin: true,
+      },
     },
   },
 });

@@ -11,6 +11,7 @@ import {
   IconAi,
   IconNote,
   IconClipboardCheck,
+  IconArrowsShuffle,
 } from '@tabler/icons-react';
 import { Command } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
@@ -87,6 +88,12 @@ export function useSidebarData(): SidebarData {
           title: t('sidebar.items.keyRequests'),
           url: '/key-requests',
           icon: IconClipboardCheck,
+        } as NavLink,
+        {
+          // 智能路由（issue #120）：管理员一级入口（routing 节配置 + 决策日志观测）
+          title: t('sidebar.items.smartRouting'),
+          url: '/smart-routing',
+          icon: IconArrowsShuffle,
         } as NavLink,
         {
           title: t('sidebar.items.accessManagement'),
