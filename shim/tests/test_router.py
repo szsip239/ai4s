@@ -174,7 +174,11 @@ class RouterTestBase(unittest.TestCase):
         shim_app.JUDGE_API_KEY = "test-key"
         self._saved_env = {k: os.environ.pop(k, None)
                            for k in ("ROUTING_ENABLED", "ROUTING_THRESHOLD",
-                                     "ROUTING_TIMEOUT", "ROUTING_MAX_CONCURRENCY")}
+                                     "ROUTING_TIMEOUT", "ROUTING_MAX_CONCURRENCY",
+                                     # issue #119 可选增补键 env 层（同纪律摘除防开发机导出污染）
+                                     "ROUTING_PROMPT", "ROUTING_ESCALATE_CONF",
+                                     "ROUTING_SESSION_TTL", "ROUTING_TOOL_LOOP_LOCK",
+                                     "ROUTING_THINKING_LOCK")}
         self._saved_env["SHADOW_LOG_PATH"] = os.environ.get("SHADOW_LOG_PATH")
         os.environ["SHADOW_LOG_PATH"] = self.log_path
         shim_app._router_sessions.clear()
@@ -214,6 +218,16 @@ class RouterTestBase(unittest.TestCase):
     def _msgs(*texts, session_first="任务一"):
         """构造 messages：首轮 user + 后续 user 轮次（无 session 头时首轮 user 内容作指纹）。"""
         return [{"role": "user", "content": t} for t in (session_first, *texts)]
+
+    def _auto(self, texts, session_first="任务一", headers=None, metadata=None, extra_tail=None):
+        """POST model=auto 多轮形态：首轮 user + 追加轮次 + 可选尾消息（tool/thinking 形态）。"""
+        msgs = self._msgs(*texts, session_first=session_first)
+        if extra_tail:
+            msgs.extend(extra_tail)
+        payload = {"model": "auto", "messages": msgs}
+        if metadata:
+            payload["metadata"] = metadata
+        return self._post(payload, headers=headers)
 
 
 class RouterDisabledZeroBehaviorTest(RouterTestBase):
@@ -478,15 +492,6 @@ class RouterFailOpenTest(RouterTestBase):
 
 class RouterSessionTest(RouterTestBase):
     """会话策略（方案 A）：首轮定档、继承、只升不降、tool-loop 锁、thinking 锁、LRU/TTL。"""
-
-    def _auto(self, texts, session_first="任务一", headers=None, metadata=None, extra_tail=None):
-        msgs = self._msgs(*texts, session_first=session_first)
-        if extra_tail:
-            msgs.extend(extra_tail)
-        payload = {"model": "auto", "messages": msgs}
-        if metadata:
-            payload["metadata"] = metadata
-        return self._post(payload, headers=headers)
 
     def test_session_inherit_complex_no_reclassify(self):
         """首轮 complex 定档 → 同会话二轮直接继承（reason=session_inherit，session=True），
@@ -783,6 +788,146 @@ class RouterSessionTest(RouterTestBase):
             # 被逐会话回聊 → 重新定档（再调一次分类器）
             self._auto(["追问"], headers={"x-session-id": "lru-1"})
             self.assertEqual(_FakeRouterJudge.calls(), 5)
+
+
+class RouterConfigurableTest(RouterTestBase):
+    """issue #119：routing 节可选增补键热配——prompt（分类系统提示）/escalate_conf（升档
+    强置信门槛）/session_ttl（会话存态 TTL）/tool_loop_lock/thinking_lock（两道锁开关）。
+    缺席=内置默认保现网行为逐点不变（_routing() fixture 不含新键，既有 Router* 用例
+    全跑在默认态上，本类 test_defaults_preserve_current_behavior 再逐点锚定一遍）。"""
+
+    def test_defaults_preserve_current_behavior(self):
+        """默认值守恒（不写五个新键）：prompt 逐字=ROUTER_PROMPT_SYSTEM 常量；
+        升档门槛 0.85（0.84 不升/0.85 升）；会话 TTL 3600 命中续期；两道锁全开。"""
+        # prompt 逐字同常量
+        self._post({"model": "auto", "messages": self._msgs(session_first="默认形态任务")})
+        self.assertEqual(_FakeRouterJudge.captured()["messages"][0]["content"],
+                         shim_app.ROUTER_PROMPT_SYSTEM)
+        # 升档门槛默认 0.85：0.84 不升、0.85 升
+        _, hdr, _ = self._auto([], headers={"x-session-id": "cfg-d1"})
+        self.assertEqual(hdr, "cheap-model")
+        _FakeRouterJudge.set_p(0.84)
+        _, hdr, _ = self._auto(["追问"], headers={"x-session-id": "cfg-d1"})
+        self.assertEqual(hdr, "cheap-model")
+        self.assertEqual(self._records()[0]["reason"], "session_inherit")
+        _FakeRouterJudge.set_p(0.85)
+        _, hdr, _ = self._auto(["再追问"], headers={"x-session-id": "cfg-d1"})
+        self.assertEqual(hdr, "flag-model")
+        self.assertEqual(self._records()[0]["reason"], "escalate")
+        # TTL 默认 3600：命中续期后过期戳 >now+3500
+        self.assertGreater(shim_app._router_sessions["h:cfg-d1"][1], time.time() + 3500)
+        # 锁默认全开①：tool_result 尾消息锁定——零分类调用、无头、reason=tool_loop_lock
+        _FakeRouterJudge.reset(p=0.1)
+        status, hdr, _ = self._post({"model": "auto", "messages": [
+            {"role": "user", "content": "默认锁任务"},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}]})
+        self.assertEqual(status, 200)
+        self.assertIsNone(hdr)
+        self.assertEqual(_FakeRouterJudge.calls(), 0)
+        self.assertEqual(self._records()[0]["reason"], "tool_loop_lock")
+        # 锁默认全开②：首轮 simple 判决带 thinking blocks → thinking_lock 不下结论
+        _FakeRouterJudge.reset(p=0.1)
+        _, hdr, _ = self._post({"model": "auto", "messages": [
+            {"role": "user", "content": "默认锁任务二"},
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "推理"}, {"type": "text", "text": "回答"}]},
+            {"role": "user", "content": "轻量收尾"}]}, headers={"x-session-id": "cfg-d2"})
+        self.assertIsNone(hdr)
+        self.assertEqual(self._records()[0]["reason"], "thinking_lock")
+
+    def test_custom_prompt_used(self):
+        """prompt 自定义：分类请求 system 消息=新 prompt（settings 热更新，下一请求即生效）。"""
+        self._write_settings(self._settings_payload(
+            routing=self._routing(prompt="自定义路由提示词XYZ")))
+        self._post({"model": "auto", "messages": self._msgs(session_first="自定义prompt任务")})
+        req = _FakeRouterJudge.captured()
+        self.assertEqual(req["messages"][0]["content"], "自定义路由提示词XYZ")
+        self.assertEqual(req["messages"][1]["content"], "自定义prompt任务")  # 其余形状不变
+
+    def test_escalate_conf_configurable(self):
+        """escalate_conf=0.5：simple 存态 + 本轮 p=0.6（≥0.5，旧默认门槛 0.85 下不升）→
+        升档 complex（reason=escalate）；边界 p=0.49<0.5 不升维持 simple。"""
+        self._write_settings(self._settings_payload(
+            routing=self._routing(escalate_conf=0.5)))
+        _, hdr, _ = self._auto([], headers={"x-session-id": "cfg-e1"})
+        self.assertEqual(hdr, "cheap-model")
+        _FakeRouterJudge.set_p(0.6)
+        _, hdr, _ = self._auto(["追问：写完整实现"], headers={"x-session-id": "cfg-e1"})
+        self.assertEqual(hdr, "flag-model")
+        rec = self._records()[0]
+        self.assertEqual(rec["reason"], "escalate")
+        self.assertEqual(rec["p_complex"], 0.6)
+        # 边界：0.49 < 0.5 不升
+        _FakeRouterJudge.set_p(0.1)  # 新会话首轮先定 simple
+        _, hdr, _ = self._auto([], headers={"x-session-id": "cfg-e2"})
+        self.assertEqual(hdr, "cheap-model")
+        _FakeRouterJudge.set_p(0.49)
+        _, hdr, _ = self._auto(["追问"], headers={"x-session-id": "cfg-e2"})
+        self.assertEqual(hdr, "cheap-model")
+        self.assertEqual(self._records()[0]["reason"], "session_inherit")
+
+    def test_session_ttl_configurable(self):
+        """session_ttl=1：存态写入过期戳为新 TTL 量级（非默认 3600）；1s 后命中即过期，
+        按新会话重新定档（reason=classify、session=False、分类器再次调用）。"""
+        self._write_settings(self._settings_payload(
+            routing=self._routing(session_ttl=1)))
+        _FakeRouterJudge.reset(p=0.9)
+        _, hdr, _ = self._auto([], headers={"x-session-id": "cfg-t1"})
+        self.assertEqual(hdr, "flag-model")
+        self.assertLess(shim_app._router_sessions["h:cfg-t1"][1], time.time() + 100)
+        time.sleep(1.1)
+        _, hdr, _ = self._auto(["过期后续聊"], headers={"x-session-id": "cfg-t1"})
+        self.assertEqual(hdr, "flag-model")
+        self.assertEqual(_FakeRouterJudge.calls(), 2)
+        rec = self._records()[0]
+        self.assertEqual(rec["reason"], "classify")
+        self.assertEqual(rec["session"], False)
+
+    def test_tool_loop_lock_disabled(self):
+        """tool_loop_lock=false：tool_result 尾消息不再锁定——走正常分类（分类器调用发生、
+        按判决回结论、reason=classify）。对照默认开态同形状的零调用锁定由既有
+        test_tool_result_tail_locks_without_session 锚定。"""
+        self._write_settings(self._settings_payload(
+            routing=self._routing(tool_loop_lock=False)))
+        status, hdr, _ = self._post({"model": "auto", "messages": [
+            {"role": "user", "content": "任务"},
+            {"role": "assistant", "content": [
+                {"type": "tool_use", "id": "t1", "name": "exec", "input": {}}]},
+            {"role": "user", "content": [
+                {"type": "tool_result", "tool_use_id": "t1", "content": "ok"}]}]})
+        self.assertEqual(status, 200)
+        self.assertEqual(hdr, "cheap-model")  # p=0.1 判 simple 正常回结论
+        self.assertEqual(_FakeRouterJudge.calls(), 1)
+        rec = self._records()[0]
+        self.assertEqual(rec["reason"], "classify")
+        self.assertEqual(rec["tier"], "simple")
+
+    def test_thinking_lock_disabled(self):
+        """thinking_lock=false：两处 thinking 锁点都解除——①首轮 simple 判决带 thinking
+        blocks 正常下结论（默认态 thinking_lock 无头）；②simple 存态升档检出 thinking
+        不再放弃（默认态维持 simple 落 thinking_lock）。"""
+        self._write_settings(self._settings_payload(
+            routing=self._routing(thinking_lock=False)))
+        thinking_tail = [
+            {"role": "assistant", "content": [
+                {"type": "thinking", "thinking": "推理过程"},
+                {"type": "text", "text": "回答"}]},
+            {"role": "user", "content": "轻量收尾"},
+        ]
+        # ① 首轮定档锁点：p=0.1 判 simple → 正常回 cheap-model 落卡（默认态无头不落卡）
+        _, hdr, _ = self._post(
+            {"model": "auto", "messages": [{"role": "user", "content": "任务一"}] + thinking_tail},
+            headers={"x-session-id": "cfg-k1"})
+        self.assertEqual(hdr, "cheap-model")
+        self.assertEqual(self._records()[0]["reason"], "classify")
+        # ② 升档锁点：simple 存态 + 强置信 + thinking blocks → 正常升档（默认态放弃）
+        _FakeRouterJudge.set_p(0.95)
+        _, hdr, _ = self._auto([], headers={"x-session-id": "cfg-k1"}, extra_tail=thinking_tail)
+        self.assertEqual(hdr, "flag-model")
+        rec = self._records()[0]
+        self.assertEqual(rec["reason"], "escalate")
+        self.assertEqual(rec["p_complex"], 0.95)
 
 
 if __name__ == "__main__":

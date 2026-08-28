@@ -40,6 +40,10 @@ tiers/timeout/max_concurrency 五键；缺席=合法，运行侧 routing.enabled
 tiers 两档映射 simple/complex 必填且模型名过响应头白名单字符形态）；shadow-verdicts
 出口 layer 过滤接受 router、stats 加 router 层（决策条带 resolved_model/tier/p_complex/
 reason/session 字段）。
+issue #119：routing 节内再增五个**可选键**（缺席=运行侧内置默认保现网行为；旧五键
+必填语义不变）——prompt=分类系统提示（非空字符串）/escalate_conf=升档强置信门槛
+（0~1 含边界）/session_ttl=会话存态 TTL 秒（>0）/tool_loop_lock/thinking_lock=两道
+锁开关（布尔）；未知键仍 400，非法值 400 不落盘。
 
 与检测路径（/request /response 调用链）完全隔离：admin 平面 fail-closed——
 内省不可达回 503，不适用检测链的 fail-open 分级（契约 docs/contracts/dlp-webhook-shim.md）。
@@ -291,6 +295,14 @@ _SETTINGS_RESPONSE_KEYS = {"enabled"}
 # max_concurrency=分类并发预算（默认 2，独立于 judge.max_concurrency 预算键，不与
 # 商密/注入 judge 互挤——#114 §8）
 _SETTINGS_ROUTING_KEYS = {"enabled", "threshold", "tiers", "timeout", "max_concurrency"}
+# issue #119 可选增补键（节内出席才校验，缺席=运行侧内置默认保现网行为，对齐 routing
+# 节自身可选语义；与上方必填五键分开计数——missing 检查只管必填集）：
+# prompt=分类系统提示（默认=app.py ROUTER_PROMPT_SYSTEM 常量逐字，#114 评测获胜版）/
+# escalate_conf=升档强置信门槛（默认 0.85，0~1 含边界）/session_ttl=会话存态 TTL 秒
+#（默认 3600，>0）/tool_loop_lock/thinking_lock=tool-loop 与 thinking 两道锁开关
+#（默认 true 保现网锁定行为）
+_SETTINGS_ROUTING_OPTIONAL_KEYS = {"prompt", "escalate_conf", "session_ttl",
+                                   "tool_loop_lock", "thinking_lock"}
 _SETTINGS_ROUTING_TIERS = {"simple", "complex"}
 # tiers 映射值进 extAuthz 响应头（x-resolved-model）——白名单字符形态与 app.py
 # _CLASSIFY_MODEL_SAFE 同款（admin_api 不 import app，自包含复述；防响应拆分纪律一致）
@@ -386,6 +398,8 @@ def _validate_settings(data) -> str | None:
     # issue #117：routing 为**可选节**（与上方必填段语义不同）——缺席=合法（运行侧
     # routing.enabled 缺省 false，现网零变化；不强制旧文件/控制台往返补节）；出现即
     # 整节校验：五键齐全（防部分更新静默丢键，与必填段同精神）+ 类型 + tiers 形态。
+    # issue #119：节内 prompt/escalate_conf/session_ttl/tool_loop_lock/thinking_lock
+    # 为可选增补键——缺席合法（运行侧内置默认保现网），出席才校验类型/范围。
     # 评审 P2-2：键在值判——"routing": null 不放行（get 默认 None 会穿透 is not None
     # 护栏），显式 null 落 not isinstance 分支 400，fail-closed（要缺席请省略该键）。
     routing = data.get("routing")
@@ -393,8 +407,10 @@ def _validate_settings(data) -> str | None:
         if not isinstance(routing, dict):
             return "routing 必须是对象（缺席请省略该键，不接受 null）"
         for k in routing:
-            if k not in _SETTINGS_ROUTING_KEYS:
+            if k not in _SETTINGS_ROUTING_KEYS | _SETTINGS_ROUTING_OPTIONAL_KEYS:
                 return f"routing 未知字段: {k}"
+        # 必填集只管旧五键（issue #119 新键为可选增补，缺席合法——参考顶层 version/
+        # _comment 可选键先例：出席才校验类型/范围）
         missing = _SETTINGS_ROUTING_KEYS - set(routing)
         if missing:
             return f"routing 缺字段: {', '.join(sorted(missing))}"
@@ -421,6 +437,18 @@ def _validate_settings(data) -> str | None:
             return "routing.timeout 必须是 >0 数值"
         if not isinstance(routing["max_concurrency"], int) or isinstance(routing["max_concurrency"], bool) or routing["max_concurrency"] < 1:
             return "routing.max_concurrency 必须是 ≥1 整数"
+        # issue #119 可选增补键：出席才严校（缺席=运行侧默认，不落校验）
+        if "prompt" in routing and (not isinstance(routing["prompt"], str) or not routing["prompt"]):
+            return "routing.prompt 必须是非空字符串"
+        if "escalate_conf" in routing and (not _is_number(routing["escalate_conf"])
+                                           or not 0 <= routing["escalate_conf"] <= 1):
+            return "routing.escalate_conf 必须是 0~1 数值"
+        if "session_ttl" in routing and (not _is_number(routing["session_ttl"])
+                                         or routing["session_ttl"] <= 0):
+            return "routing.session_ttl 必须是 >0 数值"
+        for k in ("tool_loop_lock", "thinking_lock"):
+            if k in routing and not isinstance(routing[k], bool):
+                return f"routing.{k} 必须是布尔值"
     return None
 
 

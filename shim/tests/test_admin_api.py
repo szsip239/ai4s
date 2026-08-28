@@ -3223,6 +3223,62 @@ class AdminSettingsRoutingTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertNotIn("routing", body)
 
+    def test_put_routing_optional_keys_valid_200(self):
+        """issue #119 可选增补键（prompt/escalate_conf/session_ttl/tool_loop_lock/
+        thinking_lock）：合法 PUT → 200 往返一致落盘；边界值（escalate_conf 0/1 含边界、
+        session_ttl 浮点）同样放行。"""
+        new = json.loads(json.dumps(_SETTINGS_FIXTURE))
+        new["routing"] = dict(self._ROUTING_OK, prompt="自定义分类提示",
+                              escalate_conf=0.5, session_ttl=60,
+                              tool_loop_lock=False, thinking_lock=False)
+        status, body = self._put(new)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["routing"]["prompt"], "自定义分类提示")
+        self.assertEqual(body["routing"]["escalate_conf"], 0.5)
+        self.assertEqual(body["routing"]["session_ttl"], 60)
+        self.assertEqual(body["routing"]["tool_loop_lock"], False)
+        self.assertEqual(body["routing"]["thinking_lock"], False)
+        with open(self.settings_path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["routing"], new["routing"])
+        # 边界放行：escalate_conf 0/1 含边界；session_ttl 接受浮点
+        for conf in (0, 1):
+            d = json.loads(json.dumps(_SETTINGS_FIXTURE))
+            d["routing"] = dict(self._ROUTING_OK, escalate_conf=conf, session_ttl=0.5)
+            status, body = self._put(d)
+            self.assertEqual(status, 200, f"escalate_conf={conf} 应放行")
+            self.assertEqual(body["routing"]["escalate_conf"], conf)
+
+    def test_put_routing_optional_keys_invalid_400(self):
+        """issue #119 可选增补键非法变体 → 400 带具体类型/范围原因（非未知字段兜底），
+        落盘文件不被污染。"""
+        def mutated(fn):
+            d = json.loads(json.dumps(_SETTINGS_FIXTURE))
+            d["routing"] = json.loads(json.dumps(self._ROUTING_OK))
+            fn(d)
+            return d
+        cases = [
+            ("routing.prompt 空串", lambda d: d["routing"].update({"prompt": ""})),
+            ("routing.prompt 非字符串", lambda d: d["routing"].update({"prompt": 1})),
+            ("routing.escalate_conf 超界", lambda d: d["routing"].update({"escalate_conf": 1.5})),
+            ("routing.escalate_conf 负值", lambda d: d["routing"].update({"escalate_conf": -0.1})),
+            ("routing.escalate_conf 为布尔", lambda d: d["routing"].update({"escalate_conf": True})),
+            ("routing.escalate_conf 为字符串", lambda d: d["routing"].update({"escalate_conf": "0.5"})),
+            ("routing.session_ttl 为零", lambda d: d["routing"].update({"session_ttl": 0})),
+            ("routing.session_ttl 为负", lambda d: d["routing"].update({"session_ttl": -1})),
+            ("routing.session_ttl 为布尔", lambda d: d["routing"].update({"session_ttl": True})),
+            ("routing.session_ttl 为字符串", lambda d: d["routing"].update({"session_ttl": "60"})),
+            ("routing.tool_loop_lock 非布尔", lambda d: d["routing"].update({"tool_loop_lock": 1})),
+            ("routing.thinking_lock 为字符串", lambda d: d["routing"].update({"thinking_lock": "true"})),
+        ]
+        for label, fn in cases:
+            with self.subTest(label=label):
+                status, body = self._put(mutated(fn))
+                self.assertEqual(status, 400, f"{label}: 期望 400，实际 {status}")
+                self.assertIn("error", body)
+                self.assertNotIn("未知字段", body["error"])  # 命中类型/范围校验而非未知键兜底
+                with open(self.settings_path, encoding="utf-8") as f:
+                    self.assertEqual(json.load(f), _SETTINGS_FIXTURE)  # 落盘未被污染
+
     def test_put_routing_invalid_400(self):
         """routing 节校验：逐条非法变体 → 400 带原因，且落盘文件不被污染。"""
         def mutated(fn):

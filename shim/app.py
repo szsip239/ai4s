@@ -103,8 +103,12 @@ _SETTINGS_SCHEMA = {
     "rules": {"enabled": "bool", "block": "bool"},  # 注入规则层（issue #104）：布尔命中无分数，阻断开关单键
     # auto 智能路由（issue #117）：routing 节缺席=disabled 零行为（可选节，admin 校验侧同）；
     # tiers 为对象需 dict 护栏（两档映射内容在 route_resolve 消费侧过白名单细验）
+    # issue #119 可选增补键（缺席=内置默认保现网行为）：prompt=分类系统提示/
+    # escalate_conf=升档门槛/session_ttl=会话 TTL/tool_loop_lock/thinking_lock=锁开关
     "routing": {"enabled": "bool", "threshold": "number", "tiers": "dict",
-                "timeout": "number", "max_concurrency": "int"},
+                "timeout": "number", "max_concurrency": "int",
+                "prompt": "str", "escalate_conf": "number", "session_ttl": "number",
+                "tool_loop_lock": "bool", "thinking_lock": "bool"},
     # 分层总开关（issue #40）：默认 True 保现网行为；关掉即整层跳过（l1=格式规则全族，
     # l2=词表/Presidio PII，response=响应侧整分支）
     "l1": {"enabled": "bool"},
@@ -411,24 +415,30 @@ def judge_inject_text(text: str):
 #   请求关键路径上，judge.timeout=8s 盖不住长尾；超时 fail-open）/max_concurrency
 #  （默认 2，**独立预算键**，与商密/注入 judge 不互挤——#114 §8）。
 # 会话策略（方案 A）：同会话首轮定档、后续继承；只允许强置信升档（simple→complex，
-# 本轮 p_complex ≥ ROUTER_ESCALATE_CONF），永不降档；tool-loop 硬锁（最后一条消息
+# 本轮 p_complex ≥ escalate_conf），永不降档；tool-loop 硬锁（最后一条消息
 # role=tool 或含 tool_calls → 不分类直接继承）；thinking 锁（升档决策检出
 # thinking/redacted_thinking blocks → 放弃升档，见 _router_has_thinking 头注）；
-# 会话状态进程内 LRU（TTL 3600s 命中续期，重启即丢=新会话重新定档，无害）。
+# 会话状态进程内 LRU（TTL 默认 3600s 命中续期，重启即丢=新会话重新定档，无害）。
+# issue #119：分类 prompt/升档门槛 escalate_conf/会话 TTL session_ttl/两道锁开关
+# tool_loop_lock/thinking_lock 均挪入 routing 节可选键（settings.json 热更新，
+# 缺席=下方 ROUTER_* 常量默认=现网行为逐点不变；admin 校验侧同步可选语义）。
 # fail-open：分类器超时/异常/verdict 损坏/预算占满 → 200 不带 x-resolved-model 头
 #（网关 CEL 回退 + modelAliases 落旗舰，#115 实证通路）；超时/异常/配置坏落
 # shadow_log error 条（layer="router"，alert_poller 巡检项 4 消费发飞书）+ print
 # 告警行；预算占满只 print 不落条（skip 非层异常，同 #93 语义不污染 error_rate）。
 
-# 分类系统提示：#114 pcomplex 评测获胜 prompt 原样（评测口径 227 样本 98.2% @thr0.5）
+# 分类系统提示（issue #119 起为 routing.prompt 默认值——缺省键时逐字使用本常量，
+# 保现网行为）：#114 pcomplex 评测获胜 prompt 原样（评测口径 227 样本 98.2% @thr0.5）
 ROUTER_PROMPT_SYSTEM = """你是 LLM 网关的路由分类器。把用户请求分为两档：
 - simple：单步、有确定答案、无需长链推理或跨上下文综合——事实问答、短翻译、一句话润色、单行代码修改、简单命令、单工具直取。
 - complex：多步推理、设计/权衡、长上下文代码任务、跨文件依赖、专业领域翻译、实验/建模设计、多轮工具编排与错误恢复。
 注意：输入文本长短不代表难度；带 [SYSTEM]/[USER]/[TOOL] 标记的是 coding agent 多轮会话形态，按最后待完成的任务定档。
 只输出 JSON：{"p_complex": 0 到 1 的小数}，表示「该请求需要旗舰模型（complex 档）」的概率。"""
 
-ROUTER_ESCALATE_CONF = 0.85  # 升档强置信门槛（issue #117 定案）：只在 simple→complex 升档用
-ROUTER_SESSION_TTL = 3600    # 会话档位 TTL（秒），命中续期
+# issue #119：以下两常量转为 routing.escalate_conf/routing.session_ttl 的内置默认值
+#（setting_value 三级取值缺省回退点），缺省键=现网行为不变
+ROUTER_ESCALATE_CONF = 0.85  # 升档强置信门槛默认（issue #117 定案）：只在 simple→complex 升档用
+ROUTER_SESSION_TTL = 3600    # 会话档位 TTL 默认（秒），命中续期
 ROUTER_SESSION_MAX = 1024    # 会话 LRU 容量封顶（内存上限优先，逐出=按新会话重新定档）
 _ROUTER_MAX_TOKENS = 64      # #114 评测口径：{"p_complex": x} 输出 64 token 足够（454 次调用 0 解析失败）
 
@@ -459,8 +469,9 @@ def router_budget_exit() -> None:
         _ROUTER_INFLIGHT = max(0, _ROUTER_INFLIGHT - 1)
 
 
-def _router_session_get(key):
-    """会话档位查询：命中返回 tier 并续期（TTL 重置 + LRU 移到尾）；未命中/过期返回 None。"""
+def _router_session_get(key, ttl):
+    """会话档位查询：命中返回 tier 并续期（TTL 重置 + LRU 移到尾）；未命中/过期返回 None。
+    ttl 由调用方每请求现读 settings（routing.session_ttl，issue #119 热更新）。"""
     if not key:
         return None
     now = time.time()
@@ -471,17 +482,18 @@ def _router_session_get(key):
         if ent[1] < now:
             del _router_sessions[key]
             return None
-        ent[1] = now + ROUTER_SESSION_TTL  # 命中续期
+        ent[1] = now + ttl  # 命中续期
         _router_sessions.move_to_end(key)
         return ent[0]
 
 
-def _router_session_put(key, tier) -> None:
-    """定档/升档写入（满员逐出最久未用——LRU；被逐/重启即按新会话重新定档，无害）。"""
+def _router_session_put(key, tier, ttl) -> None:
+    """定档/升档写入（满员逐出最久未用——LRU；被逐/重启即按新会话重新定档，无害）。
+    ttl 由调用方每请求现读 settings（routing.session_ttl，issue #119 热更新）。"""
     if not key:
         return
     with _router_sessions_lock:
-        _router_sessions[key] = [tier, time.time() + ROUTER_SESSION_TTL]
+        _router_sessions[key] = [tier, time.time() + ttl]
         _router_sessions.move_to_end(key)
         while len(_router_sessions) > ROUTER_SESSION_MAX:
             _router_sessions.popitem(last=False)
@@ -544,17 +556,18 @@ def _router_has_thinking(messages) -> bool:
     return False
 
 
-def _router_chat(model, base_url, timeout, text):
+def _router_chat(model, base_url, timeout, text, prompt):
     """路由分类 HTTP 调用（issue #117）：judge 通道同款调用方式（OpenAI 兼容
     /chat/completions、Bearer JUDGE_API_KEY、temperature 0、```json 围栏剥离后
     json.loads、异常返 None fail-open——与 _judge_chat 同纪律）；消息形状与参数按
     #114 pcomplex 评测定稿（system 指令 + 单 user 文本，max_tokens 64）。
+    prompt=分类系统提示（routing.prompt，issue #119 起可配，缺省=ROUTER_PROMPT_SYSTEM）。
     text[:4000] 截断与 _judge_chat 一致——超长会话保留首部（system prompt + 首轮
     任务描述是复杂度主要信号；#114 §8 全量送判建议受 _judge_chat 复用口径约束，记账）。"""
     body = json.dumps({
         "model": model,
         "messages": [
-            {"role": "system", "content": ROUTER_PROMPT_SYSTEM},
+            {"role": "system", "content": prompt},
             {"role": "user", "content": text[:4000]},
         ],
         "max_tokens": _ROUTER_MAX_TOKENS,
@@ -584,7 +597,9 @@ def router_classify(text: str, settings: dict):
     model = setting_value(settings, "judge", "model", "JUDGE_MODEL", "deepseek-v4-flash")
     base_url = setting_value(settings, "judge", "base_url", "JUDGE_BASE_URL", "http://axonhub:8090/v1")
     timeout = setting_value(settings, "routing", "timeout", "ROUTING_TIMEOUT", 4)
-    v = _router_chat(model, base_url, timeout, text)
+    # issue #119：分类系统提示可配（routing.prompt），缺省=ROUTER_PROMPT_SYSTEM 常量逐字
+    prompt = setting_value(settings, "routing", "prompt", "ROUTING_PROMPT", ROUTER_PROMPT_SYSTEM)
+    v = _router_chat(model, base_url, timeout, text, prompt)
     if not isinstance(v, dict):
         return None
     p = v.get("p_complex")
@@ -616,9 +631,16 @@ def route_resolve(payload: dict, headers, settings: dict) -> dict:
         return {"resolved_model": None, "tier": None, "p_complex": None,
                 "reason": "fail_open", "session": False, "error": "unavailable", "latency_ms": None}
     skey = _router_session_key(headers, payload)
-    stored = _router_session_get(skey)
-    # tool-loop 硬锁：不分类直接继承；无会话可继承 → 不改写（网关兜底旗舰=complex 语义等价）
-    if _router_tool_loop(messages):
+    # issue #119 可配项（routing 节可选键，缺席=内置默认保现网行为）：会话 TTL/两道锁开关
+    session_ttl = setting_value(settings, "routing", "session_ttl", "ROUTING_SESSION_TTL",
+                                ROUTER_SESSION_TTL)
+    tool_loop_lock = setting_value(settings, "routing", "tool_loop_lock", "ROUTING_TOOL_LOOP_LOCK", True)
+    thinking_lock = setting_value(settings, "routing", "thinking_lock", "ROUTING_THINKING_LOCK", True)
+    escalate_conf = setting_value(settings, "routing", "escalate_conf", "ROUTING_ESCALATE_CONF",
+                                  ROUTER_ESCALATE_CONF)
+    stored = _router_session_get(skey, session_ttl)
+    # tool-loop 硬锁（可配开关，缺省开）：不分类直接继承；无会话可继承 → 不改写（网关兜底旗舰=complex 语义等价）
+    if tool_loop_lock and _router_tool_loop(messages):
         if stored is not None:
             return {"resolved_model": tiers[stored], "tier": stored, "p_complex": None,
                     "reason": "tool_loop_lock", "session": True, "error": None, "latency_ms": None}
@@ -667,11 +689,11 @@ def route_resolve(payload: dict, headers, settings: dict) -> dict:
                 "error": "unavailable", "latency_ms": ms}
     if stored == "simple":
         # 升档检查：本轮强置信才升（p 低维持 simple 即继承——永不降档）
-        if p >= ROUTER_ESCALATE_CONF:
-            if _router_has_thinking(messages):  # thinking 锁（见 _router_has_thinking 头注）
+        if p >= escalate_conf:
+            if thinking_lock and _router_has_thinking(messages):  # thinking 锁（见 _router_has_thinking 头注；可配开关缺省开）
                 return {"resolved_model": tiers["simple"], "tier": "simple", "p_complex": p,
                         "reason": "thinking_lock", "session": True, "error": None, "latency_ms": ms}
-            _router_session_put(skey, "complex")
+            _router_session_put(skey, "complex", session_ttl)
             return {"resolved_model": tiers["complex"], "tier": "complex", "p_complex": p,
                     "reason": "escalate", "session": True, "error": None, "latency_ms": ms}
         return {"resolved_model": tiers["simple"], "tier": "simple", "p_complex": p,
@@ -679,14 +701,14 @@ def route_resolve(payload: dict, headers, settings: dict) -> dict:
     # 首轮定档
     threshold = setting_value(settings, "routing", "threshold", "ROUTING_THRESHOLD", 0.5)
     tier = "complex" if p >= threshold else "simple"
-    if tier == "simple" and _router_has_thinking(messages):
+    if tier == "simple" and thinking_lock and _router_has_thinking(messages):
         # 评审 P2-1：thinking 锁守首轮定档——无会话存态（TTL 过期/LRU 逐出/无头续聊）
         # 判 simple 但带 thinking blocks 时，换便宜模型不剥 thinking 同属沉默烧钱场景。
         # 不下结论（200 无头 → 网关 modelAliases 兜底旗舰=维持原状）、不落会话卡
         # （下轮重判）；判 complex 不拦（thinking 本就是旗舰产出，发卡与兜底等价）。
         return {"resolved_model": None, "tier": None, "p_complex": p,
                 "reason": "thinking_lock", "session": False, "error": None, "latency_ms": ms}
-    _router_session_put(skey, tier)
+    _router_session_put(skey, tier, session_ttl)
     return {"resolved_model": tiers[tier], "tier": tier, "p_complex": p,
             "reason": "classify", "session": False, "error": None, "latency_ms": ms}
 
