@@ -49,6 +49,27 @@ shadow 层判定的三件套（issue #92）：持久化（shadow-verdicts.jsonl�
 judge 外发硬性纪律（issue #93）：判定输入一律取 L1/L2 掩码后文本（masked_msgs），secret/PII 原文不进 judge prompt；已收敛为部署 checklist 硬性项。
 _Avoid_: 原文外发
 
+### 模型路由
+
+**auto 模型（auto Model）**:
+员工请求可填的虚拟模型名（issue #117，ADR-0007）：网关 extAuthz 调 shim 分类器判难度、transformations 按结论改写为实际模型；改写失败/分类器不可用时经 modelAliases 静态兜底落旗舰 gpt-5.6-luna（fail-open，永不 422/阻断）。填具体模型名的请求不受影响。
+_Avoid_: 虚拟模型、智能模型
+
+**路由档位（Routing Tier）**:
+auto 路由的两档分类结论：`simple`（便宜档，默认映射 deepseek-v4-flash）/ `complex`（旗舰档，默认 gpt-5.6-luna）；映射经 settings `routing.tiers` 热更新，目标模型必须在员工 key 的 profile 白名单内。与额度「档（Tier）」是两个不相干概念——那个管额度，这个管模型选型。
+_Avoid_: 与额度档混称"档位"
+
+**路由分类器（Router Classifier）**:
+auto 路由的难度判别器（issue #117）：judge 通道外部 LLM pcomplex 校准模式（#114 票选，98.2%@thr0.5），输出 {"p_complex": 0~1} 由 shim 按 `routing.threshold`（默认 0.5）判档；输入先过 L1/L2 掩码（#93 纪律），并发预算独立于 judge；分类调用在请求关键路径上，p50 ~2s 为明示接受代价。决策日志落 shadow_log `layer=router`（无原文无会话 key），异常率纳入 alert_poller 巡检项 4。
+_Avoid_: mmBERT 本地判别头路线（#114 实测否决，领域分类不含难度维度）
+
+**会话继承（Session Inherit）**:
+auto 路由会话策略（方案 A）：同会话首轮分类定档、后续轮直接继承档位；会话 key 优先级 x-session-id 头 > metadata.session_id > 首轮 user 消息哈希；存态进程内 LRU（TTL 1h 命中续期、容量 1024、重启即丢按新会话重定档）。tool-loop 硬锁与 thinking 锁两道保险：工具循环进行中或检出 thinking blocks 时禁止换档。
+
+**升档（Escalate）**:
+会话内 simple→complex 的单向调整：simple 存态每轮仍分类，本轮 p_complex ≥ 0.85（强置信门槛）才升档；**只升不降**——complex 存态不再分类直接继承，永不降档。
+_Avoid_: 降档（不存在此路径）
+
 ### 统一配置
 
 **统一配置中心（Unified Config Center）**:

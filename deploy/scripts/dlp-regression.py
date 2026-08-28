@@ -29,6 +29,14 @@ judge 注入 shadow 专项段（issue #105）：规则层段之后——PUT 开 
 hit=True 新条（带 attack_type 脱敏标签）→ PUT 还原（关）→ 同样本再应放行；shim 未含
 #105 区块时（PUT 400 未知字段 / 查询出口 layer=judge_inject 400）SKIP 不 fail
 （集成前预期态，对齐 #103/#101/#104 段探测纪律）。
+auto 路由专项段（issue #118）：judge 注入段之后——PUT 开 routing 节（enabled=true,
+threshold=0.5, tiers simple→deepseek-v4-flash/complex→gpt-5.6-luna, timeout=4,
+max_concurrency=2）→ model=auto 简单问题应落 tier=simple 改写条 → 复杂任务应落
+tier=complex 且响应 200 model=gpt-5.6-luna → 故障注入（routing.timeout=0.001 强制
+分类器超时）应 fail-open 落旗舰不 422 且 router error 条 → 同会话二轮应
+reason=session_inherit → PUT 还原快照（GET 原文逐字节回写）；shim 未含 #117 区块时
+（PUT 400 未知字段/顶层键、查询出口 layer=router 400）SKIP 不 fail（对齐各段探测纪律）。
+本段用例行并入主结果集（layer="router"），总计样本数随之增加。
 注入水位门禁段（issue #95）：主流程最前 subprocess 跑 injection-eval.py（normalize
 链路口径），不达标非零即回归失败。
 语义层水位门禁段（issue #99）：紧跟注入门禁段 subprocess 跑 semantic-eval.py
@@ -44,6 +52,8 @@ import os
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 
 import dlp_testkit as tk
 
@@ -557,6 +567,195 @@ def run_judge_inject_section(api_key, token):
     return results
 
 
+# ---- auto 路由专项段（issue #118）----
+# 用例样本：简单题（单步事实问答，#114 口径 p_complex≈0）与复杂题（多步推理+权衡，但
+# 限制输出长度——分类看输入难度、生成耗时看输出长度，max_tokens 封顶压住旗舰应答时间）；
+# 各用例提示词互不相同（同文会撞首轮消息哈希会话存态，干扰 reason 断言——见
+# shim/app.py _router_session_key 的哈希兜底路径）；故障注入题复用简单题语义即可
+ROUTER_SIMPLE_SAMPLE = "请用一句话说明地球为什么近似球形。"
+ROUTER_COMPLEX_SAMPLE = ("比较 Raft 与 Paxos 在选主活锁与一致性证明上的本质差异，"
+                         "并给出工程选型权衡——三行以内概括。")
+ROUTER_FAILOPEN_SAMPLE = "用一句话解释什么是光合作用。"
+# 两档映射（issue #117 默认档）：simple→deepseek-v4-flash（dev 栈测试 key 的 profile
+# 白名单不含该模型，axonhub 拒 422——已知事项，用例 a 只断言改写条不断言应答）；
+# complex→gpt-5.6-luna（测试 key 白名单内含，#117 实网验证过 200）
+ROUTER_TIERS = {"simple": "deepseek-v4-flash", "complex": "gpt-5.6-luna"}
+ROUTER_FLAGSHIP = "gpt-5.6-luna"  # 网关 modelAliases auto→旗舰 静态兜底（#115 定稿）
+# 分类走真实 judge 通道（~2s/次）非确定，单用例最多重试次数（三次全不符才判失败，
+# 同 judge warn/judgeInject 段纪律）
+ROUTER_ATTEMPTS = 3
+
+
+def send_auto(api_key, content_or_messages, session_id=None):
+    """model=auto 经网关发送（路由段专用；tk.send 固定 echo-test 单轮不适用）。
+    返回 (status, 响应 model 字段, 内容摘要)；max_tokens=120 封顶旗舰应答耗时。"""
+    messages = (content_or_messages if isinstance(content_or_messages, list)
+                else [{"role": "user", "content": content_or_messages}])
+    body = {"model": "auto", "messages": messages, "max_tokens": 120}
+    if session_id:
+        body["metadata"] = {"session_id": session_id}
+    req = urllib.request.Request(tk.GATEWAY + "/v1/chat/completions",
+                                 data=json.dumps(body, ensure_ascii=False).encode(),
+                                 headers={"Content-Type": "application/json",
+                                          "Authorization": f"Bearer {api_key}"})
+    try:
+        with urllib.request.urlopen(req, timeout=90) as r:
+            d = json.load(r)
+        return r.status, d.get("model"), (d["choices"][0]["message"].get("content") or "")[:60]
+    except urllib.error.HTTPError as e:
+        return e.code, None, e.read().decode()[:150]
+    except Exception as e:
+        return 0, None, f"{type(e).__name__}: {e}"
+
+
+def run_auto_router_section(api_key, token):
+    """auto 路由专项段（issue #118，自包含）：admin PUT 开 routing 节（五键齐全，
+    其余段原样）→ a) model=auto 简单题 → 查询出口 layer=router 出现 tier=simple
+    改写条（resolved_model=deepseek-v4-flash；dev 栈该模型不在测试 key 白名单，
+    应答 422 属已知事项，不据此判失败）→ b) 复杂题 → tier=complex 落条且响应 200
+    model=gpt-5.6-luna → c) 故障注入（PUT routing.timeout=0.001 强制分类器超时——
+    选配置注入而非停容器：回归友好、不中断 DLP 链路、finally 自还原）→ auto 请求
+    落旗舰不 422（200 model=gpt-5.6-luna）且 router error 条（reason=fail_open）
+    → 复原 timeout=4 → d) 同会话二轮（metadata.session_id 固定+首轮历史）→ 第二轮
+    reason=session_inherit（complex 存态直接继承、零分类调用）→ PUT 还原快照
+    （GET 原文逐字节回写；原 settings 无 routing 节即恢复关态）。
+    判定条落盘同步先于网关应答（/classify handler 内 record），应答到手即可查，
+    轮询几次兜底吸收时序；逐次水位线（time.time()-1）隔离本次判定条。
+    能力探测：shim 未含 #117 区块时 PUT 400「未知字段/未知顶层键」、或查询出口
+    layer=router 400 → SKIP 不 fail（对齐 #103/#101/#104/#105 段探测纪律）。
+    自清理：finally 还原 settings 快照（routing 节随之消失=关态）。
+    前置条件：回归跑在默认配置（routing 节缺席/关态）且 judge 链路可用（语义水位
+    门禁段已先跑）的栈上；分类为真实 judge 调用（~2s/次），本段耗时会涨，属预期。"""
+    print("\n==> auto 路由专项段（issue #118，settings PUT 自包含）")
+    rows = []  # 主结果集形状 dict（layer="router"），并入 results 计入总样本数
+
+    def row(name, ok, got):
+        rows.append({"name": name, "layer": "router", "expect": "ok",
+                     "got": got, "ok": ok, "fail": not ok, "note": ""})
+
+    status, doc = tk._admin_api("GET", "/dlp-admin/settings", token)
+    if status != 200 or not isinstance(doc, dict):
+        row("auto路由: 前置（settings GET）", False, f"http{status}")
+    else:
+        original = doc  # 还原基准（含 version/_comment 及其余各段原样；无 routing 节=关态）
+        routing_on = {"enabled": True, "threshold": 0.5, "tiers": dict(ROUTER_TIERS),
+                      "timeout": 4, "max_concurrency": 2}
+
+        def restore():
+            # 逐字节原样：GET 到什么就 PUT 回什么（原文件无 routing 节，回写即恢复关态）
+            return tk._admin_api("PUT", "/dlp-admin/settings", token, original)
+
+        def recent_router_recs(since_ts):
+            st, body = tk._admin_api("GET", "/dlp-admin/shadow-verdicts?layer=router&n=20", token)
+            if st == 400:
+                return None  # 旧容器无 router 层查询出口（能力探测锚点）
+            if st != 200 or not isinstance(body, dict):
+                return []
+            return [r for r in body.get("records") or [] if (r.get("ts") or 0) >= since_ts]
+
+        def await_rec(wm, match):
+            """轮询至水位线后首条满足 match 的 router 条；None=超时未获；False=旧容器。"""
+            for _poll in range(4):
+                recs = recent_router_recs(wm)
+                if recs is None:
+                    return False
+                rec = next((r for r in recs if match(r)), None)
+                if rec is not None:
+                    return rec
+                time.sleep(1)
+            return None
+
+        try:
+            status, body = tk._admin_api("PUT", "/dlp-admin/settings", token,
+                                         {**original, "routing": routing_on})
+            if status == 400 and "未知" in str((body or {}).get("error", "")):
+                print("[SKIP] auto 路由段：shim 未含 issue #117 routing 区块（待集成），本段跳过不 fail")
+                return []
+            row("auto路由: PUT 开 routing（enabled=true 五键）", status == 200, f"http{status}")
+            if status == 200:
+                # 用例 a：简单题 → tier=simple 改写条（应答 422 是 dev 栈白名单已知事项，不断言）
+                rec = None
+                for _attempt in range(ROUTER_ATTEMPTS):
+                    wm = time.time() - 1
+                    send_auto(api_key, ROUTER_SIMPLE_SAMPLE)
+                    rec = await_rec(wm, lambda r: not r.get("error"))
+                    if rec is False:
+                        print("[SKIP] auto 路由段：shim 未含 issue #117 查询出口（待集成），本段跳过不 fail")
+                        return []
+                    if rec is not None and rec.get("tier") == "simple":
+                        break
+                ok = (rec is not None and rec is not False and rec.get("tier") == "simple"
+                      and rec.get("resolved_model") == ROUTER_TIERS["simple"])
+                row("auto路由: 简单问题落 tier=simple 改写条", ok,
+                    f"tier={rec and rec.get('tier')} resolved={rec and rec.get('resolved_model')}"
+                    if rec else f"{ROUTER_ATTEMPTS} 次发送均未获 simple 条（分类器水位问题）")
+                # 用例 b：复杂题 → tier=complex 落条且响应 200 model=旗舰
+                rec, st_b, model_b = None, None, None
+                for _attempt in range(ROUTER_ATTEMPTS):
+                    wm = time.time() - 1
+                    st_b, model_b, _ = send_auto(api_key, ROUTER_COMPLEX_SAMPLE)
+                    rec = await_rec(wm, lambda r: not r.get("error"))
+                    if rec is not None and rec is not False and rec.get("tier") == "complex":
+                        break
+                ok = (rec is not None and rec is not False and rec.get("tier") == "complex"
+                      and rec.get("resolved_model") == ROUTER_TIERS["complex"]
+                      and st_b == 200 and model_b == ROUTER_TIERS["complex"])
+                row("auto路由: 复杂任务 tier=complex 且响应 200 model=gpt-5.6-luna", ok,
+                    f"http{st_b} model={model_b} tier={rec and rec.get('tier')}")
+                # 用例 c：故障注入——timeout 压 1ms 强制分类器超时 → fail-open 落旗舰 + error 条
+                st_c, model_c, rec = None, None, None
+                status, _ = tk._admin_api("PUT", "/dlp-admin/settings", token,
+                                          {**original, "routing": {**routing_on, "timeout": 0.001}})
+                if status == 200:
+                    wm = time.time() - 1
+                    st_c, model_c, _ = send_auto(api_key, ROUTER_FAILOPEN_SAMPLE)
+                    rec = await_rec(wm, lambda r: r.get("error") is not None)
+                    status, _ = tk._admin_api("PUT", "/dlp-admin/settings", token,
+                                              {**original, "routing": routing_on})
+                    if status != 200:
+                        row("auto路由: 故障注入后复原 timeout=4", False, f"http{status}")
+                else:
+                    row("auto路由: PUT 故障注入（timeout=0.001）", False, f"http{status}")
+                ok = (st_c == 200 and model_c == ROUTER_FLAGSHIP
+                      and rec is not None and rec is not False
+                      and rec.get("reason") == "fail_open")
+                row("auto路由: fail-open 分类器超时落旗舰不 422 + router error 条", ok,
+                    f"http{st_c} model={model_c} reason={rec and rec.get('reason')}"
+                    f" error={rec and rec.get('error')}")
+                # 用例 d：同会话二轮——首轮复杂题定档 complex → 次轮带历史继承（零分类调用）
+                ok, got_d = False, "未跑"
+                for attempt in range(ROUTER_ATTEMPTS):
+                    sid = f"dlp-reg-router-{int(time.time())}-{attempt}"
+                    wm = time.time() - 1
+                    send_auto(api_key, ROUTER_COMPLEX_SAMPLE + "（首轮）", session_id=sid)
+                    r1 = await_rec(wm, lambda r: not r.get("error"))
+                    if r1 is None or r1 is False or r1.get("tier") != "complex":
+                        got_d = f"首轮未定档 complex（tier={r1 and r1.get('tier')}），重试"
+                        continue  # 首轮落 simple 会在 hash/sid 存态留 simple，换新 sid 重试
+                    wm2 = time.time() - 1
+                    send_auto(api_key, [
+                        {"role": "user", "content": ROUTER_COMPLEX_SAMPLE + "（首轮）"},
+                        {"role": "assistant", "content": "Raft 以强领导者简化一致性……"},
+                        {"role": "user", "content": "接着上面，补充分区恢复后的日志对齐细节，两行以内。"},
+                    ], session_id=sid)
+                    r2 = await_rec(wm2, lambda r: not r.get("error"))
+                    ok = (r2 is not None and r2 is not False
+                          and r2.get("reason") == "session_inherit" and r2.get("session") is True
+                          and r2.get("tier") == "complex")
+                    got_d = (f"reason={r2 and r2.get('reason')} session={r2 and r2.get('session')}"
+                             f" tier={r2 and r2.get('tier')}")
+                    if ok:
+                        break
+                row("auto路由: 同会话二轮 reason=session_inherit", ok, got_d)
+                status, _ = restore()
+                row("auto路由: PUT 还原快照（去 routing 节）", status == 200, f"http{status}")
+        finally:
+            restore()
+    for r in rows:
+        print(f"[{'OK ' if r['ok'] else 'FAIL'}] {r['name']}（got={r['got']}）")
+    return rows
+
+
 def run_injection_gate():
     """注入水位门禁段（issue #95）：subprocess 跑 injection-eval.py（默认 normalize 链路口径，
     输出透传），非零即门禁失败。
@@ -666,6 +865,13 @@ def main():
     judge_inject_results = []
     if admin_token is not None:
         judge_inject_results = run_judge_inject_section(api_key, admin_token)
+
+    # auto 路由专项段（issue #118）：紧跟 judge 注入段（同凭据与自还原纪律）；
+    # shim 未含 #117 区块时段内自探测 SKIP（不 fail）。用例行并入主结果集
+    # （layer="router"），总计样本数随之增加（56 + 本段行数）；分类走真实 judge
+    # 通道（~2s/次），回归耗时上涨属预期
+    if admin_token is not None:
+        results.extend(run_auto_router_section(api_key, admin_token))
 
     fails = [r for r in results if r["fail"]]
     for name, ok, got in edm_fails + admin_results + pg_block_results + judge_warn_results + rules_results + judge_inject_results:
