@@ -6,3 +6,5 @@ prototype/console/dist/
 *.bak
 __pycache__/
 .venv/
+# 评测/调研临时产物（HF 模型缓存、逐样本结果等，issue #114 起）
+.scratch/
