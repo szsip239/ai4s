@@ -1110,6 +1110,17 @@ class TestShadowAvailFindings(unittest.TestCase):
         ok = ap.shadow_avail_findings({"judge_inject": _shadow_stats(0, 0)})
         self.assertFalse(ok["shadow:judge_inject"][0])  # 默认关无落条即无样本不判坏
 
+    def test_router_layer_display_name(self):
+        """issue #117：router 层（auto 智能路由分类器）纳入可用率巡检——层名「auto 路由分类」；
+        routing.enabled=false 默认态无落条不误报。"""
+        f = ap.shadow_avail_findings({"router": _shadow_stats(10, 6)})
+        bad, alert, recover = f["shadow:router"]
+        self.assertTrue(bad)
+        self.assertIn("auto 路由分类", alert)
+        self.assertIn("auto 路由分类", recover)
+        ok = ap.shadow_avail_findings({"router": _shadow_stats(0, 0)})
+        self.assertFalse(ok["shadow:router"][0])  # 默认关无落条即无样本不判坏
+
 
 class TestCheckCycleShadowAvail(unittest.TestCase):
     """issue #92：check_cycle 接入 shadow 可用率巡检——翻转告警/防抖/恢复
@@ -1129,7 +1140,8 @@ class TestCheckCycleShadowAvail(unittest.TestCase):
 
     def test_alert_debounce_recover(self):
         bad = {"judge": _shadow_stats(10, 8), "pg": _shadow_stats(10, 0),
-               "rules": _shadow_stats(10, 0), "judge_inject": _shadow_stats(10, 0)}
+               "rules": _shadow_stats(10, 0), "judge_inject": _shadow_stats(10, 0),
+               "router": _shadow_stats(10, 0)}
         state, sends = self._cycle({}, bad)
         self.assertEqual(len(sends), 1)
         self.assertIn("语义 judge 异常率过高", sends[0])
@@ -1137,12 +1149,14 @@ class TestCheckCycleShadowAvail(unittest.TestCase):
         self.assertNotIn("shadow:pg", state)  # 正常项不落状态
         self.assertNotIn("shadow:rules", state)  # issue #104：rules 层正常项同样不落状态
         self.assertNotIn("shadow:judge_inject", state)  # issue #105：judge_inject 层同款
+        self.assertNotIn("shadow:router", state)  # issue #117：router 层同款
         # 仍坏 → 不重复发
         state, sends = self._cycle(state, bad)
         self.assertEqual(sends, [])
         # 恢复 → 发恢复通知且状态清除
         good = {"judge": _shadow_stats(10, 0), "pg": _shadow_stats(10, 0),
-                "rules": _shadow_stats(10, 0), "judge_inject": _shadow_stats(10, 0)}
+                "rules": _shadow_stats(10, 0), "judge_inject": _shadow_stats(10, 0),
+                "router": _shadow_stats(10, 0)}
         state, sends = self._cycle(state, good)
         self.assertEqual(len(sends), 1)
         self.assertIn("已恢复", sends[0])

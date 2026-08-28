@@ -1,26 +1,31 @@
 #!/usr/bin/env python3
-"""auto 路由 /classify 桩端点单测（issue #115 spike）。
+"""auto 路由 /classify 端点协议锚单测（issue #115 桩退役收口，issue #117 行为基线）。
 
-被测语义（app.py do_POST /classify 分支，agentgateway extAuthz HTTP 授权服务形态）：
+issue #115 的桩行为（auto→echo-test 写死、其他合法 model 原值回显）已随 #117 真实分类器
+上线退役。本文件锚定桩退役后的协议不变量（routing.enabled=false 缺省态=现网行为零变化）：
+
 - 协议语义：任何输入都 200（2xx=放行；本端点只分类不鉴权，永不阻断——非 2xx 会被网关
   当 deny 决策，fail-open 由网关 failureMode=allow 管，不由本端点）；
-- model=="auto" → 200 + 响应头 x-resolved-model=CLASSIFY_STUB_AUTO_MODEL（写死 echo-test，
-  真实分档逻辑 #117）；
-- 其他合法 model（白名单 [A-Za-z0-9._:-]{1,128}）→ 200 + x-resolved-model 原值回显
-  （实证全量请求过改写通路）；
-- body 缺失/空/截断 JSON/非对象/无 model 字段/model 非字符串 → 200 不带响应头
-  （网关 CEL has(extauthz.resolved_model) 为 false，回退原 model + modelAliases 兜底）；
-- model 含 CRLF 等非法字符 → 200 不带响应头（用户输入进响应头前的响应拆分防护）；
-- 响应体恒为 {"resolved_model": <str|null>}（调试/备用 metadata CEL json(response.body) 通路）。
+- routing.enabled=false（settings 无 routing 节或显式 false）→ 对所有 model 回 200
+  **不带** x-resolved-model 响应头（网关 CEL has(extauthz.resolved_model) 为 false，
+  回退 llmRequest.model；auto 由 modelAliases 静态兜底落旗舰——与现网等价）；
+- 非 auto model 不再回显原值（transformations 无头回退原 model，语义等价）；
+- body 缺失/空/截断 JSON/非对象/无 model 字段/model 非字符串/含 CRLF → 200 不带响应头；
+- 全方法恒 200（GET/PUT/DELETE/OPTIONS）：extAuthz 按原请求方法转发授权调用（#115 坑 1），
+  非 2xx 会被网关当 deny 直回客户端；
+- 响应体恒为 {"resolved_model": null}（调试/备用 metadata CEL json(response.body) 通路）。
 
-seam 纪律同 test_rules_layer.py：进程内起真实 ThreadingHTTPServer 跑 app.Handler；
-本端点不读 settings/词表/settings 环境，无需临时文件隔离。
+enabled=true 的分类/会话/降级行为见 test_router.py。
+
+seam 纪律同桩版：进程内起真实 ThreadingHTTPServer 跑 app.Handler；缺省态不读 settings
+（SETTINGS_PATH 指到不存在路径，routing 缺省 disabled），无需分类器假服务。
 
 运行：cd shim && .venv/bin/python -m unittest discover -s tests
 """
 import json
 import os
 import sys
+import tempfile
 import threading
 import unittest
 import urllib.request
@@ -35,6 +40,13 @@ _SHIM = ThreadingHTTPServer(("127.0.0.1", 0), shim_app.Handler)
 threading.Thread(target=_SHIM.serve_forever, daemon=True).start()
 _BASE = f"http://127.0.0.1:{_SHIM.server_address[1]}"
 
+# 缺省态隔离（对齐 JudgeShadowMaskTest env 纪律）：SETTINGS_PATH 指到不存在路径
+# （routing 节缺席=disabled），并摘除开发机可能导出的 ROUTING_* env
+_TMP = tempfile.TemporaryDirectory()
+shim_app.SETTINGS_PATH = os.path.join(_TMP.name, "no-such-settings.json")
+for _k in ("ROUTING_ENABLED", "ROUTING_THRESHOLD", "ROUTING_TIMEOUT", "ROUTING_MAX_CONCURRENCY"):
+    os.environ.pop(_k, None)
+
 
 def _post_classify(raw: bytes):
     """POST /classify，返回 (status, x-resolved-model 头或 None, 响应体 dict)。"""
@@ -45,30 +57,31 @@ def _post_classify(raw: bytes):
         return r.status, r.headers.get("x-resolved-model"), json.load(r)
 
 
-class ClassifyStubTest(unittest.TestCase):
-    """桩行为：auto 改写 / 原值回显 / 缺省无头三态。"""
+class ClassifyStubRetiredTest(unittest.TestCase):
+    """桩退役基线（routing 缺省 disabled）：所有输入 200 无头——现网行为零变化。"""
 
-    def test_auto_resolves_to_stub_model(self):
-        """model=auto → 200 + x-resolved-model=写死的桩目标（echo-test）。"""
+    def test_auto_no_header_when_disabled(self):
+        """model=auto → 200 不带响应头（桩的 echo-test 改写已退役；网关 CEL 回退 auto
+        → modelAliases 静态兜底落旗舰，与现网等价）。"""
         status, hdr, body = _post_classify(
             json.dumps({"model": "auto", "messages": [{"role": "user", "content": "hi"}]}).encode())
         self.assertEqual(status, 200)
-        self.assertEqual(hdr, shim_app.CLASSIFY_STUB_AUTO_MODEL)
-        self.assertEqual(hdr, "echo-test")  # 桩写死值锚定（#117 接入真实分类时同步改本断言）
-        self.assertEqual(body["resolved_model"], shim_app.CLASSIFY_STUB_AUTO_MODEL)
+        self.assertIsNone(hdr)
+        self.assertIsNone(body["resolved_model"])
 
-    def test_non_auto_echoes_original(self):
-        """model=echo-test → 200 + 原值回显（非 auto 请求也过改写通路，值不变）。"""
+    def test_non_auto_no_header_when_disabled(self):
+        """model=echo-test → 200 不带响应头（桩的原值回显已退役；transformations 无头
+        回退 llmRequest.model，语义等价）。"""
         status, hdr, body = _post_classify(json.dumps({"model": "echo-test"}).encode())
         self.assertEqual(status, 200)
-        self.assertEqual(hdr, "echo-test")
-        self.assertEqual(body["resolved_model"], "echo-test")
+        self.assertIsNone(hdr)
+        self.assertIsNone(body["resolved_model"])
 
-    def test_real_model_echoes_original(self):
-        """真实旗舰模型名（gpt-5.6-luna，含 . 与 - ）过白名单原值回显。"""
+    def test_real_model_no_header_when_disabled(self):
+        """真实旗舰模型名（gpt-5.6-luna）→ 200 不带响应头。"""
         status, hdr, _ = _post_classify(json.dumps({"model": "gpt-5.6-luna"}).encode())
         self.assertEqual(status, 200)
-        self.assertEqual(hdr, "gpt-5.6-luna")
+        self.assertIsNone(hdr)
 
     def test_missing_model_no_header(self):
         """无 model 字段 → 200 不带响应头（网关 CEL 回退原 model）。"""
@@ -103,19 +116,6 @@ class ClassifyStubTest(unittest.TestCase):
             self.assertEqual(status, 200)
             self.assertIsNone(hdr)
 
-    def test_crlf_model_no_header(self):
-        """model 含 CRLF → 200 不带响应头（响应拆分防护：用户输入不进未校验的响应头）。"""
-        status, hdr, _ = _post_classify(
-            json.dumps({"model": "auto-ok\r\nx-injected: 1"}).encode())
-        self.assertEqual(status, 200)
-        self.assertIsNone(hdr)
-
-    def test_oversize_model_no_header(self):
-        """model 超 128 字符白名单边界 → 200 不带响应头。"""
-        status, hdr, _ = _post_classify(json.dumps({"model": "a" * 129}).encode())
-        self.assertEqual(status, 200)
-        self.assertIsNone(hdr)
-
     def test_never_blocks(self):
         """协议锚点：全部输入形态都 200（extAuthz 2xx=放行，本端点无 4xx/5xx 路径）。"""
         for raw in (b"", b"not-json", json.dumps({"model": "auto"}).encode(),
@@ -123,14 +123,18 @@ class ClassifyStubTest(unittest.TestCase):
             status, _, _ = _post_classify(raw)
             self.assertEqual(status, 200)
 
-    def test_get_classify_200_no_header(self):
-        """GET /classify → 200 不带响应头（extAuthz 对 /v1 路由同方法转发授权调用，
-        GET /v1/models 等会打到 GET /classify；非 2xx 会被网关当 deny 直回客户端）。"""
-        req = urllib.request.Request(_BASE + "/classify")  # GET
-        with urllib.request.urlopen(req, timeout=5) as r:
-            self.assertEqual(r.status, 200)
-            self.assertIsNone(r.headers.get("x-resolved-model"))
-            self.assertIsNone(json.load(r)["resolved_model"])
+    def test_all_methods_200_no_header(self):
+        """全方法恒 200 不带响应头（#115 坑 1：extAuthz 按原请求方法转发授权调用——
+        GET /v1/models 等会打到同方法 /classify；非 2xx 会被网关当 deny 直回客户端，
+        failureMode 只管传输层错误）。"""
+        for method in ("GET", "PUT", "DELETE", "OPTIONS", "HEAD"):
+            with self.subTest(method=method):
+                req = urllib.request.Request(_BASE + "/classify", method=method)
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    self.assertEqual(r.status, 200)
+                    self.assertIsNone(r.headers.get("x-resolved-model"))
+                    if method != "HEAD":  # HEAD 无响应体
+                        self.assertIsNone(json.load(r)["resolved_model"])
 
 
 if __name__ == "__main__":

@@ -3100,7 +3100,7 @@ class TestShadowVerdictsApi(unittest.TestCase):
         shadow_log.record("pg", hit=False, score=0.2, latency_ms=40, path=self.log_path)
         status, body = _get("/dlp-admin/shadow-verdicts", token="reader-token")
         self.assertEqual(status, 200)
-        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject"})  # #104 rules / #105 judge_inject 层 stats 同槽透出
+        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject", "router"})  # #104 rules / #105 judge_inject / #117 router 层 stats 同槽透出
         self.assertEqual(body["stats"]["judge"]["total"], 2)
         self.assertEqual(body["stats"]["judge"]["errors"], 1)
         self.assertEqual(body["stats"]["judge"]["hits"], 1)
@@ -3162,7 +3162,7 @@ class TestShadowVerdictsApi(unittest.TestCase):
         self.assertEqual(body["stats"]["judge"]["hits"], 1)  # 商密层独立聚合不串档
         status, body = _get("/dlp-admin/shadow-verdicts", token="reader-token")
         self.assertEqual(status, 200)
-        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject"})
+        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject", "router"})
 
     def test_empty_store_200_zeros(self):
         status, body = _get("/dlp-admin/shadow-verdicts", token="reader-token")
@@ -3174,6 +3174,140 @@ class TestShadowVerdictsApi(unittest.TestCase):
     def test_no_token_401(self):
         status, _ = _get("/dlp-admin/shadow-verdicts")
         self.assertEqual(status, 401)
+
+
+class AdminSettingsRoutingTest(unittest.TestCase):
+    """settings routing 节（issue #117 auto 智能路由）：PUT 写级校验 + 热更新落盘。
+    节级语义与既有必填段不同：routing 为**可选节**——缺席=合法（运行侧 routing.enabled
+    缺省 false，现网零变化；兼容未含 routing 节的旧文件与控制台 GET→PUT 往返）；
+    出现即整节校验（enabled/threshold/tiers/timeout/max_concurrency 五键齐全 + 类型 +
+    tiers 两档映射形态）。fixture 同 AdminSettingsTest。"""
+
+    _ROUTING_OK = {"enabled": False, "threshold": 0.5,
+                   "tiers": {"simple": "deepseek-v4-flash", "complex": "gpt-5.6-luna"},
+                   "timeout": 4, "max_concurrency": 2}
+
+    def setUp(self):
+        _FAKE_STATE["mode"] = "ok"
+        _FAKE_STATE["tokens"] = {
+            "writer-token": {"id": "7", "isOwner": False, "scopes": ["read_channels", "write_channels"]},
+        }
+        self._tmp = tempfile.TemporaryDirectory()
+        self.settings_path = os.path.join(self._tmp.name, "settings.json")
+        with open(self.settings_path, "w", encoding="utf-8") as f:
+            json.dump(_SETTINGS_FIXTURE, f, ensure_ascii=False)
+        self._saved = admin_api.SETTINGS_PATH
+        admin_api.SETTINGS_PATH = self.settings_path
+
+    def tearDown(self):
+        admin_api.SETTINGS_PATH = self._saved
+        self._tmp.cleanup()
+
+    def _put(self, payload):
+        return _request("PUT", "/dlp-admin/settings", token="writer-token", payload=payload)
+
+    def test_put_routing_section_valid_200(self):
+        """附合法 routing 节整体替换 → 200，落盘内容一致（热更新由 shim 每请求重读生效）。"""
+        new = json.loads(json.dumps(_SETTINGS_FIXTURE))
+        new["routing"] = dict(self._ROUTING_OK, enabled=True, threshold=0.15)
+        status, body = self._put(new)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["routing"]["enabled"], True)
+        self.assertEqual(body["routing"]["threshold"], 0.15)
+        with open(self.settings_path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["routing"], new["routing"])
+
+    def test_put_routing_absent_still_200(self):
+        """无 routing 节的旧形态 fixture → 200（可选节后向兼容：还原 PUT 不被校验卡住）。"""
+        status, body = self._put(json.loads(json.dumps(_SETTINGS_FIXTURE)))
+        self.assertEqual(status, 200)
+        self.assertNotIn("routing", body)
+
+    def test_put_routing_invalid_400(self):
+        """routing 节校验：逐条非法变体 → 400 带原因，且落盘文件不被污染。"""
+        def mutated(fn):
+            d = json.loads(json.dumps(_SETTINGS_FIXTURE))
+            d["routing"] = json.loads(json.dumps(self._ROUTING_OK))
+            fn(d)
+            return d
+        cases = [
+            ("routing 非对象", lambda d: d.update({"routing": 1})),
+            ("routing 未知字段", lambda d: d["routing"].update({"typo": 1})),
+            ("routing 缺 enabled", lambda d: d["routing"].pop("enabled")),
+            ("routing 缺 threshold", lambda d: d["routing"].pop("threshold")),
+            ("routing 缺 tiers", lambda d: d["routing"].pop("tiers")),
+            ("routing 缺 timeout", lambda d: d["routing"].pop("timeout")),
+            ("routing 缺 max_concurrency", lambda d: d["routing"].pop("max_concurrency")),
+            ("routing.enabled 非布尔", lambda d: d["routing"].update({"enabled": 1})),
+            ("routing.threshold 超界", lambda d: d["routing"].update({"threshold": 1.5})),
+            ("routing.threshold 为布尔", lambda d: d["routing"].update({"threshold": True})),
+            ("routing.threshold 为字符串", lambda d: d["routing"].update({"threshold": "0.5"})),
+            ("routing.timeout 为零", lambda d: d["routing"].update({"timeout": 0})),
+            ("routing.timeout 为布尔", lambda d: d["routing"].update({"timeout": True})),
+            ("routing.max_concurrency 为零", lambda d: d["routing"].update({"max_concurrency": 0})),
+            ("routing.max_concurrency 为浮点", lambda d: d["routing"].update({"max_concurrency": 2.5})),
+            ("routing.max_concurrency 为布尔", lambda d: d["routing"].update({"max_concurrency": True})),
+            ("routing.tiers 非对象", lambda d: d["routing"].update({"tiers": "x"})),
+            ("routing.tiers 缺 simple", lambda d: d["routing"]["tiers"].pop("simple")),
+            ("routing.tiers 缺 complex", lambda d: d["routing"]["tiers"].pop("complex")),
+            ("routing.tiers 未知档", lambda d: d["routing"]["tiers"].update({"medium": "m"})),
+            ("routing.tiers.simple 空串", lambda d: d["routing"]["tiers"].update({"simple": ""})),
+            ("routing.tiers.complex 非法字符", lambda d: d["routing"]["tiers"].update({"complex": "bad\r\nx: 1"})),
+            ("routing.tiers.simple 超长", lambda d: d["routing"]["tiers"].update({"simple": "a" * 129})),
+            ("routing.tiers.simple 非字符串", lambda d: d["routing"]["tiers"].update({"simple": 1})),
+            # 放最后：修复前 null 会穿透校验落盘，避免污染后续变体的「落盘未被污染」断言
+            ("routing 为 null", lambda d: d.update({"routing": None})),
+        ]
+        for label, fn in cases:
+            with self.subTest(label=label):
+                status, body = self._put(mutated(fn))
+                self.assertEqual(status, 400, f"{label}: 期望 400，实际 {status}")
+                self.assertIn("error", body)
+                with open(self.settings_path, encoding="utf-8") as f:
+                    self.assertEqual(json.load(f), _SETTINGS_FIXTURE)  # 落盘未被污染
+
+
+class TestShadowVerdictsRouterApi(unittest.TestCase):
+    """issue #117：shadow-verdicts 出口纳入 router 层（auto 路由决策日志）——
+    layer=router 过滤接受，records 带 resolved_model/tier/p_complex/reason/session 字段；
+    stats 五层同槽透出。fixture 同 TestShadowVerdictsApi。"""
+
+    def setUp(self):
+        _FAKE_STATE["mode"] = "ok"
+        _FAKE_STATE["tokens"] = {
+            "reader-token": {"id": "42", "isOwner": False, "scopes": ["read_channels"]},
+        }
+        self._tmp = tempfile.TemporaryDirectory()
+        self.log_path = os.path.join(self._tmp.name, "shadow.jsonl")
+        os.environ["SHADOW_LOG_PATH"] = self.log_path
+
+    def tearDown(self):
+        del os.environ["SHADOW_LOG_PATH"]
+        self._tmp.cleanup()
+
+    def test_layer_router_accepted(self):
+        import shadow_log
+        shadow_log.record("router", model="auto", resolved_model="deepseek-v4-flash",
+                          tier="simple", p_complex=0.1, reason="classify", session=False,
+                          latency_ms=1200, path=self.log_path)
+        shadow_log.record("router", error="unavailable", reason="fail_open",
+                          model="auto", latency_ms=4000, path=self.log_path)
+        shadow_log.record("judge", hit=True, confidence=0.9, latency_ms=120, entities=1, path=self.log_path)
+        status, body = _get("/dlp-admin/shadow-verdicts?layer=router", token="reader-token")
+        self.assertEqual(status, 200)
+        self.assertEqual([r["layer"] for r in body["records"]], ["router", "router"])
+        rec = body["records"][1]  # 新到旧：fail_open 在前，classify 条在[1]
+        self.assertEqual(rec["resolved_model"], "deepseek-v4-flash")
+        self.assertEqual(rec["tier"], "simple")
+        self.assertEqual(rec["p_complex"], 0.1)
+        self.assertEqual(rec["reason"], "classify")
+        self.assertEqual(rec["session"], False)
+        self.assertEqual(rec["model"], "auto")
+        self.assertEqual(body["records"][0]["reason"], "fail_open")
+        self.assertEqual(body["stats"]["router"]["errors"], 1)
+        status, body = _get("/dlp-admin/shadow-verdicts", token="reader-token")
+        self.assertEqual(status, 200)
+        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject", "router"})
 
 
 if __name__ == "__main__":

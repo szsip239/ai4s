@@ -19,6 +19,11 @@ issue #105：judge 注入第二职责判定以独立层名 layer="judge_inject" 
 标签（extract/override/.../none——类型标签非原文，同 #104 groups 脱敏先例）；
 注入判定永不阻断永不 warn（契约纪律：warn/blocked 是商密/PG/规则层专属消费），
 judge_inject 条绝不带 warned/blocked 键。
+issue #117：auto 智能路由决策日志以独立层名 layer="router" 落条——resolved_model
+（改写目标）/tier（simple/complex）/p_complex（分类器校准分数）/reason（classify/
+session_inherit/escalate/tool_loop_lock/thinking_lock/fail_open）/session（会话命中位）
+五个字段同「非 None 才写」纪律；model 字段复用既有键存请求原值（auto）；
+无原文无会话 key（key 本体不落条，只有命中与否的布尔位），供后续阈值校准回放消费。
 
 纪律：
 - record 永不抛（检测路径纪律，与 pg_guard fail-open 同语义）——持久化失败只 print；
@@ -47,7 +52,8 @@ def _max_bytes() -> int:
 
 def record(layer: str, hit=None, score=None, confidence=None, latency_ms=None,
            error=None, entities=None, path=None, blocked=None, block_threshold=None, model=None,
-           warned=None, groups=None, attack_type=None):
+           warned=None, groups=None, attack_type=None,
+           resolved_model=None, tier=None, p_complex=None, reason=None, session=None):
     """追加一条 shadow 判定。entities 只存命中数（不存字符串——不落原文）；
     error 非 None 表示该次判定不可用（hit/score/confidence 应为 None）。永不抛。
     issue #103：blocked=True 表示该次判定触发了 451 阻断（PG 高分试点；语义层永不阻断），
@@ -61,7 +67,10 @@ def record(layer: str, hit=None, score=None, confidence=None, latency_ms=None,
     模式标识非原文，脱敏安全）；只在非 None 时写入（未命中条不带——体积纪律）。
     issue #105：attack_type 存 judge 注入判定（judge_inject 层）的攻击类型标签
     （extract/override/roleplay/emotion/encoding/delimiter/indirect/none——类型标签
-    非原文，同 groups 脱敏先例）；只在非 None 时写入。"""
+    非原文，同 groups 脱敏先例）；只在非 None 时写入。
+    issue #117：router 层（auto 智能路由）决策字段——resolved_model（改写目标模型）/
+    tier（simple/complex）/p_complex（0~1 校准分数）/reason（决策路径标签）/
+    session（会话命中布尔位；会话 key 本体不落条）；全部只在非 None 时写入。"""
     rec = {
         "ts": time.time(),
         "layer": layer,
@@ -75,7 +84,9 @@ def record(layer: str, hit=None, score=None, confidence=None, latency_ms=None,
     for k, v in (("blocked", blocked), ("block_threshold", block_threshold), ("model", model),
                  ("warned", warned),  # warned：issue #101 judge warn 事件条
                  ("groups", groups),  # groups：issue #104 规则层命中模式组
-                 ("attack_type", attack_type)):  # attack_type：issue #105 judge 注入判定类型标签
+                 ("attack_type", attack_type),  # attack_type：issue #105 judge 注入判定类型标签
+                 ("resolved_model", resolved_model), ("tier", tier),  # issue #117：router 决策条
+                 ("p_complex", p_complex), ("reason", reason), ("session", session)):
         if v is not None:
             rec[k] = v
     p = path or _default_path()

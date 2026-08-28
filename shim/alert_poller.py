@@ -15,7 +15,9 @@ axonhub 无事件源的事务靠主动轮询补齐。巡检项（状态翻转才
      异常率 ≥ SHADOW_ERR_RATE 且样本 ≥ SHADOW_ALERT_MIN → 告警（样本不足/无流量不判坏）；
      issue #104 起 rules 层（注入规则）纳入同巡检；
      issue #105 起 judge_inject 层（judge 注入判定第二职责）纳入同巡检——注入判定
-     永不阻断/不 warn（契约纪律），巡检项 5/6 事件游标天然不消费本层
+     永不阻断/不 warn（契约纪律），巡检项 5/6 事件游标天然不消费本层；
+     issue #117 起 router 层（auto 智能路由分类器）纳入同巡检——分类器故障
+     fail-open 落旗舰（业务无感）但 error 条使异常率可感知
   5. 注入阻断事件（issue #103 PG / issue #104 规则层）：tail 消费 shadow_log blocked=True
      条目（pg/rules 两层混合，同文件同时间轴），发现即发卡
      （脱敏：层名/score/阻断阈值/命中模式组名/请求模型名/时间，绝无原文无 key）——事件型告警
@@ -138,7 +140,8 @@ SHADOW_ALERT_WINDOW = _env_int("SHADOW_ALERT_WINDOW", 20)
 SHADOW_ALERT_MIN = _env_int("SHADOW_ALERT_MIN_SAMPLES", 4)
 SHADOW_ERR_RATE = _env_float("SHADOW_ERR_RATE", 0.5)
 SHADOW_LAYER_NAMES = {"judge": "语义 judge", "pg": "注入 PG", "rules": "注入规则",  # rules：issue #104
-                      "judge_inject": "judge 注入判定"}  # judge_inject：issue #105 judge 第二职责
+                      "judge_inject": "judge 注入判定",  # judge_inject：issue #105 judge 第二职责
+                      "router": "auto 路由分类"}  # router：issue #117 auto 智能路由分类器
 # PG 阻断事件巡检（issue #103）：单轮发卡封顶（防风暴）+ tail 窗口（须覆盖两轮间积压）
 # issue #104：rules 层阻断条复用本通道（同 shadow_log 文件同时间轴，共用 pg_block_cursor 游标）
 PG_BLOCK_ALERT_BATCH = _env_int("PG_BLOCK_ALERT_BATCH", 10)
@@ -1295,10 +1298,12 @@ def check_cycle(ax: Axonhub, state: dict) -> dict:
     # issue #104：rules 层纳入（本地正则层异常=bug 信号；enabled=false 默认态无落条不误报）
     # issue #105：judge_inject 层纳入（judge 注入第二职责；inject_enabled=false 默认态无落条
     # 不误报——与 rules 层同款纪律）；注入判定永不阻断/不 warn，巡检项 5/6 游标天然不消费本层
+    # issue #117：router 层纳入（auto 智能路由分类器；routing.enabled=false 默认态无落条
+    # 不误报——同款纪律）；分类 fail-open 落旗舰业务无感，但 error 条使故障可感知
     try:
         findings.update(shadow_avail_findings(
             {layer: shadow_log.stats(layer, window=SHADOW_ALERT_WINDOW)
-             for layer in ("judge", "pg", "rules", "judge_inject")}))
+             for layer in ("judge", "pg", "rules", "judge_inject", "router")}))
     except Exception as e:
         print(f"[alert] shadow 层统计失败: {type(e).__name__}", flush=True)
 

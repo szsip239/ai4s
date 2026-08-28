@@ -26,10 +26,16 @@
     默认 rules.enabled=false 零开销零落条；开启后 shadow 落条（groups 脱敏字段），
     rules.block 开 → 应答前同步 451（复用 #103 应答形状，code=rules.injection）。
     与 PG 分工：规则层管确定性模式命中（布尔无分数），PG 管模型打分，两段各自独立开关
+  - auto 智能路由（issue #117）：/classify extAuthz 端点真实分类器（#115 spike 桩退役）——
+    judge 通道 LLM pcomplex 分类 + routing.tiers 两档映射改写 model + 会话档位稳定
+    （首轮定档/继承/强置信升档/tool-loop 锁/thinking 锁），fail-open 落旗舰；
+    决策日志 layer="router" 落 shadow_log（详见下方「auto 智能路由」段头注）
 本模块（检测路径）依赖仅标准库；镜像 python:3.12-slim（issue #48 起含 doc_extract 文档解析依赖，
 检测路径不 import 第三方库，纪律不变）。
 """
 import base64
+import collections
+import hashlib
 import json
 import os
 import queue
@@ -54,10 +60,10 @@ PII_RECOGNIZERS_PATH = os.environ.get("PII_RECOGNIZERS_PATH", "/recognizers/pii-
 SETTINGS_PATH = os.environ.get("SETTINGS_PATH", "/dlp/settings.json")
 MAX_BODY = 256 * 1024  # 契约：请求体超限截断送检
 
-# auto 智能路由桩改写目标（issue #115 spike）：/classify 对 model=="auto" 写死回 echo-test，
-# 只实证 extAuthz→transformations 插入点通路；真实分档分类逻辑是 #117，接入时替换本常量来源。
-CLASSIFY_STUB_AUTO_MODEL = "echo-test"
-# 响应头回显安全边界：model 是用户输入，进响应头前必须过白名单（防响应拆分/头注入）
+# auto 智能路由（issue #117）：#115 spike 的 /classify 桩（auto→echo-test 写死、其他原值
+# 回显）已退役，真实分档分类见下方「auto 智能路由」段。响应头白名单纪律保留：进
+# x-resolved-model 响应头的值（routing.tiers 映射目标，经 settings 可变）必须过白名单
+#（防响应拆分/头注入）。
 _CLASSIFY_MODEL_SAFE = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 
 
@@ -95,6 +101,10 @@ _SETTINGS_SCHEMA = {
     "pg": {"enabled": "bool", "threshold": "number", "normalize": "bool",
            "block_enabled": "bool", "block_threshold": "number"},  # 阻断试点（issue #103）
     "rules": {"enabled": "bool", "block": "bool"},  # 注入规则层（issue #104）：布尔命中无分数，阻断开关单键
+    # auto 智能路由（issue #117）：routing 节缺席=disabled 零行为（可选节，admin 校验侧同）；
+    # tiers 为对象需 dict 护栏（两档映射内容在 route_resolve 消费侧过白名单细验）
+    "routing": {"enabled": "bool", "threshold": "number", "tiers": "dict",
+                "timeout": "number", "max_concurrency": "int"},
     # 分层总开关（issue #40）：默认 True 保现网行为；关掉即整层跳过（l1=格式规则全族，
     # l2=词表/Presidio PII，response=响应侧整分支）
     "l1": {"enabled": "bool"},
@@ -113,6 +123,8 @@ def _json_type_ok(v, kind: str) -> bool:
         return isinstance(v, (int, float)) and not isinstance(v, bool)
     if kind == "str":
         return isinstance(v, str)
+    if kind == "dict":
+        return isinstance(v, dict)  # issue #117：routing.tiers 两档映射
     return True
 
 
@@ -384,6 +396,299 @@ def judge_inject_text(text: str):
                 "attack_type": str(v.get("attack_type") or "")}
     except Exception:
         return None  # verdict 形状损坏 → fail-open（同其余异常语义）
+
+
+# ---- auto 智能路由（issue #117）：/classify 真实分类器（#115 spike 桩退役收口）----
+# 分类器 = #114 票选候选 B：judge 通道外部 LLM pcomplex 校准模式——模型/地址/凭据沿用
+# judge 链路（settings judge.model/judge.base_url + JUDGE_API_KEY env 只走环境变量），
+# 系统提示只让模型输出 JSON {"p_complex": 0~1}，shim 侧按 routing.threshold 判档
+#（p >= 阈值 → complex）。外发纪律同 #93：分类输入先过 mask_pipeline（L1/L2 掩码）再外发。
+# routing 节（settings.json 热更新；节缺席或 enabled=false → 零行为：/classify 恒 200 无头）：
+#   enabled（默认 false——新层进场先关，验证后再开）/threshold（默认 0.5，#114 §7 推荐
+#   默认工作点）/tiers（两档映射，默认 simple→deepseek-v4-flash、complex→gpt-5.6-luna，
+#   与网关 modelAliases auto→gpt-5.6-luna 兜底一致；映射目标只选全量开放模型池，
+#   避免与 axonhub profile 白名单耦合）/timeout（默认 4s——#114 §8 建议 3~5s：分类在
+#   请求关键路径上，judge.timeout=8s 盖不住长尾；超时 fail-open）/max_concurrency
+#  （默认 2，**独立预算键**，与商密/注入 judge 不互挤——#114 §8）。
+# 会话策略（方案 A）：同会话首轮定档、后续继承；只允许强置信升档（simple→complex，
+# 本轮 p_complex ≥ ROUTER_ESCALATE_CONF），永不降档；tool-loop 硬锁（最后一条消息
+# role=tool 或含 tool_calls → 不分类直接继承）；thinking 锁（升档决策检出
+# thinking/redacted_thinking blocks → 放弃升档，见 _router_has_thinking 头注）；
+# 会话状态进程内 LRU（TTL 3600s 命中续期，重启即丢=新会话重新定档，无害）。
+# fail-open：分类器超时/异常/verdict 损坏/预算占满 → 200 不带 x-resolved-model 头
+#（网关 CEL 回退 + modelAliases 落旗舰，#115 实证通路）；超时/异常/配置坏落
+# shadow_log error 条（layer="router"，alert_poller 巡检项 4 消费发飞书）+ print
+# 告警行；预算占满只 print 不落条（skip 非层异常，同 #93 语义不污染 error_rate）。
+
+# 分类系统提示：#114 pcomplex 评测获胜 prompt 原样（评测口径 227 样本 98.2% @thr0.5）
+ROUTER_PROMPT_SYSTEM = """你是 LLM 网关的路由分类器。把用户请求分为两档：
+- simple：单步、有确定答案、无需长链推理或跨上下文综合——事实问答、短翻译、一句话润色、单行代码修改、简单命令、单工具直取。
+- complex：多步推理、设计/权衡、长上下文代码任务、跨文件依赖、专业领域翻译、实验/建模设计、多轮工具编排与错误恢复。
+注意：输入文本长短不代表难度；带 [SYSTEM]/[USER]/[TOOL] 标记的是 coding agent 多轮会话形态，按最后待完成的任务定档。
+只输出 JSON：{"p_complex": 0 到 1 的小数}，表示「该请求需要旗舰模型（complex 档）」的概率。"""
+
+ROUTER_ESCALATE_CONF = 0.85  # 升档强置信门槛（issue #117 定案）：只在 simple→complex 升档用
+ROUTER_SESSION_TTL = 3600    # 会话档位 TTL（秒），命中续期
+ROUTER_SESSION_MAX = 1024    # 会话 LRU 容量封顶（内存上限优先，逐出=按新会话重新定档）
+_ROUTER_MAX_TOKENS = 64      # #114 评测口径：{"p_complex": x} 输出 64 token 足够（454 次调用 0 解析失败）
+
+# 路由分类并发预算（独立 judge 预算键，#114 §8）：模块级锁+计数器，同 #93 形态——
+# 上限每请求现读 settings 热生效，不用 Semaphore（尺寸创建后僵化）。
+_ROUTER_INFLIGHT = 0
+_ROUTER_LOCK = threading.Lock()
+
+# 会话档位存态：key -> [tier, expire_ts]（list 可变便于命中续期就地更新）
+_router_sessions = collections.OrderedDict()
+_router_sessions_lock = threading.Lock()
+
+
+def router_budget_try_enter(limit: int) -> bool:
+    """占一个路由分类并发名额；已达 limit 返回 False（不占位）。limit 由调用方每请求现读 settings。"""
+    global _ROUTER_INFLIGHT
+    with _ROUTER_LOCK:
+        if _ROUTER_INFLIGHT >= limit:
+            return False
+        _ROUTER_INFLIGHT += 1
+        return True
+
+
+def router_budget_exit() -> None:
+    """释放一个名额（与 try_enter 成功配对，finally 中调用）。"""
+    global _ROUTER_INFLIGHT
+    with _ROUTER_LOCK:
+        _ROUTER_INFLIGHT = max(0, _ROUTER_INFLIGHT - 1)
+
+
+def _router_session_get(key):
+    """会话档位查询：命中返回 tier 并续期（TTL 重置 + LRU 移到尾）；未命中/过期返回 None。"""
+    if not key:
+        return None
+    now = time.time()
+    with _router_sessions_lock:
+        ent = _router_sessions.get(key)
+        if ent is None:
+            return None
+        if ent[1] < now:
+            del _router_sessions[key]
+            return None
+        ent[1] = now + ROUTER_SESSION_TTL  # 命中续期
+        _router_sessions.move_to_end(key)
+        return ent[0]
+
+
+def _router_session_put(key, tier) -> None:
+    """定档/升档写入（满员逐出最久未用——LRU；被逐/重启即按新会话重新定档，无害）。"""
+    if not key:
+        return
+    with _router_sessions_lock:
+        _router_sessions[key] = [tier, time.time() + ROUTER_SESSION_TTL]
+        _router_sessions.move_to_end(key)
+        while len(_router_sessions) > ROUTER_SESSION_MAX:
+            _router_sessions.popitem(last=False)
+
+
+def _router_session_key(headers, payload):
+    """会话 key 来源优先级（issue #117）：请求头 x-session-id > body.metadata.session_id >
+    首轮 user 消息内容哈希（chat 协议无状态，客户端重发全历史，第一条 user 消息是同会话
+    稳定指纹）。都不可得 → None（本请求分类结果不入会话）。
+    记账：extAuthz 是否上送原始请求头取决于网关转发头范围（#115 spike 未实证），
+    头路径拿不到时由 metadata/哈希路径兜底。"""
+    sid = headers.get("x-session-id") if headers is not None else None
+    if isinstance(sid, str) and sid.strip():
+        return "h:" + sid.strip()
+    meta = payload.get("metadata")
+    if isinstance(meta, dict):
+        v = meta.get("session_id")
+        if isinstance(v, str) and v.strip():
+            return "m:" + v.strip()
+    for m in payload.get("messages") or []:
+        if not isinstance(m, dict) or m.get("role") != "user":
+            continue
+        c = m.get("content")
+        if isinstance(c, str) and c:
+            return "u:" + hashlib.sha256(c.encode()).hexdigest()
+        if isinstance(c, list):  # 多段 content：拼接 text 段取哈希
+            txt = "".join(p.get("text", "") for p in c
+                          if isinstance(p, dict) and isinstance(p.get("text"), str))
+            if txt:
+                return "u:" + hashlib.sha256(txt.encode()).hexdigest()
+    return None
+
+
+def _router_tool_loop(messages) -> bool:
+    """tool-loop 硬锁（issue #117）：最后一条消息 role=tool（OpenAI 工具结果回传）或含
+    tool_calls（assistant 发起工具调用待结果形态），或 content 含 tool_result block
+    （Anthropic 形态——工具结果随 user 消息回传）→ 工具循环进行中，禁止换档。"""
+    if not messages or not isinstance(messages[-1], dict):
+        return False
+    last = messages[-1]
+    if last.get("role") == "tool" or last.get("tool_calls"):
+        return True
+    c = last.get("content")
+    if isinstance(c, list):
+        return any(isinstance(p, dict) and p.get("type") == "tool_result" for p in c)
+    return False
+
+
+def _router_has_thinking(messages) -> bool:
+    """messages 含 Anthropic thinking/redacted_thinking blocks。官方纪律：thinking 绑产出
+    模型，换模型前必须剥离，否则沉默烧钱；但 shim 在 extAuthz 点只回传 model 名、改不了
+    messages——故升档决策检出 thinking 即**放弃升档**（保缓存与上下文完整的保守等价
+    实现，落条 reason=thinking_lock）。"""
+    for m in messages:
+        c = m.get("content") if isinstance(m, dict) else None
+        if isinstance(c, list):
+            for p in c:
+                if isinstance(p, dict) and p.get("type") in ("thinking", "redacted_thinking"):
+                    return True
+    return False
+
+
+def _router_chat(model, base_url, timeout, text):
+    """路由分类 HTTP 调用（issue #117）：judge 通道同款调用方式（OpenAI 兼容
+    /chat/completions、Bearer JUDGE_API_KEY、temperature 0、```json 围栏剥离后
+    json.loads、异常返 None fail-open——与 _judge_chat 同纪律）；消息形状与参数按
+    #114 pcomplex 评测定稿（system 指令 + 单 user 文本，max_tokens 64）。
+    text[:4000] 截断与 _judge_chat 一致——超长会话保留首部（system prompt + 首轮
+    任务描述是复杂度主要信号；#114 §8 全量送判建议受 _judge_chat 复用口径约束，记账）。"""
+    body = json.dumps({
+        "model": model,
+        "messages": [
+            {"role": "system", "content": ROUTER_PROMPT_SYSTEM},
+            {"role": "user", "content": text[:4000]},
+        ],
+        "max_tokens": _ROUTER_MAX_TOKENS,
+        "temperature": 0,
+    }).encode()
+    req = urllib.request.Request(
+        base_url + "/chat/completions", data=body,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {JUDGE_API_KEY}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            d = json.load(r)
+        content = (d["choices"][0]["message"].get("content") or "").strip()
+        content = content.removeprefix("```json").removeprefix("```").removesuffix("```").strip()
+        return json.loads(content)
+    except Exception:
+        return None
+
+
+def router_classify(text: str, settings: dict):
+    """auto 路由复杂度分类（#114 票选候选 B 生产落点）：返回 0~1 p_complex；
+    异常/超时/verdict 损坏/缺凭据返回 None（fail-open 由调用方落旗舰）。
+    模型/地址沿用 settings judge.*（与商密/注入 judge 同通道）；超时独立
+    routing.timeout（默认 4s）。settings 由调用方一次读入（热更新每请求重读）。"""
+    if not text or not JUDGE_API_KEY:
+        return None
+    model = setting_value(settings, "judge", "model", "JUDGE_MODEL", "deepseek-v4-flash")
+    base_url = setting_value(settings, "judge", "base_url", "JUDGE_BASE_URL", "http://axonhub:8090/v1")
+    timeout = setting_value(settings, "routing", "timeout", "ROUTING_TIMEOUT", 4)
+    v = _router_chat(model, base_url, timeout, text)
+    if not isinstance(v, dict):
+        return None
+    p = v.get("p_complex")
+    if isinstance(p, bool) or not isinstance(p, (int, float)) or not 0 <= p <= 1:
+        return None  # verdict 形状损坏（含 NaN：比较恒假）→ fail-open（同 judge 各分支语义）
+    return float(p)
+
+
+def route_resolve(payload: dict, headers, settings: dict) -> dict:
+    """auto 路由定档（issue #117）。返回决策 dict：
+      resolved_model（None=不给结论——调用方 200 无头，网关 CEL 回退 + modelAliases 落旗舰）、
+      tier/p_complex（None=本轮未分类：继承/锁定路径）、reason（classify/session_inherit/
+      escalate/tool_loop_lock/thinking_lock/fail_open）、session（会话命中布尔位）、
+      error（"unavailable"=分类器故障/配置坏，调用方落 shadow_log error 条）、
+      latency_ms（分类调用耗时，未分类为 None）。
+    决策流：tool-loop 硬锁（不分类直接继承）> 会话继承（complex 存态不再分类——
+    永不降档且省一次 LLM 调用）> 升档检查（simple 存态每轮仍分类，强置信才升）>
+    首轮分类定档（p >= threshold → complex）。"""
+    messages = payload.get("messages")
+    messages = messages if isinstance(messages, list) else []
+    tiers = setting_value(settings, "routing", "tiers", None,
+                          {"simple": "deepseek-v4-flash", "complex": "gpt-5.6-luna"})
+    # tiers 值进响应头：过白名单（settings 可能被手改绕过 admin 校验——防响应拆分
+    # 纪律与 #115 桩一致）。配置坏=分类不可用 → fail-open + error 落条（要可感知）。
+    if not (isinstance(tiers, dict)
+            and all(isinstance(tiers.get(k), str) and _CLASSIFY_MODEL_SAFE.fullmatch(tiers[k])
+                    for k in ("simple", "complex"))):
+        print("[router] routing.tiers 配置非法（simple/complex 须为过白名单的模型名），fail-open 落旗舰", flush=True)
+        return {"resolved_model": None, "tier": None, "p_complex": None,
+                "reason": "fail_open", "session": False, "error": "unavailable", "latency_ms": None}
+    skey = _router_session_key(headers, payload)
+    stored = _router_session_get(skey)
+    # tool-loop 硬锁：不分类直接继承；无会话可继承 → 不改写（网关兜底旗舰=complex 语义等价）
+    if _router_tool_loop(messages):
+        if stored is not None:
+            return {"resolved_model": tiers[stored], "tier": stored, "p_complex": None,
+                    "reason": "tool_loop_lock", "session": True, "error": None, "latency_ms": None}
+        return {"resolved_model": None, "tier": None, "p_complex": None,
+                "reason": "tool_loop_lock", "session": False, "error": None, "latency_ms": None}
+    # complex 存态直接继承（永不降档，无需再分类）
+    if stored == "complex":
+        return {"resolved_model": tiers["complex"], "tier": "complex", "p_complex": None,
+                "reason": "session_inherit", "session": True, "error": None, "latency_ms": None}
+    # 本轮需分类：首轮定档（无会话）或 simple 存态升档检查。外发前置脱敏（#93 既定纪律）。
+    # 评审 P1-1：畸形 messages（非 dict 元素等）会让掩码/抽取抛异常——handler 线程崩掉、
+    # 连接无响应断开（无 200 无 error 落条）。此处兜底：fail-open + error 落条
+    # （对齐 /request 链路先例），绝不让 /classify 断连（网关 failureMode 只管传输层）。
+    try:
+        masked_msgs, _, _ = mask_pipeline(
+            messages,
+            setting_value(settings, "l1", "enabled", "L1_ENABLED", True),
+            setting_value(settings, "l2", "enabled", "L2_ENABLED", True),
+        )
+        text = extract_text(masked_msgs)
+    except Exception:
+        print("[router] messages 预处理异常（畸形输入?），fail-open 落旗舰", flush=True)
+        return {"resolved_model": None, "tier": None, "p_complex": None,
+                "reason": "fail_open", "session": stored is not None,
+                "error": "unavailable", "latency_ms": None}
+    if not text:
+        # 无可判输入（空 messages/纯图片）→ 不改写；落条但非 error（同 #92 空 text
+        # 不落 error 条纪律，不污染 error_rate）
+        return {"resolved_model": None, "tier": None, "p_complex": None,
+                "reason": "fail_open", "session": stored is not None, "error": None, "latency_ms": None}
+    limit = setting_value(settings, "routing", "max_concurrency", "ROUTING_MAX_CONCURRENCY", 2)
+    if not router_budget_try_enter(limit):
+        # 预算占满=跳过分类（skip 非层异常，同 #93 语义：print 不落 error 条）→ 不改写落旗舰
+        print(f"[router] skipped (concurrency budget {limit})，fail-open 落旗舰", flush=True)
+        return {"resolved_model": None, "tier": None, "p_complex": None,
+                "reason": "fail_open", "session": stored is not None, "error": None, "latency_ms": None}
+    try:
+        t0 = time.monotonic()
+        p = router_classify(text, settings)
+        ms = int((time.monotonic() - t0) * 1000)
+    finally:
+        router_budget_exit()
+    if p is None:
+        return {"resolved_model": None, "tier": None, "p_complex": None,
+                "reason": "fail_open", "session": stored is not None,
+                "error": "unavailable", "latency_ms": ms}
+    if stored == "simple":
+        # 升档检查：本轮强置信才升（p 低维持 simple 即继承——永不降档）
+        if p >= ROUTER_ESCALATE_CONF:
+            if _router_has_thinking(messages):  # thinking 锁（见 _router_has_thinking 头注）
+                return {"resolved_model": tiers["simple"], "tier": "simple", "p_complex": p,
+                        "reason": "thinking_lock", "session": True, "error": None, "latency_ms": ms}
+            _router_session_put(skey, "complex")
+            return {"resolved_model": tiers["complex"], "tier": "complex", "p_complex": p,
+                    "reason": "escalate", "session": True, "error": None, "latency_ms": ms}
+        return {"resolved_model": tiers["simple"], "tier": "simple", "p_complex": p,
+                "reason": "session_inherit", "session": True, "error": None, "latency_ms": ms}
+    # 首轮定档
+    threshold = setting_value(settings, "routing", "threshold", "ROUTING_THRESHOLD", 0.5)
+    tier = "complex" if p >= threshold else "simple"
+    if tier == "simple" and _router_has_thinking(messages):
+        # 评审 P2-1：thinking 锁守首轮定档——无会话存态（TTL 过期/LRU 逐出/无头续聊）
+        # 判 simple 但带 thinking blocks 时，换便宜模型不剥 thinking 同属沉默烧钱场景。
+        # 不下结论（200 无头 → 网关 modelAliases 兜底旗舰=维持原状）、不落会话卡
+        # （下轮重判）；判 complex 不拦（thinking 本就是旗舰产出，发卡与兜底等价）。
+        return {"resolved_model": None, "tier": None, "p_complex": p,
+                "reason": "thinking_lock", "session": False, "error": None, "latency_ms": ms}
+    _router_session_put(skey, tier)
+    return {"resolved_model": tiers[tier], "tier": tier, "p_complex": p,
+            "reason": "classify", "session": False, "error": None, "latency_ms": ms}
 
 
 def send_feishu_text(text: str) -> bool:
@@ -903,23 +1208,39 @@ class Handler(BaseHTTPRequestHandler):
         if self_api.handle(self, "POST"):  # 员工自助平面（issue #74 评审 P2）：已鉴权 POST → 显式 404
             return
         if self.path == "/classify":
-            # auto 智能路由插入点桩（issue #115 spike）：agentgateway extAuthz HTTP 授权服务形态。
-            # 协议语义：2xx=放行（本端点只分类不鉴权，任何输入都 200，永不阻断——非 2xx 会被
-            # 网关当 deny 决策）；解析请求体 JSON 的 model 字段，经响应头 x-resolved-model 回传
-            # 改写目标（网关同路由 ai.transformations CEL 读 extauthz.resolved_model 改写 model，
-            # 缺头时回退原值 + modelAliases 静态兜底）。
-            # 桩行为写死：model=="auto" → CLASSIFY_STUB_AUTO_MODEL（echo-test）；其他合法 model
-            # → 原值回显（实证全量请求过改写通路）；body 缺失/截断/非 JSON/无 model/model 含
-            # 非法字符 → 200 不带响应头（网关 CEL 回退原 model，fail-open 语义不阻断）。
+            # auto 智能路由（issue #117 真实分类器；#115 spike 桩已退役）：
+            # agentgateway extAuthz HTTP 授权服务形态。协议语义不变：2xx=放行（本端点只
+            # 分类不鉴权，任何输入都 200，永不阻断——非 2xx 会被网关当 deny 决策）；
+            # 改写结论经响应头 x-resolved-model 回传（网关同路由 ai.transformations CEL
+            # 读 extauthz.resolved_model 改写 model，缺头回退原值 + modelAliases
+            # auto→gpt-5.6-luna 静态兜底）。
+            # 行为：routing.enabled=false（缺省/节缺席）→ 所有 model 200 无头（现网零
+            # 变化）；enabled=true 且 model=="auto" → route_resolve 分类定档（两档映射/
+            # 会话继承/强置信升档/tool-loop 锁/thinking 锁；fail-open 路径不给结论=200
+            # 无头落旗舰）；其他 model → 200 无头（桩的原值回显退役——transformations
+            # 无头回退原 model 语义等价）。enabled=true 的每个 auto 请求落一条
+            # shadow_log layer="router" 决策条（无原文无会话 key，供阈值校准回放与
+            # router 层异常率巡检）。
             try:
                 length = min(int(self.headers.get("Content-Length") or 0), MAX_BODY)
                 payload = json.loads(self.rfile.read(length) or b"{}")
                 model = payload.get("model") if isinstance(payload, dict) else None
             except Exception:
-                model = None
+                payload, model = {}, None
             resolved = None
-            if isinstance(model, str) and _CLASSIFY_MODEL_SAFE.fullmatch(model):
-                resolved = CLASSIFY_STUB_AUTO_MODEL if model == "auto" else model
+            settings = load_settings()
+            if model == "auto" and setting_value(settings, "routing", "enabled", "ROUTING_ENABLED", False):
+                r = route_resolve(payload, self.headers, settings)
+                resolved = r["resolved_model"]
+                shadow_log.record(
+                    "router", model="auto", resolved_model=resolved, tier=r["tier"],
+                    p_complex=r["p_complex"], reason=r["reason"], session=r["session"],
+                    error=r["error"], latency_ms=r["latency_ms"])
+                if r["error"]:
+                    print(f"[router] fail-open: 分类器不可用落旗舰（reason={r['reason']}）", flush=True)
+                elif resolved:
+                    _p = "" if r["p_complex"] is None else f" p_complex={r['p_complex']:.2f}"
+                    print(f"[router] auto -> {resolved} (tier={r['tier']} reason={r['reason']}{_p})", flush=True)
             body = json.dumps({"resolved_model": resolved}, ensure_ascii=False).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
@@ -1276,6 +1597,12 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self_api.handle(self, "PUT"):  # 员工自助平面（issue #74 评审 P2）：已鉴权 PUT → 显式 404
             return
+        if self.path == "/classify":
+            # issue #117 按 #115 坑 1 收口：extAuthz 按原请求方法转发授权调用——
+            # /classify 全方法恒 200 无头（非 2xx 会被网关当 deny 决策直回客户端，
+            # failureMode 只管传输层错误）。
+            self._json(200, {"resolved_model": None})
+            return
         self._json(404, {})
 
     def do_DELETE(self):
@@ -1284,7 +1611,26 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self_api.handle(self, "DELETE"):  # 员工自助平面（issue #74 评审 P2）：已鉴权 DELETE → 显式 404
             return
+        if self.path == "/classify":
+            self._json(200, {"resolved_model": None})  # 同 do_PUT 注释：/classify 全方法恒 200
+            return
         self._json(404, {})
+
+    def do_OPTIONS(self):
+        # issue #117：/classify 全方法恒 200 兜底（extAuthz 同方法转发授权调用，#115 坑 1）；
+        # 其余路径与 do_PUT/do_DELETE 同语义回 404（非 BaseHTTPRequestHandler 默认 501）。
+        self._json(200 if self.path == "/classify" else 404,
+                   {"resolved_model": None} if self.path == "/classify" else {})
+
+    def do_HEAD(self):
+        # 评审 P2-3：HEAD 同收口——缺省时 BaseHTTPRequestHandler 默认 501 会被网关当 deny。
+        # /classify 恒 200；HEAD 无响应体（Content-Length: 0，不走 _json 写 body）。
+        if self.path == "/classify":
+            self.send_response(200)
+        else:
+            self.send_response(404)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
 
 
 if __name__ == "__main__":

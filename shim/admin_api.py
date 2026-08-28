@@ -34,6 +34,12 @@ prompt，单一源=settings.json 同 #35 review #2 纪律；关态允许空串�
 不给「开+空」运行必 error 的配置放行）三键必填校验；shadow-verdicts 出口 layer 过滤
 接受 judge_inject、stats 加 judge_inject 层（判定条带 attack_type 类型标签脱敏字段，
 与商密 judge 层分层统计）。
+issue #117：auto 智能路由 schema——settings 新增 routing **可选节**（enabled/threshold/
+tiers/timeout/max_concurrency 五键；缺席=合法，运行侧 routing.enabled 缺省 false 现网
+零变化，兼容未含 routing 节的旧文件与控制台 GET→PUT 往返；出现即整节五键齐全校验，
+tiers 两档映射 simple/complex 必填且模型名过响应头白名单字符形态）；shadow-verdicts
+出口 layer 过滤接受 router、stats 加 router 层（决策条带 resolved_model/tier/p_complex/
+reason/session 字段）。
 
 与检测路径（/request /response 调用链）完全隔离：admin 平面 fail-closed——
 内省不可达回 503，不适用检测链的 fail-open 分级（契约 docs/contracts/dlp-webhook-shim.md）。
@@ -261,7 +267,8 @@ def _settings_get(handler, _me):
 
 
 # settings schema（issue #35）：顶层/区段未知键一律拒绝（防 typo 静默漂移，同 format-rules 校验精神）
-_SETTINGS_TOP_KEYS = {"version", "_comment", "judge", "edm", "pg", "rules", "l1", "l2", "response"}
+_SETTINGS_TOP_KEYS = {"version", "_comment", "judge", "edm", "pg", "rules", "l1", "l2", "response",
+                      "routing"}  # routing：issue #117 auto 智能路由（可选节，见下方校验）
 _SETTINGS_JUDGE_KEYS = {"enabled", "model", "base_url", "timeout", "prompt_system", "prompt_fewshot",
                         "threshold", "action",  # threshold/action：issue #94 置信度门槛与动作分级
                         "sample_rate", "max_concurrency",  # issue #93 判定采样率与并发预算
@@ -276,6 +283,18 @@ _SETTINGS_RULES_KEYS = {"enabled", "block"}
 _SETTINGS_L1_KEYS = {"enabled"}
 _SETTINGS_L2_KEYS = {"enabled"}
 _SETTINGS_RESPONSE_KEYS = {"enabled"}
+# auto 智能路由（issue #117）：enabled=层开关（默认关，新层进场先关验证后再开）/
+# threshold=p_complex 判 complex 门槛（默认 0.5，#114 评测推荐默认工作点）/
+# tiers=两档→真实模型映射（simple/complex 两键必填；映射目标只选全量开放模型池，
+# 避免与 axonhub profile 白名单耦合——池成员资格靠评审约束，此处只校验字符形态）/
+# timeout=分类调用超时（默认 4s，超时 fail-open 落旗舰）/
+# max_concurrency=分类并发预算（默认 2，独立于 judge.max_concurrency 预算键，不与
+# 商密/注入 judge 互挤——#114 §8）
+_SETTINGS_ROUTING_KEYS = {"enabled", "threshold", "tiers", "timeout", "max_concurrency"}
+_SETTINGS_ROUTING_TIERS = {"simple", "complex"}
+# tiers 映射值进 extAuthz 响应头（x-resolved-model）——白名单字符形态与 app.py
+# _CLASSIFY_MODEL_SAFE 同款（admin_api 不 import app，自包含复述；防响应拆分纪律一致）
+_SETTINGS_MODEL_SAFE = re.compile(r"[A-Za-z0-9._:-]{1,128}")
 
 
 # judge 动作分级（issue #94）：off 关 / shadow 仅记录 / warn 告警 / reject 拦截；
@@ -364,6 +383,44 @@ def _validate_settings(data) -> str | None:
     for section in ("l1", "l2", "response"):  # 分层总开关（issue #40）：仅 enabled 单键
         if not isinstance(data[section]["enabled"], bool):
             return f"{section}.enabled 必须是布尔值"
+    # issue #117：routing 为**可选节**（与上方必填段语义不同）——缺席=合法（运行侧
+    # routing.enabled 缺省 false，现网零变化；不强制旧文件/控制台往返补节）；出现即
+    # 整节校验：五键齐全（防部分更新静默丢键，与必填段同精神）+ 类型 + tiers 形态。
+    # 评审 P2-2：键在值判——"routing": null 不放行（get 默认 None 会穿透 is not None
+    # 护栏），显式 null 落 not isinstance 分支 400，fail-closed（要缺席请省略该键）。
+    routing = data.get("routing")
+    if "routing" in data:
+        if not isinstance(routing, dict):
+            return "routing 必须是对象（缺席请省略该键，不接受 null）"
+        for k in routing:
+            if k not in _SETTINGS_ROUTING_KEYS:
+                return f"routing 未知字段: {k}"
+        missing = _SETTINGS_ROUTING_KEYS - set(routing)
+        if missing:
+            return f"routing 缺字段: {', '.join(sorted(missing))}"
+        if not isinstance(routing["enabled"], bool):
+            return "routing.enabled 必须是布尔值"
+        if not _is_number(routing["threshold"]) or not 0 <= routing["threshold"] <= 1:
+            return "routing.threshold 必须是 0~1 数值"
+        tiers = routing["tiers"]
+        if not isinstance(tiers, dict):
+            return "routing.tiers 必须是对象"
+        for k in tiers:
+            if k not in _SETTINGS_ROUTING_TIERS:
+                return f"routing.tiers 未知档位: {k}"
+        missing_tiers = _SETTINGS_ROUTING_TIERS - set(tiers)
+        if missing_tiers:
+            return f"routing.tiers 缺档位: {', '.join(sorted(missing_tiers))}"
+        for k in sorted(_SETTINGS_ROUTING_TIERS):
+            v = tiers[k]
+            if not isinstance(v, str) or not v:
+                return f"routing.tiers.{k} 必须是非空字符串"
+            if not _SETTINGS_MODEL_SAFE.fullmatch(v):
+                return f"routing.tiers.{k} 含非法字符（模型名须匹配 [A-Za-z0-9._:-]{{1,128}}，进响应头防拆分）"
+        if not _is_number(routing["timeout"]) or routing["timeout"] <= 0:
+            return "routing.timeout 必须是 >0 数值"
+        if not isinstance(routing["max_concurrency"], int) or isinstance(routing["max_concurrency"], bool) or routing["max_concurrency"] < 1:
+            return "routing.max_concurrency 必须是 ≥1 整数"
     return None
 
 
@@ -965,12 +1022,14 @@ def _kr_reject_item(handler, me, rid):
 
 def _shadow_verdicts(handler, _me):
     """GET /dlp-admin/shadow-verdicts：各层 stats + 近期判定记录（新到旧，不落原文）。
-    query 参数：n（默认 50，1..500 截断）、layer（judge/pg/rules/judge_inject 过滤，非法值 400）。
+    query 参数：n（默认 50，1..500 截断）、layer（judge/pg/rules/judge_inject/router 过滤，非法值 400）。
     issue #101：stats 透出 warned 聚合数（judge warn 试点观察期误报对账口径：
     warned/hits 同窗可比），records 逐条带 warned/model 脱敏字段供核对。
     issue #104：rules 层（注入规则层）判定条同槽透出，records 带 groups 命中模式组名。
     issue #105：judge_inject 层（judge 注入第二职责）判定条同槽透出，records 带
-    attack_type 攻击类型标签；与商密 judge 层分层统计（独立层名，天然不串档）。"""
+    attack_type 攻击类型标签；与商密 judge 层分层统计（独立层名，天然不串档）。
+    issue #117：router 层（auto 智能路由）决策条同槽透出，records 带 resolved_model/
+    tier/p_complex/reason/session 字段（决策日志供阈值校准回放）。"""
     q = urllib.parse.parse_qs(urllib.parse.urlsplit(handler.path).query)
     try:
         n = int((q.get("n") or ["50"])[0])
@@ -978,11 +1037,11 @@ def _shadow_verdicts(handler, _me):
         n = 50
     n = max(1, min(500, n))
     layer = (q.get("layer") or [""])[0] or None
-    if layer not in (None, "judge", "pg", "rules", "judge_inject"):
-        _respond(handler, 400, {"error": "layer 必须是 judge、pg、rules 或 judge_inject"})
+    if layer not in (None, "judge", "pg", "rules", "judge_inject", "router"):
+        _respond(handler, 400, {"error": "layer 必须是 judge、pg、rules、judge_inject 或 router"})
         return
     _respond(handler, 200, {
-        "stats": {l: shadow_log.stats(l) for l in ("judge", "pg", "rules", "judge_inject")},
+        "stats": {l: shadow_log.stats(l) for l in ("judge", "pg", "rules", "judge_inject", "router")},
         "records": shadow_log.tail(n, layer=layer),
     })
 
