@@ -17,7 +17,32 @@ routes:
       - path:
           pathPrefix: /v1
     policies:
+      # auto 智能路由插入点（issue #115 spike）：extAuthz(HTTP) 调 shim /classify 桩分类。
+      # 协议语义：shim 任何输入恒 200（2xx=放行；非 2xx 会被当 deny 决策直回客户端——
+      # failureMode=allow 只管传输层失败）；响应头 x-resolved-model 经 metadata CEL 存为
+      # extauthz.resolved_model，供下方 ai.transformations 改写 model 用。
+      # 执行顺序（v1.4.1 源码实证 httpproxy.rs apply_request_policies → llm read_body）：
+      # extAuthz → extProc → ai.transformations → modelAliases → promptGuard webhook（DLP）。
+      extAuthz:
+        host: shim:8080
+        failureMode: allow  # fail-open：shim 不可达 → 无 extauthz 变量 → CEL 回退 → modelAliases 兜底
+        includeRequestBody:
+          maxRequestBytes: 65536  # 默认 8192 对长 prompt 太小；超限截断 → shim 解析失败 → 无头回退
+          allowPartialMessage: true
+        protocol:
+          http:
+            path: '"/classify"'
+            metadata:
+              resolved_model: 'response.headers["x-resolved-model"]'
       ai:
+        # auto→旗舰静态兜底（spike 定稿）：extAuthz fail-open / 桩未给出改写目标时，
+        # transformations 回退保留原 model="auto"，由本别名映射到旗舰模型（顺序：先 transformations 后 alias）
+        modelAliases:
+          auto: gpt-5.6-luna
+        # CEL 可见 extauthz.*（extAuthz metadata）与 llmRequest.*（请求体原文）；
+        # 无改写目标时回退原 model——注意 eval 失败会删 model 键，故必须 has() 守卫不抛错
+        transformations:
+          model: 'has(extauthz.resolved_model) && extauthz.resolved_model != null && extauthz.resolved_model != "" ? extauthz.resolved_model : llmRequest.model'
         promptGuard:
           request:
             # >>> DLP-FORMAT-RULES BEGIN（format-rules.json 渲染，勿手改；顺序敏感：更具体的 pattern 在前） >>>

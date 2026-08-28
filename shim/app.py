@@ -54,6 +54,12 @@ PII_RECOGNIZERS_PATH = os.environ.get("PII_RECOGNIZERS_PATH", "/recognizers/pii-
 SETTINGS_PATH = os.environ.get("SETTINGS_PATH", "/dlp/settings.json")
 MAX_BODY = 256 * 1024  # 契约：请求体超限截断送检
 
+# auto 智能路由桩改写目标（issue #115 spike）：/classify 对 model=="auto" 写死回 echo-test，
+# 只实证 extAuthz→transformations 插入点通路；真实分档分类逻辑是 #117，接入时替换本常量来源。
+CLASSIFY_STUB_AUTO_MODEL = "echo-test"
+# 响应头回显安全边界：model 是用户输入，进响应头前必须过白名单（防响应拆分/头注入）
+_CLASSIFY_MODEL_SAFE = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+
 
 # ---- 统一配置（issue #35）：settings.json > env > 内置默认 ----
 # JUDGE/EDM/PG 开关阈值收敛到 settings.json（每请求重读，热生效，admin 平面 PUT /dlp-admin/settings
@@ -883,12 +889,45 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self_api.handle(self, "GET"):  # 员工自助平面（issue #74）：/self/*
             return
+        if self.path == "/classify":
+            # extAuthz 会对 /v1 路由的全部方法发起同方法授权调用（如 GET /v1/models →
+            # GET /classify）；非 2xx 会被网关当 deny 决策直接回给客户端（failureMode 只管
+            # 传输错误）。GET 无 body 可分类 → 200 不带响应头（网关 CEL 回退原 model）。
+            self._json(200, {"resolved_model": None})
+            return
         self._json(200 if self.path == "/healthz" else 404, {"ok": self.path == "/healthz"})
 
     def do_POST(self):
         if admin_api.handle(self, "POST"):  # admin 平面（issue #31）：/dlp-admin/* 优先分流
             return
         if self_api.handle(self, "POST"):  # 员工自助平面（issue #74 评审 P2）：已鉴权 POST → 显式 404
+            return
+        if self.path == "/classify":
+            # auto 智能路由插入点桩（issue #115 spike）：agentgateway extAuthz HTTP 授权服务形态。
+            # 协议语义：2xx=放行（本端点只分类不鉴权，任何输入都 200，永不阻断——非 2xx 会被
+            # 网关当 deny 决策）；解析请求体 JSON 的 model 字段，经响应头 x-resolved-model 回传
+            # 改写目标（网关同路由 ai.transformations CEL 读 extauthz.resolved_model 改写 model，
+            # 缺头时回退原值 + modelAliases 静态兜底）。
+            # 桩行为写死：model=="auto" → CLASSIFY_STUB_AUTO_MODEL（echo-test）；其他合法 model
+            # → 原值回显（实证全量请求过改写通路）；body 缺失/截断/非 JSON/无 model/model 含
+            # 非法字符 → 200 不带响应头（网关 CEL 回退原 model，fail-open 语义不阻断）。
+            try:
+                length = min(int(self.headers.get("Content-Length") or 0), MAX_BODY)
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                model = payload.get("model") if isinstance(payload, dict) else None
+            except Exception:
+                model = None
+            resolved = None
+            if isinstance(model, str) and _CLASSIFY_MODEL_SAFE.fullmatch(model):
+                resolved = CLASSIFY_STUB_AUTO_MODEL if model == "auto" else model
+            body = json.dumps({"resolved_model": resolved}, ensure_ascii=False).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            if resolved:
+                self.send_header("x-resolved-model", resolved)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
             return
         if self.path == "/feishu-alert":
             # axonhub webhook → 飞书适配（issue #17）
