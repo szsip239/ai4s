@@ -103,6 +103,11 @@ routes:
                 target:
                   host: shim:8080
                 failureMode: failOpen
+                # issue #116：把 llmRequest.model 注入 webhook 请求头（v1.4.1 headers CEL，
+                # 上游 webhook.rs 测试实证形状）——webhook body 协议不含 model 字段，
+                # shim 三处 shadow_log 模型名此前恒为 None；头是 shim 侧模型名权威来源
+                headers:
+                  x-model: llmRequest.model
           # 响应侧（issue #23）：模型应答过 shim /response，命中即 mask（不 451，避免员工看到莫名错误）；
           # fail-open 同契约分级；流式应答覆盖见 streaming 段
           response:

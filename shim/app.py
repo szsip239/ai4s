@@ -870,6 +870,14 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _req_model(self, payload):
+        """请求模型名（issue #116）：webhook 请求体协议不含 model 字段（MaskAction 只能
+        替换 messages），生产链路的模型名靠 agentgateway webhook headers CEL 注入的
+        x-model 头（llmRequest.model，上游 webhook.rs 测试实证形状）——头优先；
+        回退 body.model（/judge-test 直测与旧调用方形状）。两头都缺 → None，
+        shadow_log 键级省略纪律不变（非 None 才写入）。"""
+        return self.headers.get("x-model") or (payload.get("body") or {}).get("model")
+
     def do_GET(self):
         if admin_api.handle(self, "GET"):  # admin 平面（issue #31）：/dlp-admin/* 优先分流
             return
@@ -1037,7 +1045,7 @@ class Handler(BaseHTTPRequestHandler):
             elif _r_hit and setting_value(settings, "rules", "block", "RULES_BLOCK", False):
                 # 阻断条先于应答落盘（告警巡检消费即见）；record 永不抛（shadow_log 纪律）
                 shadow_log.record("rules", hit=True, groups=_r_groups, latency_ms=_r_ms,
-                                  blocked=True, model=(payload.get("body") or {}).get("model"))
+                                  blocked=True, model=self._req_model(payload))
                 print(f"[injection.rules] 451 groups={','.join(_r_groups)}", flush=True)
                 body = json.dumps(
                     {
@@ -1090,7 +1098,7 @@ class Handler(BaseHTTPRequestHandler):
                 # 阻断条先于应答落盘（告警巡检消费即见）；record 永不抛（shadow_log 纪律）
                 shadow_log.record("pg", hit=True, score=pg_score, latency_ms=pg_ms,
                                   blocked=True, block_threshold=pg_block_threshold,
-                                  model=(payload.get("body") or {}).get("model"))
+                                  model=self._req_model(payload))
                 print(f"[injection.block] 451 score={pg_score:.3f} >= {pg_block_threshold}", flush=True)
                 body = json.dumps(
                     {
@@ -1182,7 +1190,7 @@ class Handler(BaseHTTPRequestHandler):
                         shadow_log.record("judge", hit=v["confidential"], confidence=v["confidence"],
                                           latency_ms=_ms, entities=len(v["entities"]),
                                           warned=True if warned else None,
-                                          model=((payload.get("body") or {}).get("model") if warned else None))
+                                          model=(self._req_model(payload) if warned else None))
                         print(f"[semantic.shadow] confidential={v['confidential']} entities={','.join(v['entities']) or '-'} confidence={v['confidence']:.2f}", flush=True)
                         if warned:
                             print(f"[semantic.warn] confidence={v['confidence']:.2f} >= {judge_threshold}（告警巡检消费，未拦截）", flush=True)
