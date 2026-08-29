@@ -220,8 +220,8 @@ export default function Ai4sRulesPage() {
             {selected === 'l1' && <Ai4sFormatRulesPanel onDirtyChange={dirtyRegistry.reporter('l1')} />}
             {selected === 'l2' && (
               <div className='space-y-6'>
-                <Ai4sWordlistPanel onDirtyChange={dirtyRegistry.reporter('l2.wordlist')} />
-                <Ai4sRecognizersPanel onDirtyChange={dirtyRegistry.reporter('l2.recognizers')} />
+                <Ai4sWordlistPanel onDirtyChange={dirtyRegistry.reporter('l2:wordlist')} />
+                <Ai4sRecognizersPanel onDirtyChange={dirtyRegistry.reporter('l2:recognizers')} />
               </div>
             )}
             {selected === 'l3' && <Ai4sEdmCorpusPanel onDirtyChange={dirtyRegistry.reporter('l3')} />}

@@ -115,7 +115,6 @@
   "ai4s.smartRouting.panel.tiers.title": "Model Mapping",
   "ai4s.smartRouting.panel.tiers.description": "Target models for each tier (dropdown sourced from model cards; free input allowed). The fail-open fallback model is configured in the gateway modelAliases (auto → flagship).",
   "ai4s.smartRouting.fields.enabled": "Enable smart routing",
-  "ai4s.smartRouting.fields.enabledHint": "When off, requests pass through with the original model — no classification or rewriting.",
   "ai4s.smartRouting.fields.threshold": "threshold (p_complex ≥ threshold → complex, 0~1)",
   "ai4s.smartRouting.fields.escalateConf": "escalate_conf (escalation confidence bar, 0~1)",
   "ai4s.smartRouting.fields.timeout": "timeout (classification timeout, seconds)",

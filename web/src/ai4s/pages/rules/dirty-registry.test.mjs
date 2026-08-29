@@ -27,8 +27,8 @@ test('dirty-registry: 单上报者 dirty/clean 往返', () => {
 
 test('dirty-registry: 后到上报者的 false 不覆盖先到者的 dirty（issue #69 P2-C 复现链）', () => {
   const reg = createDirtyRegistry();
-  const wordlist = reg.reporter('l2.wordlist');
-  const recognizersDialog = reg.reporter('l2.recognizers');
+  const wordlist = reg.reporter('l2:wordlist');
+  const recognizersDialog = reg.reporter('l2:recognizers');
   // 词表弄脏
   wordlist(true);
   assert.equal(reg.any(), true);
@@ -45,8 +45,8 @@ test('dirty-registry: 后到上报者的 false 不覆盖先到者的 dirty（iss
 
 test('dirty-registry: 多方 dirty 时各自独立复位', () => {
   const reg = createDirtyRegistry();
-  const a = reg.reporter('l2.wordlist');
-  const b = reg.reporter('l2.recognizers');
+  const a = reg.reporter('l2:wordlist');
+  const b = reg.reporter('l2:recognizers');
   a(true);
   b(true);
   a(false);
@@ -63,8 +63,8 @@ test('dirty-registry: 同 key 返回同一函数引用（面板 useEffect 依赖
 
 test('dirty-registry: clear 全部复位（确认丢弃后切层）', () => {
   const reg = createDirtyRegistry();
-  reg.reporter('l2.wordlist')(true);
-  reg.reporter('l2.recognizers')(true);
+  reg.reporter('l2:wordlist')(true);
+  reg.reporter('l2:recognizers')(true);
   assert.equal(reg.any(), true);
   reg.clear();
   assert.equal(reg.any(), false);

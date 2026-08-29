@@ -20,6 +20,11 @@ LOCALE_DIR="$SCRIPT_DIR"
 FRONTEND_DIR="$(dirname "$LOCALE_DIR")"
 EN_DIR="$LOCALE_DIR/en"
 ZH_DIR="$LOCALE_DIR/zh-CN"
+# ai4s 增量键补丁包（issue #12 起先例，#121 起并入本脚本扫描源）：
+# web/src/lib/i18n.ts 运行时把 ai4s/locales/{en,zh-CN}/*.json merge 覆盖进主包，
+# 不扫这里会把全部 ai4s.* 键误报为缺失
+AI4S_EN_DIR="$FRONTEND_DIR/ai4s/locales/en"
+AI4S_ZH_DIR="$FRONTEND_DIR/ai4s/locales/zh-CN"
 
 echo "=== 翻译检查脚本 ==="
 echo "前端代码目录: $FRONTEND_DIR"
@@ -46,7 +51,8 @@ find "$FRONTEND_DIR" -type f \( -name "*.tsx" -o -name "*.ts" -o -name "*.jsx" -
   sed -E "s/^['\"]//; s/['\"]$//" | \
   grep -vE '(^test-|^data-test|^spec-|\.spec\.)' | \
   grep -vE '\.(css|html|js|json|ts|tsx|svg|png|jpg|gif)$' | \
-  grep -vE '^(gpt-|claude-|gemini-|deepseek-|doubao-|llama|qwen|glm-|DeepSeek)' | \
+  grep -vE '^(gpt-|claude-|gemini-|deepseek-|doubao-|llama|qwen|glm-|DeepSeek|kimi-|mimo-|minimax-|MiniMax-)' | \
+  grep -vE '^(confidential\.xxx|secrets\.custom_token|L1\.5)$' | \
   grep -vE '^[a-z]+-[0-9]' | \
   grep -vE '(translate-|rotate-|scale-|space-|size-|bg-|text-|border-|rounded-)' | \
   grep -vE '^(modelCard\.|credentials\.|policies\.|variables\.)' | \
@@ -83,8 +89,8 @@ extract_json_keys() {
   jq -r 'keys[]' "$file" 2>/dev/null | sort -u
 }
 
-# 合并所有英文翻译文件的 key
-for en_file in "$EN_DIR"/*.json; do
+# 合并所有英文翻译文件的 key（主包 + ai4s 补丁包；en 为基准语言与运行时 merge 顺序对齐）
+for en_file in "$EN_DIR"/*.json "$AI4S_EN_DIR"/*.json; do
   if [ -f "$en_file" ]; then
     extract_json_keys "$en_file" >> "$ALL_LOCALE_KEYS_FILE"
   fi
@@ -137,8 +143,8 @@ if [ "$FIX_MODE" = true ] && [ "$UNUSED_KEYS_COUNT" -gt 0 ]; then
   while read -r key; do
     echo "  正在删除: $key"
     
-    # 在所有翻译文件中删除（扁平化格式直接使用 key 名）
-    for locale_dir in "$EN_DIR" "$ZH_DIR"; do
+    # 在所有翻译文件中删除（扁平化格式直接使用 key 名；含 ai4s 补丁包两语言目录）
+    for locale_dir in "$EN_DIR" "$ZH_DIR" "$AI4S_EN_DIR" "$AI4S_ZH_DIR"; do
       if [ -d "$locale_dir" ]; then
         for json_file in "$locale_dir"/*.json; do
           if [ -f "$json_file" ]; then
@@ -159,7 +165,7 @@ if [ "$FIX_MODE" = true ] && [ "$UNUSED_KEYS_COUNT" -gt 0 ]; then
   # 重新计算翻译文件中的 key 数量
   echo "重新扫描翻译文件..."
   > "$ALL_LOCALE_KEYS_FILE"
-  for en_file in "$EN_DIR"/*.json; do
+  for en_file in "$EN_DIR"/*.json "$AI4S_EN_DIR"/*.json; do
     if [ -f "$en_file" ]; then
       extract_json_keys "$en_file" >> "$ALL_LOCALE_KEYS_FILE"
     fi

@@ -117,7 +117,6 @@
   "ai4s.smartRouting.panel.tiers.title": "模型映射",
   "ai4s.smartRouting.panel.tiers.description": "判定结果改写的目标模型（下拉取自模型卡片，可手输）；fail-open 兜底模型在网关 modelAliases 配置（auto → 旗舰）",
   "ai4s.smartRouting.fields.enabled": "启用智能路由",
-  "ai4s.smartRouting.fields.enabledHint": "关闭后请求按原 model 直通，不做分类与改写",
   "ai4s.smartRouting.fields.threshold": "threshold（p_complex ≥ 阈值判 complex，0~1）",
   "ai4s.smartRouting.fields.escalateConf": "escalate_conf（升档强置信门槛，0~1）",
   "ai4s.smartRouting.fields.timeout": "timeout（分类超时，秒）",
