@@ -43,6 +43,10 @@ type Props<T extends string> = {
   placeholder?: string;
   /** 指定 Popover Portal 的容器元素，用于解决在 Dialog 内无法滚动的问题 */
   portalContainer?: HTMLElement | null;
+  /** 已选中值回填场景（如配置表单）：聚焦时若搜索词=已选项标签则清空搜索词，
+   * 让下拉显示全量列表（否则过滤关键字即全名，下拉只剩当前值）；
+   * 空搜索失焦时还原显示已选标签而不清空选中值（配置表单值不允许被误清） */
+  clearSearchOnFocus?: boolean;
 };
 
 export function AutoComplete<T extends string>({
@@ -55,6 +59,7 @@ export function AutoComplete<T extends string>({
   emptyMessage = 'No items.',
   placeholder = 'Search...',
   portalContainer,
+  clearSearchOnFocus,
 }: Props<T>) {
   const [open, setOpen] = useState(false);
 
@@ -82,6 +87,11 @@ export function AutoComplete<T extends string>({
     }
     // If searchValue is empty, clear the selected value
     if (searchValue === '') {
+      // clearSearchOnFocus：失焦还原显示已选标签，清空动作不落到选中值（防误清）
+      if (clearSearchOnFocus) {
+        onSearchValueChange(labels[selectedValue] ?? '');
+        return;
+      }
       onSelectedValueChange('' as T);
       return;
     }
@@ -91,6 +101,13 @@ export function AutoComplete<T extends string>({
     }
   };
 
+  /** clearSearchOnFocus：聚焦时搜索词=已选标签（回填态，非用户输入）→ 清空搜索词展开全量列表 */
+  const onInputFocus = () => {
+    if (clearSearchOnFocus && searchValue && searchValue === labels[selectedValue]) {
+      onSearchValueChange('');
+    }
+    setOpen(true);
+  };
 
   const filtered = useMemo(() => {
     if (!searchValue) return items.slice(0, MAX_DISPLAY);
@@ -127,7 +144,7 @@ export function AutoComplete<T extends string>({
               onValueChange={onSearchValueChange}
               onKeyDown={(e) => setOpen(e.key !== 'Escape')}
               onMouseDown={() => setOpen((open) => !!searchValue || !open)}
-              onFocus={() => setOpen(true)}
+              onFocus={onInputFocus}
               onBlur={onInputBlur}
             >
               <Input placeholder={placeholder} className='w-full' />
