@@ -1,332 +1,171 @@
 /**
- * 管理员「智能路由」页（issue #120，顶栏一级入口，权限 read_channels 与 shim 读级对齐）。
- * 配置卡：读 GET /dlp-admin/settings（rules/api useSettings，judge/pg/rules 段已 normalize）→
- * 只改 routing 节 → 整体 PUT（buildSettingsWithRouting 补 l1/l2/response 缺段过服务端全量严校）。
- * 表单抄 rules 页 SettingsPanel 先例：受控草稿 edited??data、null=无改动=保存 disabled、
- * formError 行内红字、保存 toast 热生效；routing 节缺席=关态合法，normalizeRouting 补默认。
- * 两档模型映射 combobox（ModelCombobox）：下拉拉 axonhub /models 卡片（useQueryAllModels），
- * 允许手输；保存前 validateRouting 预检 + 服务端白名单兜底。
- * 决策日志卡：GET /dlp-admin/shadow-verdicts?layer=router&n=50 只读表格
- * （时间/档位/p_complex/原因/改写目标/延迟/会话），手动刷新不轮询。
+ * 管理员「智能路由」页（issue #120；本轮按脱敏规则页版式重构：顶部决策路由图 + 左侧标签导航）。
+ * 布局：顶部决策路由图（节点状态=真实 settings，链路与 shim route_resolve 决策流同序，
+ * 点击节点=选中对应标签）→ master-detail（左阶段导航 + 右配置面板）；决策日志为标签项不再首页直出。
+ * 总开关 enabled 在标题行即改即存（独占该键，先例：rules/panels/LayerSwitch）；
+ * 四配置面板各持自己负责的键（useRoutingDraft patch 语义，键集互不相交互不覆盖），
+ * 保存整体 PUT 热生效；离开有未保存修改的面板时 confirm 提示（rules 页 dirty-registry 先例）。
  */
 import { useMemo, useState } from 'react';
-import { format } from 'date-fns';
+import { IconArrowsShuffle } from '@tabler/icons-react';
 import { useTranslation } from 'react-i18next';
-import { IconArrowsShuffle, IconLoader2, IconRefresh } from '@tabler/icons-react';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Input } from '@/components/ui/input';
+import { cn } from '@/lib/utils';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Textarea } from '@/components/ui/textarea';
 import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
-import { useQueryAllModels } from '@/features/models/data/models';
-import { useSettings, type RoutingSettings } from '../rules/api';
-import { Ai4sSettingsQueryState } from '../rules/panels/QueryState';
-import {
-  buildSettingsWithRouting,
-  normalizeRouting,
-  usePutRoutingSettings,
-  useRouterVerdicts,
-  type RouterVerdict,
-} from './api';
-import { ModelCombobox } from './ModelCombobox';
-import { validateRouting } from './validation';
-
-/** 决策行（router 层五决策字段非 None 才写，读侧全部可选；error 条=分类失败 fail-open） */
-function VerdictRow({ r }: { r: RouterVerdict }) {
-  return (
-    <TableRow>
-      <TableCell className='whitespace-nowrap text-muted-foreground'>
-        {typeof r.ts === 'number' ? format(new Date(r.ts * 1000), 'MM-dd HH:mm:ss') : '—'}
-      </TableCell>
-      <TableCell>
-        {r.tier ? <Badge variant={r.tier === 'complex' ? 'default' : 'secondary'}>{r.tier}</Badge> : '—'}
-      </TableCell>
-      <TableCell className='font-mono text-xs'>
-        {typeof r.p_complex === 'number' ? r.p_complex.toFixed(3) : '—'}
-      </TableCell>
-      <TableCell className='max-w-56'>
-        <span className={r.error ? 'text-destructive' : 'text-muted-foreground'} title={r.error ?? undefined}>
-          {r.reason ?? '—'}
-          {r.error ? `（${r.error}）` : ''}
-        </span>
-      </TableCell>
-      <TableCell className='max-w-56 truncate font-mono text-xs' title={r.resolved_model ?? undefined}>
-        {r.resolved_model ?? '—'}
-      </TableCell>
-      <TableCell className='whitespace-nowrap text-muted-foreground'>
-        {typeof r.latency_ms === 'number' ? `${Math.round(r.latency_ms)} ms` : '—'}
-      </TableCell>
-      <TableCell>{r.session ? <Badge variant='outline'>✓</Badge> : '—'}</TableCell>
-    </TableRow>
-  );
-}
+import { Ai4sNodeBadges } from '../rules/PipelineBar';
+import { useSettings } from '../rules/api';
+import { createDirtyRegistry } from '../rules/dirty-registry';
+import type { StatusBadge } from '../rules/layers';
+import { Ai4sRoutingPipelineBar, type RoutingStageNodeView } from './RoutingPipelineBar';
+import { buildSettingsWithRouting, normalizeRouting, usePutRoutingSettings } from './api';
+import { Ai4sRoutingClassifyPanel } from './panels/ClassifyPanel';
+import { Ai4sRoutingDecisionPanel } from './panels/DecisionPanel';
+import { Ai4sRoutingLogPanel } from './panels/LogPanel';
+import { Ai4sRoutingSessionPanel } from './panels/SessionPanel';
+import { Ai4sRoutingTiersPanel } from './panels/TiersPanel';
+import { ROUTER_EXTRA_NAV, ROUTER_STAGES, routingEnabledState, type SmartRoutingNavKey, type StageKey } from './stages';
 
 export default function Ai4sSmartRoutingPage() {
   const { t } = useTranslation();
   const settings = useSettings();
   const putSettings = usePutRoutingSettings();
-  const verdicts = useRouterVerdicts();
-  const models = useQueryAllModels({});
-  const [edited, setEdited] = useState<RoutingSettings | null>(null);
-  const [formError, setFormError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<SmartRoutingNavKey>('classify');
+  const dirtyRegistry = useMemo(createDirtyRegistry, []);
 
-  const dirty = edited !== null;
-  // routing 缺席=关态合法（shim #117）：草稿基线经 normalizeRouting 补默认，十键齐全
-  const routing = edited ?? (settings.data ? normalizeRouting(settings.data.routing) : null);
+  const enabled = routingEnabledState(settings.data ?? null, settings.isError);
+  // routing 缺席=关态合法（shim #117）：展示基线经 normalizeRouting 补默认（仅展示/徽标用，不落盘）
+  const routing = settings.data ? normalizeRouting(settings.data.routing) : null;
 
-  // combobox 建议=axonhub /models 卡片（modelID 去重排序）；加载失败/为空不挡手输
-  const modelOptions = useMemo(() => {
-    const ids = [...new Set((models.data?.edges ?? []).map((e) => e.node.modelID))].sort();
-    return ids.map((id) => ({ value: id, label: id }));
-  }, [models.data]);
-
-  const mutate = (next: RoutingSettings) => {
-    setFormError(null);
-    setEdited(next);
+  /** 总开关即改即存：独占 enabled 键，与面板草稿键集不相交（不覆盖未保存编辑） */
+  const toggleEnabled = (c: boolean) => {
+    if (!settings.data) return;
+    putSettings.mutate(buildSettingsWithRouting(settings.data, { ...normalizeRouting(settings.data.routing), enabled: c }));
   };
 
-  const save = () => {
-    if (!settings.data || !routing) return;
-    // 客户端预检（与服务端权威校验同款规则）；失败原因行内展示，不发请求
-    const invalid = validateRouting(routing);
-    if (invalid) return setFormError(invalid);
-    putSettings.mutate(buildSettingsWithRouting(settings.data, routing), { onSuccess: () => setEdited(null) });
+  // 节点徽标：启用/已关闭/未知（settings 查询失败不臆造）；关态只显示「已关闭」（阶段参数无意义）
+  const stageBadges = (key: StageKey): StatusBadge[] => {
+    if (enabled === null) return [{ label: t('ai4s.smartRouting.badge.unknown'), variant: 'outline' }];
+    const onOff: StatusBadge = enabled
+      ? { label: t('ai4s.smartRouting.badge.on'), variant: 'default' }
+      : { label: t('ai4s.smartRouting.badge.off'), variant: 'outline' };
+    if (!enabled || !routing) return [onOff];
+    const extra: Partial<Record<StageKey, StatusBadge[]>> = {
+      session: [
+        { label: t('ai4s.smartRouting.badge.toolLock'), variant: routing.tool_loop_lock ? 'secondary' : 'outline' },
+        { label: t('ai4s.smartRouting.badge.thinkingLock'), variant: routing.thinking_lock ? 'secondary' : 'outline' },
+      ],
+      // 分类通道=judge 段模型（shim router_classify 沿用 settings judge.*）
+      classify: [{ label: settings.data?.judge.model ?? '—', variant: 'secondary' }],
+    };
+    return [onOff, ...(extra[key] ?? [])];
   };
 
-  const records = verdicts.data?.records ?? [];
+  // 节点参数摘要：settings 查询失败/加载中显示「—」（不臆造规模，rules 页先例）
+  const stageCount = (key: StageKey): string => {
+    if (!routing) return '—';
+    switch (key) {
+      case 'session':
+        return t('ai4s.smartRouting.stage.session.count', { ttl: routing.session_ttl });
+      case 'classify':
+        return t('ai4s.smartRouting.stage.classify.count', {
+          timeout: routing.timeout,
+          conc: routing.max_concurrency,
+        });
+      case 'decision':
+        return t('ai4s.smartRouting.stage.decision.count', {
+          thr: routing.threshold,
+          esc: routing.escalate_conf,
+        });
+      case 'tiers':
+        return t('ai4s.smartRouting.stage.tiers.count', {
+          simple: routing.tiers.simple,
+          complex: routing.tiers.complex,
+        });
+    }
+  };
+
+  const nodes: RoutingStageNodeView[] = ROUTER_STAGES.map((s) => ({
+    key: s.key,
+    name: t(s.labelKey),
+    badges: stageBadges(s.key),
+    count: stageCount(s.key),
+  }));
+
+  /** 切换选中标签（管线点击与左导航联动同一 state）；任一上报方有未保存修改先 confirm */
+  const handleSelect = (key: SmartRoutingNavKey) => {
+    if (key !== selected && dirtyRegistry.any()) {
+      if (!window.confirm(t('ai4s.dirtyConfirm'))) return;
+    }
+    dirtyRegistry.clear();
+    setSelected(key);
+  };
+
+  // 左导航徽标（rules 页 #39 先例：只给已关闭的层显示徽标；查询失败/未知不臆造）
+  const navBadges = (key: SmartRoutingNavKey): StatusBadge[] => {
+    if (key === 'log' || enabled !== false) return [];
+    return [{ label: t('ai4s.smartRouting.badge.off'), variant: 'outline' }];
+  };
 
   return (
     <>
       <Header />
       <Main>
-        <div className='mb-6'>
-          <h2 className='flex items-center gap-2 text-xl font-semibold tracking-tight'>
-            <IconArrowsShuffle className='size-5' />
-            {t('ai4s.smartRouting.title')}
-          </h2>
-          <p className='text-sm text-muted-foreground'>{t('ai4s.smartRouting.subtitle')}</p>
+        <div className='mb-6 flex items-start justify-between gap-4'>
+          <div>
+            <h2 className='flex items-center gap-2 text-xl font-semibold tracking-tight'>
+              <IconArrowsShuffle className='size-5' />
+              {t('ai4s.smartRouting.title')}
+            </h2>
+            <p className='text-muted-foreground text-sm'>{t('ai4s.smartRouting.subtitle')}</p>
+          </div>
+          <div className='flex shrink-0 items-center gap-2'>
+            <Label htmlFor='smart-routing-enabled'>{t('ai4s.smartRouting.fields.enabled')}</Label>
+            <Switch
+              id='smart-routing-enabled'
+              checked={enabled ?? false}
+              disabled={!settings.data || putSettings.isPending}
+              onCheckedChange={toggleEnabled}
+            />
+          </div>
         </div>
 
-        <div className='space-y-6'>
-          {/* ---- 路由配置（settings.json routing 节） ---- */}
-          <Card>
-            <CardHeader>
-              <CardTitle>{t('ai4s.smartRouting.config.title')}</CardTitle>
-              <CardDescription>{t('ai4s.smartRouting.config.description')}</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Ai4sSettingsQueryState isLoading={settings.isLoading} error={settings.error}>
-                {routing && (
-                  <div className='space-y-8'>
-                    <section className='space-y-4'>
-                      <div className='flex items-center justify-between gap-4'>
-                        <div>
-                          <div className='font-medium'>{t('ai4s.smartRouting.fields.enabled')}</div>
-                          <div className='text-sm text-muted-foreground'>
-                            {t('ai4s.smartRouting.fields.enabledHint')}
-                          </div>
-                        </div>
-                        <Switch
-                          checked={routing.enabled}
-                          onCheckedChange={(c) => mutate({ ...routing, enabled: c })}
-                        />
-                      </div>
-                    </section>
+        <Ai4sRoutingPipelineBar
+          nodes={nodes}
+          selected={selected}
+          onSelect={(k) => handleSelect(k as SmartRoutingNavKey)}
+          requestLabel={t('ai4s.smartRouting.pipeline.request')}
+          upstreamLabel={t('ai4s.smartRouting.pipeline.upstream')}
+          failOpenNote={t('ai4s.smartRouting.pipeline.failOpen')}
+        />
 
-                    <section className='grid grid-cols-2 gap-4 md:grid-cols-3'>
-                      <div className='space-y-1.5'>
-                        <Label>{t('ai4s.smartRouting.fields.threshold')}</Label>
-                        <Input
-                          type='number'
-                          step='0.05'
-                          min='0'
-                          max='1'
-                          value={routing.threshold}
-                          onChange={(e) => mutate({ ...routing, threshold: Number(e.target.value) })}
-                        />
-                      </div>
-                      <div className='space-y-1.5'>
-                        <Label>{t('ai4s.smartRouting.fields.escalateConf')}</Label>
-                        <Input
-                          type='number'
-                          step='0.05'
-                          min='0'
-                          max='1'
-                          value={routing.escalate_conf}
-                          onChange={(e) => mutate({ ...routing, escalate_conf: Number(e.target.value) })}
-                        />
-                      </div>
-                      <div className='space-y-1.5'>
-                        <Label>{t('ai4s.smartRouting.fields.timeout')}</Label>
-                        <Input
-                          type='number'
-                          min='0'
-                          step='0.5'
-                          value={routing.timeout}
-                          onChange={(e) => mutate({ ...routing, timeout: Number(e.target.value) })}
-                        />
-                      </div>
-                      <div className='space-y-1.5'>
-                        <Label>{t('ai4s.smartRouting.fields.maxConcurrency')}</Label>
-                        <Input
-                          type='number'
-                          min='1'
-                          step='1'
-                          value={routing.max_concurrency}
-                          onChange={(e) => mutate({ ...routing, max_concurrency: Number(e.target.value) })}
-                        />
-                      </div>
-                      <div className='space-y-1.5'>
-                        <Label>{t('ai4s.smartRouting.fields.sessionTtl')}</Label>
-                        <Input
-                          type='number'
-                          min='1'
-                          step='1'
-                          value={routing.session_ttl}
-                          onChange={(e) => mutate({ ...routing, session_ttl: Number(e.target.value) })}
-                        />
-                      </div>
-                    </section>
-
-                    <section className='grid grid-cols-1 gap-4 md:grid-cols-2'>
-                      <div className='space-y-1.5'>
-                        <Label>{t('ai4s.smartRouting.fields.tierSimple')}</Label>
-                        <ModelCombobox
-                          value={routing.tiers.simple}
-                          onChange={(v) => mutate({ ...routing, tiers: { ...routing.tiers, simple: v } })}
-                          modelOptions={modelOptions}
-                          isLoading={models.isLoading}
-                          placeholder={t('ai4s.smartRouting.fields.modelPlaceholder')}
-                          emptyText={t('ai4s.smartRouting.fields.modelListEmpty')}
-                        />
-                      </div>
-                      <div className='space-y-1.5'>
-                        <Label>{t('ai4s.smartRouting.fields.tierComplex')}</Label>
-                        <ModelCombobox
-                          value={routing.tiers.complex}
-                          onChange={(v) => mutate({ ...routing, tiers: { ...routing.tiers, complex: v } })}
-                          modelOptions={modelOptions}
-                          isLoading={models.isLoading}
-                          placeholder={t('ai4s.smartRouting.fields.modelPlaceholder')}
-                          emptyText={t('ai4s.smartRouting.fields.modelListEmpty')}
-                        />
-                      </div>
-                    </section>
-
-                    <section className='space-y-4'>
-                      <div className='flex items-center justify-between gap-4'>
-                        <div>
-                          <div className='font-medium'>{t('ai4s.smartRouting.fields.toolLoopLock')}</div>
-                          <div className='text-sm text-muted-foreground'>
-                            {t('ai4s.smartRouting.fields.toolLoopLockHint')}
-                          </div>
-                        </div>
-                        <Switch
-                          checked={routing.tool_loop_lock}
-                          onCheckedChange={(c) => mutate({ ...routing, tool_loop_lock: c })}
-                        />
-                      </div>
-                      <div className='flex items-center justify-between gap-4'>
-                        <div>
-                          <div className='font-medium'>{t('ai4s.smartRouting.fields.thinkingLock')}</div>
-                          <div className='text-sm text-muted-foreground'>
-                            {t('ai4s.smartRouting.fields.thinkingLockHint')}
-                          </div>
-                        </div>
-                        <Switch
-                          checked={routing.thinking_lock}
-                          onCheckedChange={(c) => mutate({ ...routing, thinking_lock: c })}
-                        />
-                      </div>
-                    </section>
-
-                    <section className='space-y-1.5'>
-                      <Label>{t('ai4s.smartRouting.fields.prompt')}</Label>
-                      <Textarea
-                        rows={7}
-                        className='font-mono text-xs'
-                        value={routing.prompt}
-                        onChange={(e) => mutate({ ...routing, prompt: e.target.value })}
-                      />
-                    </section>
-
-                    <div className='flex items-center justify-end gap-3'>
-                      {formError && <span className='text-sm text-destructive'>{formError}</span>}
-                      {dirty && !formError && (
-                        <span className='text-sm text-amber-600'>{t('ai4s.smartRouting.unsaved')}</span>
-                      )}
-                      <Button onClick={save} disabled={!dirty || putSettings.isPending}>
-                        {putSettings.isPending && <IconLoader2 className='animate-spin' />}
-                        {t('ai4s.smartRouting.save')}
-                      </Button>
-                    </div>
-                  </div>
-                )}
-              </Ai4sSettingsQueryState>
-            </CardContent>
-          </Card>
-
-          {/* ---- 决策日志（shadow-verdicts 出口首个前端消费；手动刷新不轮询） ---- */}
-          <Card>
-            <CardHeader>
-              <div className='flex items-center justify-between gap-4'>
-                <div>
-                  <CardTitle>{t('ai4s.smartRouting.log.title')}</CardTitle>
-                  <CardDescription>{t('ai4s.smartRouting.log.description')}</CardDescription>
-                </div>
-                <Button
-                  variant='outline'
-                  size='sm'
-                  disabled={verdicts.isFetching}
-                  onClick={() => verdicts.refetch()}
+        <div className='mb-6 flex flex-col gap-6 md:flex-row'>
+          <aside className='shrink-0 md:w-60'>
+            <nav className='space-y-1'>
+              {[...ROUTER_STAGES, ...ROUTER_EXTRA_NAV].map((s) => (
+                <button
+                  key={s.key}
+                  type='button'
+                  onClick={() => handleSelect(s.key)}
+                  className={cn(
+                    'flex w-full items-center justify-between gap-2 rounded-md px-3 py-2 text-left text-sm transition-colors',
+                    s.key === selected ? 'bg-primary text-primary-foreground' : 'hover:bg-accent'
+                  )}
                 >
-                  <IconRefresh className={verdicts.isFetching ? 'animate-spin' : undefined} />
-                  {t('ai4s.smartRouting.log.refresh')}
-                </Button>
-              </div>
-            </CardHeader>
-            <CardContent>
-              {verdicts.isLoading ? (
-                <p className='py-6 text-center text-sm text-muted-foreground'>{t('common.loading')}</p>
-              ) : verdicts.isError ? (
-                <Alert variant='destructive'>
-                  <AlertTitle>{t('ai4s.smartRouting.log.loadError')}</AlertTitle>
-                  <AlertDescription>
-                    {verdicts.error instanceof Error ? verdicts.error.message : String(verdicts.error)}
-                  </AlertDescription>
-                </Alert>
-              ) : records.length === 0 ? (
-                <p className='py-6 text-center text-sm text-muted-foreground'>
-                  {t('ai4s.smartRouting.log.empty')}
-                </p>
-              ) : (
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>{t('ai4s.smartRouting.log.columns.time')}</TableHead>
-                      <TableHead>{t('ai4s.smartRouting.log.columns.tier')}</TableHead>
-                      <TableHead>{t('ai4s.smartRouting.log.columns.pComplex')}</TableHead>
-                      <TableHead>{t('ai4s.smartRouting.log.columns.reason')}</TableHead>
-                      <TableHead>{t('ai4s.smartRouting.log.columns.resolvedModel')}</TableHead>
-                      <TableHead>{t('ai4s.smartRouting.log.columns.latency')}</TableHead>
-                      <TableHead>{t('ai4s.smartRouting.log.columns.session')}</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {records.map((r, i) => (
-                      <VerdictRow key={`${r.ts}-${i}`} r={r} />
-                    ))}
-                  </TableBody>
-                </Table>
-              )}
-            </CardContent>
-          </Card>
+                  <span className='font-medium'>{t(s.labelKey)}</span>
+                  <Ai4sNodeBadges badges={navBadges(s.key)} />
+                </button>
+              ))}
+            </nav>
+          </aside>
+          <div className='min-w-0 flex-1'>
+            {selected === 'session' && <Ai4sRoutingSessionPanel onDirtyChange={dirtyRegistry.reporter('session')} />}
+            {selected === 'classify' && <Ai4sRoutingClassifyPanel onDirtyChange={dirtyRegistry.reporter('classify')} />}
+            {selected === 'decision' && <Ai4sRoutingDecisionPanel onDirtyChange={dirtyRegistry.reporter('decision')} />}
+            {selected === 'tiers' && <Ai4sRoutingTiersPanel onDirtyChange={dirtyRegistry.reporter('tiers')} />}
+            {selected === 'log' && <Ai4sRoutingLogPanel />}
+          </div>
         </div>
       </Main>
     </>
