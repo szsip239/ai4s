@@ -37,12 +37,12 @@
   --border: #e7e5e4; /* stone-200 */
   --input: #e7e5e4;
   --ring: #c2410c;
-  --chart-1: #c2410c;
-  --chart-2: rgb(194 65 12 / 0.55);
-  --chart-3: rgb(194 65 12 / 0.3);
-  --chart-4: #a8a29e;
-  --chart-5: #d6d3d1;
-  --chart-6: #e7e5e4;
+  --chart-1: #c2410c; /* terracotta，品牌锚色 */
+  --chart-2: #0f766e; /* teal-700 */
+  --chart-3: #1d4ed8; /* blue-700 */
+  --chart-4: #4d7c0f; /* lime-700（橄榄） */
+  --chart-5: #be123c; /* rose-700 */
+  --chart-6: #6d28d9; /* violet-700 */
 
   --sidebar: #ffffff;
   --sidebar-foreground: #1c1917;
@@ -91,12 +91,12 @@
   --border: rgb(245 241 236 / 0.1);
   --input: rgb(245 241 236 / 0.1);
   --ring: #ea580c;
-  --chart-1: #ea580c;
-  --chart-2: rgb(234 88 12 / 0.55);
-  --chart-3: rgb(234 88 12 / 0.3);
-  --chart-4: #8b8680;
-  --chart-5: #57504a;
-  --chart-6: #3a332e;
+  --chart-1: #ea580c; /* terracotta 暗场锚色 */
+  --chart-2: #2dd4bf; /* teal-400 */
+  --chart-3: #60a5fa; /* blue-400 */
+  --chart-4: #a3e635; /* lime-400 */
+  --chart-5: #fb7185; /* rose-400 */
+  --chart-6: #a78bfa; /* violet-400 */
 
   --sidebar: #201b18;
   --sidebar-foreground: #f5f1ec;
