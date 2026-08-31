@@ -42,9 +42,10 @@ cd ../shim && python3 -m venv .venv && .venv/bin/pip install -r requirements-dev
 - SSO（issue #14 已上线）：员工在 http://localhost:3000/sign-in 点"Casdoor SSO（飞书）"登录，JIT 自动建号。axonhub 无 JIT 默认项目机制；**issue #73 起 shim 巡检线程 30s 级自动把新员工补进 Default 项目**（`auto_assign_project`，入项发飞书群通知），手工兜底 `./scripts/assign-default-project.sh`（幂等）。
 - **公网访问（2026-08-22 起，替代 tailnet serve）**：宿主 `local-edge-nginx` 发布两条 example.com HTTPS 入口（模板 `sibling-project/.deploy/nginx-consolidation/local/templates/ai4s.conf.template`；iKuai dnat id=22/23 对齐 18999 模式）：
   - console+API：`https://example.com:8445`（→ host.docker.internal:3000；本机 localhost:3000 入口不受影响）
+  - **子域规范入口（2026-08-31 起）**：`https://ai4s.example.com:8445`（同 upstream，SNI 分流，独立 DV 证书 2026-11-29 到期）。起因：与 sibling-project(:13100) 同 host 不同端口跑两个 PWA，Android intent-filter 按 host 匹配不认端口、WebAPK 互相抢链接；独立子域后隔离。DNS 为 CNAME→example.com（跟随主域 DDNS）。SSO 规范名已切子域：`axonhub/config.yml` public_url/redirect_url=ai4s.example.com:8445；casdoor `ai4s` 应用 redirect_uris 三轨（localhost/主域/子域）。主域入口保留兼容，新登录统一回子域。
   - Casdoor：`https://example.com:8444`（→ host.docker.internal:8000）
   - tailnet serve 8444/8445 已取消（8443/9443 属其他服务，保留）。
-  - SSO 规范名：`axonhub/config.yml` 的 public_url/redirect_url=example.com:8445、issuer_url=example.com:8444，`casdoor/app.conf` origin=example.com:8444（issuer 与 origin 必须一致）。
+  - SSO 规范名：`axonhub/config.yml` 的 public_url/redirect_url=ai4s.example.com:8445、issuer_url=example.com:8444，`casdoor/app.conf` origin=example.com:8444（issuer 与 origin 必须一致）。
   - **前置依赖（飞书后台手工项）**：飞书开放平台应用（cli_xxxxxxxxxxxxxxxx）→ 安全设置 → 重定向 URL 须含 `https://example.com:8444/callback`，否则 SSO 最后一步报错误码 20029。
   - Casdoor 应用的 `redirect_uris` 追加项（含 :8445 回调）是运行时 DB 配置，`casdoor_data` volume 重建后需经 `/api/update-application` 重设（同上方 display_name 的恢复套路）。
   - **issuer 变更需迁移身份链接**（2026-08-22 已从 ts.net issuer 迁移到 example.com）：axonhub `oidc_identities` 按 (issuer, subject) 匹配既有用户；issuer 换名后旧链接失配，JIT 会撞邮箱唯一约束（`user_email_deleted_at` 23505）。恢复套路：`UPDATE oidc_identities SET issuer='<新 issuer>' WHERE subject='<sub>';`。
