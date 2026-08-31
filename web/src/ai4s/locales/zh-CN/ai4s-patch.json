@@ -84,6 +84,8 @@
   "ai4s.topnav.myKeys": "Key 管理",
   "ai4s.topnav.promptProtectionRules": "脱敏规则",
   "ai4s.topnav.system": "系统设置",
+  "ai4s.topnav.openMenu": "打开导航菜单",
+  "ai4s.topnav.menuTitle": "导航",
   "sidebar.items.myKeys": "我的 Key",
   "sidebar.items.keyRequests": "Key 审批",
   "sidebar.items.smartRouting": "智能路由",

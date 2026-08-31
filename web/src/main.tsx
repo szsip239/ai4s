@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import ReactDOM from 'react-dom/client';
 import { QueryCache, QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RouterProvider, createRouter } from '@tanstack/react-router';
+import { registerSW } from 'virtual:pwa-register';
 import { toast } from 'sonner';
 import { useAuthStore } from '@/stores/authStore';
 import { handleServerError } from '@/utils/handle-server-error';
@@ -14,6 +15,11 @@ import './lib/i18n';
 import i18n from './lib/i18n';
 // Generated Routes
 import { routeTree } from './routeTree.gen';
+
+// PWA：autoUpdate 模式，新 SW 就绪即自动激活刷新缓存
+if (import.meta.env.PROD) {
+  registerSW({ immediate: true });
+}
 
 
 const queryClient = new QueryClient({

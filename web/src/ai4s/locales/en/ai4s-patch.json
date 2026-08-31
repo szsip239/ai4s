@@ -82,6 +82,8 @@
   "ai4s.topnav.myKeys": "Key Management",
   "ai4s.topnav.promptProtectionRules": "Prompt Protection",
   "ai4s.topnav.system": "System Settings",
+  "ai4s.topnav.openMenu": "Open navigation menu",
+  "ai4s.topnav.menuTitle": "Navigation",
   "sidebar.items.myKeys": "My Keys",
   "sidebar.items.keyRequests": "Key Approvals",
   "sidebar.items.smartRouting": "Smart Routing",

@@ -4,6 +4,7 @@ import react from '@vitejs/plugin-react-swc';
 // import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite';
 import tanstackRouter from '@tanstack/router-plugin/vite';
+import { VitePWA } from 'vite-plugin-pwa';
 
 // https://vite.dev/config/
 export default defineConfig({
@@ -20,6 +21,33 @@ export default defineConfig({
     //   },
     // }),
     tailwindcss(),
+    // PWA：manifest 手写于 public/manifest.webmanifest；SW 仅做静态资源预缓存 + SPA 离线壳，
+    // API（/admin /v1 /self /dlp-admin /oauth）一律走网络，不做缓存——管理后台数据必须实时。
+    VitePWA({
+      registerType: 'autoUpdate',
+      manifest: false,
+      includeAssets: ['favicon.ico', 'logo.svg', 'manifest.webmanifest'],
+      workbox: {
+        navigateFallback: '/index.html',
+        navigateFallbackDenylist: [/^\/(admin|v1|self|dlp-admin|oauth)\//],
+        globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
+        maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
+        runtimeCaching: [
+          {
+            urlPattern: /\/(admin|v1|self|dlp-admin|oauth)\//,
+            handler: 'NetworkOnly',
+          },
+          {
+            urlPattern: /^https:\/\/fonts\.(googleapis|gstatic)\.com\//,
+            handler: 'CacheFirst',
+            options: {
+              cacheName: 'google-fonts',
+              expiration: { maxEntries: 20, maxAgeSeconds: 60 * 60 * 24 * 365 },
+            },
+          },
+        ],
+      },
+    }),
   ],
   resolve: {
     alias: {

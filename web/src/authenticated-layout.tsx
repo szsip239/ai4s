@@ -25,7 +25,7 @@ export function AuthenticatedLayout({ children }: Props) {
       <Ai4sTopNavBar />
       <div className='flex flex-1 overflow-hidden'>
         <SkipToMain />
-        <div id='content' className='flex min-h-0 min-w-0 flex-1 flex-col overflow-auto pt-[100px]'>
+        <div id='content' className='flex min-h-0 min-w-0 flex-1 flex-col overflow-auto pt-14 md:pt-[100px]'>
           <OnboardingProvider>{children ? children : <Outlet />}</OnboardingProvider>
         </div>
       </div>

@@ -1,0 +1,20 @@
+{
+  "name": "Ai-4S-infra",
+  "short_name": "Ai-4S",
+  "description": "Ai-4S-infra — enterprise AI infrastructure: unified LLM gateway with built-in DLP security, smart routing, and fast access to mainstream models.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#ffffff",
+  "theme_color": "#c2410c",
+  "lang": "zh-CN",
+  "categories": ["business", "productivity", "developer"],
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-maskable-192.png", "sizes": "192x192", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

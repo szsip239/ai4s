@@ -13,6 +13,7 @@ import { checkProviderQuotas } from '@/features/system/data/quotas';
 import { useBrandSettings } from '@/features/system/data/system';
 import { ProjectSwitcher } from './project-switcher';
 import { Ai4sUserMenu } from '@/ai4s/components/Ai4sUserMenu';
+import { Ai4sMobileNav } from '@/ai4s/layout/Ai4sMobileNav';
 import { toast } from 'sonner';
 
 export function AppHeader() {
@@ -47,8 +48,11 @@ export function AppHeader() {
     <header className='bg-background/95 supports-[backdrop-filter]:bg-background/60 fixed top-0 z-50 w-full backdrop-blur'>
       <div className='flex h-14 items-center justify-between'>
         {/* Logo + Project Switcher - 左侧对齐 */}
-        <div className='flex items-center gap-2 pl-6'>
+        <div className='flex items-center gap-2 pl-3 md:pl-6'>
           {/* 挂载点 M5：侧边栏移除后 SidebarTrigger 为死按钮，已删除（issue #11） */}
+
+          {/* 移动端汉堡菜单（PWA/手机端适配）：<md 时展开导航抽屉，桌面端隐藏 */}
+          <Ai4sMobileNav />
 
           {/* Logo */}
           <div className='flex items-center gap-2'>
@@ -68,22 +72,26 @@ export function AppHeader() {
                 <img src='/logo.svg' alt='Default Logo' width={24} height={24} className='size-8 object-cover' />
               )}
             </div>
-            <span className='text-sm leading-none font-semibold'>{displayName}</span>
+            <span className='hidden text-sm leading-none font-semibold sm:inline'>{displayName}</span>
           </div>
 
           {/* Separator */}
-          <div className='bg-border mx-0.5 h-3.5 w-px' />
+          <div className='bg-border mx-0.5 hidden h-3.5 w-px sm:block' />
 
-          {/* Project Switcher */}
-          <ProjectSwitcher />
+          {/* Project Switcher（项目切换是核心路径，移动端保留，限制最大宽度防挤压） */}
+          <div className='max-w-32 truncate sm:max-w-none'>
+            <ProjectSwitcher />
+          </div>
         </div>
 
         {/* 右侧控件 */}
-        <div className='flex items-center gap-2 pr-6'>
-          {/* Quota Badges - only visible to users with channel read permission */}
-          <PermissionGuard requiredSystemScope='read_channels'>
-            <QuotaBadges onRefresh={handleRefresh} isRefreshing={isRefreshing} />
-          </PermissionGuard>
+        <div className='flex items-center gap-2 pr-3 md:pr-6'>
+          {/* Quota Badges - only visible to users with channel read permission（桌面端展示，移动端让位核心路径） */}
+          {!isMobile && (
+            <PermissionGuard requiredSystemScope='read_channels'>
+              <QuotaBadges onRefresh={handleRefresh} isRefreshing={isRefreshing} />
+            </PermissionGuard>
+          )}
 
           {/* Desktop-only controls - hidden on mobile */}
           {!isMobile && (

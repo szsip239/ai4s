@@ -2,7 +2,10 @@ import * as React from 'react';
 import { cn } from '@/lib/utils';
 
 const Table = React.forwardRef<HTMLTableElement, React.HTMLAttributes<HTMLTableElement>>(({ className, ...props }, ref) => (
-  <table ref={ref} data-slot='table' className={cn('w-full caption-bottom text-sm', className)} {...props} />
+  // 包裹层让宽表在窄屏横向滚动而不是撑破布局（移动端适配；重复嵌套 overflow 无害）
+  <div data-slot='table-container' className='relative w-full overflow-x-auto'>
+    <table ref={ref} data-slot='table' className={cn('w-full caption-bottom text-sm', className)} {...props} />
+  </div>
 ));
 Table.displayName = 'Table';
 
