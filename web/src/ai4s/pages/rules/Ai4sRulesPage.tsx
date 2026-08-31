@@ -101,7 +101,17 @@ export default function Ai4sRulesPage() {
       l2: {
         key: 'l2',
         name: LAYER_LABEL.l2,
-        badges: cfgBadges(cfgEnabled((x) => x.l2?.enabled ?? true), false),
+        badges: [
+          ...cfgBadges(cfgEnabled((x) => x.l2?.enabled ?? true), false),
+          // issue #127：OPF 第二检测器徽标（子节缺席=旧文件不显示；出席按真实开关态）
+          ...(settingsDoc?.l2?.opf
+            ? [
+                settingsDoc.l2.opf.enabled
+                  ? ({ label: 'OPF 开', variant: 'default' } as StatusBadge)
+                  : ({ label: 'OPF 关', variant: 'outline' } as StatusBadge),
+              ]
+            : []),
+        ],
         count:
           wordlist.isError || recognizers.isError
             ? '—'

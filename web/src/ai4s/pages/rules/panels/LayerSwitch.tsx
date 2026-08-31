@@ -20,13 +20,11 @@ export function Ai4sLayerSwitch({
   if (!data) return null;
   const toggle = (c: boolean) => {
     // 旧 settings.json 可能缺 l1/l2/response 段（shim 侧缺段默认 true）：
-    // 合并时先按缺省 true 补齐三段再覆盖目标段，避免 PUT 出缺段文档被服务端 400
-    const doc: DlpSettings = {
-      ...data,
-      l1: section === 'l1' ? { enabled: c } : (data.l1 ?? { enabled: true }),
-      l2: section === 'l2' ? { enabled: c } : (data.l2 ?? { enabled: true }),
-      response: section === 'response' ? { enabled: c } : (data.response ?? { enabled: true }),
-    };
+    // 合并时先按缺省 true 补齐三段再覆盖目标段，避免 PUT 出缺段文档被服务端 400；
+    // 目标段展开保留既有子键（issue #127：l2.opf 子节——重建 {enabled} 会整体丢键）
+    const keep = (s: 'l1' | 'l2' | 'response') =>
+      section === s ? { ...data[s], enabled: c } : (data[s] ?? { enabled: true });
+    const doc: DlpSettings = { ...data, l1: keep('l1'), l2: keep('l2'), response: keep('response') };
     putSettings.mutate(doc);
   };
   return (

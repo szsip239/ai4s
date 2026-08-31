@@ -55,6 +55,9 @@ import shadow_log  # shadow 判定观测闭环（issue #92）：stdlib-only；ju
 import inject_rules  # 注入规则层匹配器（issue #104）：纯 stdlib 正则，import 免费（无第三方依赖）
 
 PRESIDIO_URL = os.environ.get("PRESIDIO_URL", "http://presidio:3000")
+# issue #127：privacy-filter（OPF）sidecar 地址（compose profile 默认不启动；仅存 URL，
+# 开关在 settings l2.opf / env OPF_ENABLED）
+OPF_URL = os.environ.get("OPF_URL", "http://opf:8081")
 WORDLIST_PATH = os.environ.get("WORDLIST_PATH", "/dlp/confidential-terms.json")
 PII_RECOGNIZERS_PATH = os.environ.get("PII_RECOGNIZERS_PATH", "/recognizers/pii-zh.json")
 SETTINGS_PATH = os.environ.get("SETTINGS_PATH", "/dlp/settings.json")
@@ -1112,11 +1115,114 @@ def analyze(text: str, terms: list) -> list:
     return hits
 
 
-def pii_analyze_and_mask(text: str, recs: list) -> tuple:
-    """PII 识别 + 脱敏（issue #15）：Presidio ad-hoc pattern recognizer，命中区间替换为 replacement。
-    返回 (masked_text, hit_entities)。recs 为空时原样返回。"""
-    if not recs or not text:
+# ---- privacy-filter（OPF）第二检测器（issue #127）----
+# L2 内嵌：l2 触发时 Presidio 之外追加 OPF 中文 NER，span 合并（重叠取长）后统一回替换。
+# 不进生产默认路径（#122 实测：质量 F1 0.92 但 torch CPU 延迟不可用）——开关缺省关，
+# sidecar compose profile 默认不启动，等有 GPU/Q4 机型随时启用。
+# fail-open：sidecar 不可达/超时/坏响应 = 放行 + 日志（对齐 judge/PG 纪律，不落原文）。
+# OPF 标签 → (中文实体名, 替换文本)（#122 评测语料实测全量 8 标签）
+_OPF_LABELS = {
+    "private_person": ("姓名", "【PII:姓名】"),
+    "private_phone": ("电话", "【PII:电话】"),
+    "private_email": ("邮箱", "【PII:邮箱】"),
+    "private_address": ("地址", "【PII:地址】"),
+    "private_date": ("日期", "【PII:日期】"),
+    "account_number": ("证件/账号", "【PII:证件/账号】"),
+    "private_url": ("链接", "【PII:链接】"),
+    "secret": ("密钥", "【PII:密钥】"),
+}
+
+
+def opf_config(settings: dict) -> dict | None:
+    """l2.opf 子节 → 运行配置（issue #127）。关/缺席/类型坏 → None（不启用）。
+    env 回退：OPF_ENABLED=1 仅在子节缺席时启用（settings 显式关优先，对齐
+    setting_value 三级语义）；url 键缺席回退模块级 OPF_URL（env OPF_URL/内置默认，
+    对齐 judge.base_url 的 settings>env>默认层级）。"""
+    sec = settings.get("l2")
+    opf = sec.get("opf") if isinstance(sec, dict) else None
+    if opf is None:
+        if os.environ.get("OPF_ENABLED") == "1":
+            return {"url": OPF_URL, "timeout": 8.0, "max_chars": 4000}
+        return None
+    if not isinstance(opf, dict) or opf.get("enabled") is not True:
+        return None
+    timeout_ms = opf.get("timeout_ms")
+    max_chars = opf.get("max_chars")
+    url = opf.get("url")
+    return {
+        "url": url if isinstance(url, str) and url else OPF_URL,
+        "timeout": timeout_ms / 1000 if _is_positive_number(timeout_ms) else 8.0,
+        "max_chars": max_chars if isinstance(max_chars, int) and not isinstance(max_chars, bool)
+        and max_chars > 0 else 4000,
+    }
+
+
+def _is_positive_number(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0
+
+
+def opf_analyze(text: str, cfg: dict) -> list:
+    """OPF sidecar /analyze（issue #127）：返回 span 元组 [(start, end, replacement, entity)]。
+    fail-open：任何线路异常（不可达/超时/断连/坏 JSON）→ 日志 + []（放行，不拖垮 L2）。
+    max_chars 截断：超长只检前段（torch CPU 延迟随长度爆炸，#122 实测 5.1k 字 55s+）。"""
+    text = text[: cfg["max_chars"]]
+    if not text:
+        return []
+    req = urllib.request.Request(
+        cfg["url"] + "/analyze",
+        data=json.dumps({"text": text}, ensure_ascii=False).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=cfg["timeout"]) as resp:
+            data = json.load(resp)
+    except Exception as e:
+        print(f"[opf] sidecar 调用失败放行: {type(e).__name__}", flush=True)
+        return []
+    spans = []
+    for h in (data.get("spans") if isinstance(data, dict) else None) or []:
+        if not isinstance(h, dict):
+            continue
+        zh = _OPF_LABELS.get(h.get("label"))
+        if zh is None:
+            continue  # 未知标签忽略（不落原文）
+        try:
+            st, en = int(h["start"]), int(h["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (0 <= st < en <= len(text)):
+            continue
+        spans.append((st, en, zh[1], zh[0]))
+    return spans
+
+
+def merge_spans(spans: list) -> list:
+    """重叠跨度合并（issue #127，重叠取长）：长度降序贪心收不重叠者（等长取 start 早者），
+    返回 start 降序（供 apply_spans 自尾向首回替换不错位）。"""
+    kept = []
+    for sp in sorted(spans, key=lambda s: (-(s[1] - s[0]), s[0])):
+        if any(sp[0] < k[1] and sp[1] > k[0] for k in kept):
+            continue
+        kept.append(sp)
+    kept.sort(key=lambda s: s[0], reverse=True)
+    return kept
+
+
+def apply_spans(text: str, spans: list) -> tuple:
+    """按 span（start 降序）回替换；返回 (masked_text, sorted_entities)。空 spans 原样返回。"""
+    if not spans:
         return text, []
+    out = text
+    for st, en, repl, _entity in spans:
+        out = out[:st] + repl + out[en:]
+    return out, sorted({sp[3] for sp in spans})
+
+
+def presidio_pii_spans(text: str, recs: list) -> list:
+    """Presidio ad-hoc pattern recognizer PII 检测（issue #15）：返回 span 元组列表。
+    recs 为空时不调 sidecar 直接返回 []。"""
+    if not recs or not text:
+        return []
     adhoc = [
         {
             "name": r["name"],
@@ -1137,22 +1243,36 @@ def pii_analyze_and_mask(text: str, recs: list) -> tuple:
         results = json.load(resp)
     # 只认我们注入的 PII 实体的命中（内置实体噪音忽略）
     own = {r["entity"] for r in recs}
-    results = [h for h in results if h.get("entity_type") in own]
-    if not results:
-        return text, []
     repl = {r["entity"]: r.get("replacement", f"【PII:{r['entity']}】") for r in recs}
-    masked = text
-    for hit in sorted(results, key=lambda h: h.get("start", 0), reverse=True):
-        ent = hit.get("entity_type", "")
-        masked = masked[: hit["start"]] + repl.get(ent, "【PII】") + masked[hit["end"] :]
-    entities = sorted({h.get("entity_type", "") for h in results})
-    return masked, entities
+    spans = []
+    for h in results:
+        ent = h.get("entity_type", "")
+        if ent not in own:
+            continue
+        spans.append((h["start"], h["end"], repl.get(ent, "【PII】"), ent))
+    return spans
 
 
-def mask_message_contents(messages, recs):
-    """逐消息脱敏；返回 (new_messages, any_masked, entities)。"""
-    if not recs:
+def pii_analyze_and_mask(text: str, recs: list) -> tuple:
+    """PII 识别 + 脱敏（issue #15）：Presidio 单检测器版 = presidio_pii_spans + 合并回替换。
+    返回 (masked_text, hit_entities)。recs 为空时原样返回。
+    issue #127 起重叠 span 合并取长（旧版逐命中回替换，重叠时会按原偏移错位）。"""
+    return apply_spans(text, merge_spans(presidio_pii_spans(text, recs)))
+
+
+def mask_message_contents(messages, recs, opf_cfg=None):
+    """逐消息脱敏；返回 (new_messages, any_masked, entities)。
+    issue #127：opf_cfg 非 None 时同文本追加 OPF 检测（fail-open），与 Presidio span
+    合并（重叠取长）后统一回替换；recs 空但 opf_cfg 出席时仍走 OPF。"""
+    if not recs and not opf_cfg:
         return messages, False, []
+
+    def mask_text(text):
+        spans = presidio_pii_spans(text, recs)
+        if opf_cfg:
+            spans += opf_analyze(text, opf_cfg)
+        return apply_spans(text, merge_spans(spans))
+
     all_entities = set()
     any_masked = False
     out = []
@@ -1160,7 +1280,7 @@ def mask_message_contents(messages, recs):
         m2 = dict(m)
         c = m.get("content")
         if isinstance(c, str):
-            masked, ents = pii_analyze_and_mask(c, recs)
+            masked, ents = mask_text(c)
             if ents:
                 m2["content"] = masked
                 any_masked = True
@@ -1169,7 +1289,7 @@ def mask_message_contents(messages, recs):
             parts = []
             for p in c:
                 if isinstance(p, dict) and isinstance(p.get("text"), str):
-                    masked, ents = pii_analyze_and_mask(p["text"], recs)
+                    masked, ents = mask_text(p["text"])
                     if ents:
                         p = {**p, "text": masked}
                         any_masked = True
@@ -1182,12 +1302,14 @@ def mask_message_contents(messages, recs):
 
 def mask_pipeline(messages, l1_on: bool, l2_on: bool):
     """L1/L2 掩码管线（/request 掩码段原顺序，issue #93 起 judge 外发输入同口径复用）：
-    先归一化 mask（l1），无命中再走 Presidio PII mask（l2）。返回 (masked_msgs, any_masked, entities)。"""
+    先归一化 mask（l1），无命中再走 Presidio PII mask（l2）。返回 (masked_msgs, any_masked, entities)。
+    issue #127：l2 分支内嵌 OPF 第二检测器（l2.opf.enabled 开才调，fail-open）。"""
     masked_msgs, any_masked, entities = messages, False, []
     if l1_on:
         masked_msgs, any_masked, entities = norm_mask_messages(messages)
     if not any_masked and l2_on:
-        masked_msgs, any_masked, entities = mask_message_contents(messages, load_pii_recognizers())
+        masked_msgs, any_masked, entities = mask_message_contents(
+            messages, load_pii_recognizers(), opf_config(load_settings()))
     return masked_msgs, any_masked, entities
 
 

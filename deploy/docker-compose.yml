@@ -158,6 +158,10 @@ services:
       L1_ENABLED: ${L1_ENABLED:-1}
       L2_ENABLED: ${L2_ENABLED:-1}
       RESPONSE_ENABLED: ${RESPONSE_ENABLED:-1}
+      # issue #127：L2 内嵌 OPF（privacy-filter）第二检测器；生效开关以 /dlp/settings.json
+      # l2.opf.enabled 为准（默认关），env OPF_ENABLED=1 仅在 settings 无 opf 子节时回退启用
+      OPF_URL: http://opf:8081
+      OPF_ENABLED: ${OPF_ENABLED:-}
       # issue #56 告警巡检并入（原 alert-poller 容器，daemon 线程 30s 轮询，与检测路径隔离）：
       # DLP fail-open 探活 + 上游渠道/员工 key 额度（issue #17/#18）+ 提额审批同步（issue #19）；
       # SHIM_URL 探活默认进程内自调 http://localhost:8080，无需配置
@@ -192,6 +196,23 @@ services:
       - axonhub
     restart: unless-stopped
 
+  # privacy-filter（OPF）中文 PII NER sidecar（issue #127）：L2 内嵌第二检测器预接入。
+  # 不参与默认启动（#122 实测 torch CPU 延迟不可用）；需要时
+  # `docker compose --profile opf up -d opf` + PUT settings l2.opf.enabled=true（详见 README）。
+  opf:
+    build: ../opf
+    profiles: ["opf"]
+    container_name: ai4s-opf
+    environment:
+      OPF_DEVICE: ${OPF_DEVICE:-cpu}
+    volumes:
+      # 模型 checkpoint 卷（首启自动下载 ~1.5GB 至 /root/.opf/privacy_filter；persist 防重下）
+      - opf_model:/root/.opf
+    networks:
+      - ai4s
+    restart: unless-stopped
+    # 仅 shim 内部调用，不暴露宿主端口
+
   # 占位/mock 上游：仅在拿不到 OAuth 订阅凭据时验证链路可达用。
   # 不参与默认启动；需要时 `docker compose --profile mock up -d`。
   mock-upstream:
@@ -217,6 +238,7 @@ services:
 volumes:
   postgres_data:
   casdoor_data:
+  opf_model: # issue #127：OPF 模型 checkpoint 持久卷（profile=opf 才使用）
 
 networks:
   ai4s:

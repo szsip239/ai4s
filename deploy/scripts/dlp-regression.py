@@ -29,6 +29,10 @@ judge 注入 shadow 专项段（issue #105）：规则层段之后——PUT 开 
 hit=True 新条（带 attack_type 脱敏标签）→ PUT 还原（关）→ 同样本再应放行；shim 未含
 #105 区块时（PUT 400 未知字段 / 查询出口 layer=judge_inject 400）SKIP 不 fail
 （集成前预期态，对齐 #103/#101/#104 段探测纪律）。
+OPF 第二检测器专项段（issue #127）：judge 注入段之后——段内起假 OPF server
+（探针名定位回 span）→ PUT 开 l2.opf（url 指 host.docker.internal 假 server）→
+姓名样本应掩码【PII:姓名】→ PUT 还原（关）→ 同样本放行；shim 未含 #127 区块时
+（PUT 400 未知字段）SKIP 不 fail（集成前预期态，对齐各段探测纪律）。
 auto 路由专项段（issue #118）：judge 注入段之后——PUT 开 routing 节（enabled=true,
 threshold=0.5, tiers simple→deepseek-v4-flash/complex→gpt-5.6-luna, timeout=4,
 max_concurrency=2）→ model=auto 简单问题应落 tier=simple 改写条 → 复杂任务应落
@@ -54,9 +58,11 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import dlp_testkit as tk
 
@@ -592,6 +598,89 @@ def run_judge_inject_section(api_key, token):
     return results
 
 
+# ---- OPF 第二检测器专项段（issue #127）----
+# 假 sidecar 探针名：段内假 OPF server 在收到文本中定位该名并回 span——
+# 验证「settings 开 → shim 调 OPF → span 合并掩码」全链路，无需真模型
+OPF_PROBE_NAME = "欧阳回归"
+OPF_SAMPLE = f"我是{OPF_PROBE_NAME}，这份方案请帮忙润色"
+
+
+def run_opf_section(api_key, token):
+    """OPF 第二检测器专项段（issue #127，自包含）：段内起假 OPF server（收到文本中定位
+    探针名回 private_person span）→ admin PUT 开 l2.opf（url 指 host.docker.internal
+    假 server，macOS Docker Desktop 内置可解析）→ 姓名样本经网关应掩码【PII:姓名】
+    （echo 不含原名）→ PUT 还原快照（opf 关）→ 同样本放行。
+    能力探测：shim 未含 #127 区块时 PUT 400「未知字段」→ SKIP 不 fail（对齐各段纪律）。
+    自清理：finally 还原 settings 快照 + 收假 server。"""
+    print("\n==> OPF 第二检测器专项段（issue #127，假 sidecar 自包含）")
+    results = []
+
+    class _H(BaseHTTPRequestHandler):
+        def log_message(self, *args):  # 静默（对齐 shim 契约）
+            pass
+
+        def do_POST(self):
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                text = json.loads(self.rfile.read(length) or b"{}").get("text") or ""
+            except ValueError:
+                text = ""
+            i = text.find(OPF_PROBE_NAME)
+            spans = ([{"label": "private_person", "start": i, "end": i + len(OPF_PROBE_NAME),
+                       "text": OPF_PROBE_NAME}] if i >= 0 else [])
+            body = json.dumps({"spans": spans}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), _H)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        status, doc = tk._admin_api("GET", "/dlp-admin/settings", token)
+        if status != 200 or not isinstance(doc, dict):
+            results.append(("OPF: 前置（settings GET）", False, f"http{status}"))
+        else:
+            original = doc  # 还原基准（含 version/_comment 及其余各段原样）
+            opf_on = {"enabled": True, "timeout_ms": 8000, "max_chars": 4000,
+                      "url": f"http://host.docker.internal:{srv.server_address[1]}"}
+
+            def restore():
+                return tk._admin_api("PUT", "/dlp-admin/settings", token, original)
+
+            try:
+                trial = {**original, "l2": {**(original.get("l2") or {}), "opf": opf_on}}
+                status, body = tk._admin_api("PUT", "/dlp-admin/settings", token, trial)
+                if status == 400 and "未知" in str((body or {}).get("error", "")):
+                    print("[SKIP] OPF 段：shim 未含 issue #127 区块（待集成），本段跳过不 fail")
+                    return []
+                results.append(("OPF: PUT 开 l2.opf（url 指假 sidecar）", status == 200, f"http{status}"))
+                if status == 200:
+                    st, reply = tk.send(OPF_SAMPLE, api_key)
+                    got = tk.classify(st, reply, OPF_PROBE_NAME)
+                    ok = got == "mask" and "【PII:姓名】" in reply
+                    results.append(("OPF: 姓名样本应掩码【PII:姓名】", ok,
+                                    got if ok else f"{got}（echo 无掩码占位）"))
+                    status, _ = restore()
+                    results.append(("OPF: PUT 还原（opf 关）", status == 200, f"http{status}"))
+                    got = None
+                    for _attempt in range(2):  # shim 每请求重读 settings 即时生效；retry 吸收时序
+                        st, reply = tk.send(OPF_SAMPLE, api_key)
+                        got = tk.classify(st, reply, OPF_PROBE_NAME)
+                        if got == "pass":
+                            break
+                        time.sleep(1)
+                    results.append(("OPF: 还原后同样本放行", got == "pass", got))
+            finally:
+                restore()
+    finally:
+        srv.shutdown()
+    for name, ok, got in results:
+        print(f"[{'OK ' if ok else 'FAIL'}] {name}（got={got}）")
+    return results
+
+
 # ---- auto 路由专项段（issue #118）----
 # 用例样本：简单题（单步事实问答，#114 口径 p_complex≈0）与复杂题（多步推理+权衡，但
 # 限制输出长度——分类看输入难度、生成耗时看输出长度，max_tokens 封顶压住旗舰应答时间）；
@@ -895,7 +984,13 @@ def main():
     if admin_token is not None:
         judge_inject_results = run_judge_inject_section(api_key, admin_token)
 
-    # auto 路由专项段（issue #118）：紧跟 judge 注入段（同凭据与自还原纪律）；
+    # OPF 第二检测器专项段（issue #127）：紧跟 judge 注入段（同凭据与自还原纪律）；
+    # shim 未含 #127 区块时段内自探测 SKIP（不 fail）
+    opf_results = []
+    if admin_token is not None:
+        opf_results = run_opf_section(api_key, admin_token)
+
+    # auto 路由专项段（issue #118）：紧跟 OPF 段（同凭据与自还原纪律）；
     # shim 未含 #117 区块时段内自探测 SKIP（不 fail）。用例行并入主结果集
     # （layer="router"），总计样本数随之增加（56 + 本段行数）；分类走真实 judge
     # 通道（~2s/次），回归耗时上涨属预期
@@ -903,7 +998,7 @@ def main():
         results.extend(run_auto_router_section(api_key, admin_token))
 
     fails = [r for r in results if r["fail"]]
-    for name, ok, got in edm_fails + admin_results + pg_block_results + judge_warn_results + rules_results + judge_inject_results:
+    for name, ok, got in edm_fails + admin_results + pg_block_results + judge_warn_results + rules_results + judge_inject_results + opf_results:
         if not ok:
             fails.append({"name": name, "expect": "reject", "got": got})
     print(f"\n总计 {len(results)} 样本：通过 {sum(1 for r in results if r['ok'])}，文档化 gap {sum(1 for r in results if not r['ok'] and not r['fail'])}，回归失败 {len(fails)}")

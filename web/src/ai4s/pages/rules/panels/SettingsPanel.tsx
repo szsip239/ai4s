@@ -99,7 +99,10 @@ export function Ai4sSettingsPanel({ onDirtyChange }: { onDirtyChange?: (dirty: b
                   </div>
                   <Switch
                     checked={settingsDoc.l2?.enabled ?? true}
-                    onCheckedChange={(c) => mutate({ ...settingsDoc, l2: { enabled: c } })}
+                    onCheckedChange={(c) =>
+                      // 展开保留 l2.opf 子节（issue #127）：整体替换语义下重建 {enabled} 会丢 opf
+                      mutate({ ...settingsDoc, l2: { ...settingsDoc.l2, enabled: c } })
+                    }
                   />
                 </div>
               </section>

@@ -287,6 +287,13 @@ _SETTINGS_RULES_KEYS = {"enabled", "block"}
 _SETTINGS_L1_KEYS = {"enabled"}
 _SETTINGS_L2_KEYS = {"enabled"}
 _SETTINGS_RESPONSE_KEYS = {"enabled"}
+# issue #127：l2.opf 可选子节（privacy-filter 第二检测器预接入，开关缺省关）——
+# 出席才校验（缺席=运行侧缺省关，兼容旧文件/控制台 GET→PUT 往返，对齐 routing 节语义）；
+# 出席即三键齐全（防部分更新静默丢键，与必填段同精神）；
+# url 为可选增补键（缺席=运行侧 env OPF_URL/内置默认，对齐 judge.base_url 层级语义）
+_SETTINGS_L2_OPTIONAL_KEYS = {"opf"}
+_SETTINGS_OPF_KEYS = {"enabled", "timeout_ms", "max_chars"}
+_SETTINGS_OPF_OPTIONAL_KEYS = {"url"}
 # auto 智能路由（issue #117）：enabled=层开关（默认关，新层进场先关验证后再开）/
 # threshold=p_complex 判 complex 门槛（默认 0.5，#114 评测推荐默认工作点）/
 # tiers=两档→真实模型映射（simple/complex 两键必填；映射目标只选全量开放模型池，
@@ -334,12 +341,14 @@ def _validate_settings(data) -> str | None:
     allowed = {"judge": _SETTINGS_JUDGE_KEYS, "edm": _SETTINGS_EDM_KEYS, "pg": _SETTINGS_PG_KEYS,
                "rules": _SETTINGS_RULES_KEYS,
                "l1": _SETTINGS_L1_KEYS, "l2": _SETTINGS_L2_KEYS, "response": _SETTINGS_RESPONSE_KEYS}
+    # issue #127：可选子节白名单（未知键检查放行，missing 只管必填集）
+    optional = {"l2": _SETTINGS_L2_OPTIONAL_KEYS}
     for section, keys in allowed.items():
         sec = data.get(section)
         if not isinstance(sec, dict):
             return f"{section} 必须是对象"
         for k in sec:
-            if k not in keys:
+            if k not in keys | optional.get(section, set()):
                 return f"{section} 未知字段: {k}"
         missing = keys - set(sec)
         if missing:
@@ -395,6 +404,27 @@ def _validate_settings(data) -> str | None:
     for section in ("l1", "l2", "response"):  # 分层总开关（issue #40）：仅 enabled 单键
         if not isinstance(data[section]["enabled"], bool):
             return f"{section}.enabled 必须是布尔值"
+    # issue #127：l2.opf 可选子节——出席即整节校验（三键齐全 + 类型/范围）；
+    # 显式 null 不放行（对齐 routing 节评审纪律：要缺席请省略该键）
+    if "opf" in data["l2"]:
+        opf = data["l2"]["opf"]
+        if not isinstance(opf, dict):
+            return "l2.opf 必须是对象（缺席请省略该键，不接受 null）"
+        for k in opf:
+            if k not in _SETTINGS_OPF_KEYS | _SETTINGS_OPF_OPTIONAL_KEYS:
+                return f"l2.opf 未知字段: {k}"
+        missing = _SETTINGS_OPF_KEYS - set(opf)
+        if missing:
+            return f"l2.opf 缺字段: {', '.join(sorted(missing))}"
+        if not isinstance(opf["enabled"], bool):
+            return "l2.opf.enabled 必须是布尔值"
+        if not _is_number(opf["timeout_ms"]) or opf["timeout_ms"] <= 0:
+            return "l2.opf.timeout_ms 必须是 >0 数值"
+        if not isinstance(opf["max_chars"], int) or isinstance(opf["max_chars"], bool) or opf["max_chars"] < 1:
+            return "l2.opf.max_chars 必须是 ≥1 整数"
+        # url 可选增补键：出席才校验（缺席=运行侧 env OPF_URL/内置默认）
+        if "url" in opf and (not isinstance(opf["url"], str) or not opf["url"]):
+            return "l2.opf.url 必须是非空字符串"
     # issue #117：routing 为**可选节**（与上方必填段语义不同）——缺席=合法（运行侧
     # routing.enabled 缺省 false，现网零变化；不强制旧文件/控制台往返补节）；出现即
     # 整节校验：五键齐全（防部分更新静默丢键，与必填段同精神）+ 类型 + tiers 形态。

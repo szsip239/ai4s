@@ -6,12 +6,13 @@
 
 | 组件 | 镜像 | 说明 |
 |---|---|---|
-| agentgateway | `cr.agentgateway.dev/agentgateway:v1.4.1`（digest `sha256:efd79355…`） | 最新稳定版（2026-07-29 发布） |
+| agentgateway | `cr.agentgateway.dev/agentgateway:v1.5.0`（digest `sha256:bf2f339e…`） | 稳定版升级（issue #125，2026-09-01；v1.4.1→v1.5.0 评审与回归存档见 issue） |
 | axonhub | `looplj/axonhub:v1.0.0-beta6`（digest `sha256:d41f3ca1…`） | 只升稳定版（ADR-0005，2026-08-24 拍板）：beta 一律不追；重评审触发条件与 beta7 评审存档见 ADR 与 `docs/research/2026-08-24-axonhub-beta7-review.md` |
 | PostgreSQL | `postgres:16-alpine`（digest `sha256:57c72fd2…`，实为 16.14） | axonhub 官方 compose 同款主版本 |
 | casdoor | `casbin/casdoor:3.133.0` | SSO 枢纽（issue #14）：飞书 OAuth → 标准 OIDC |
 | shim | 本地构建 `../shim`（python:3.12-slim + apt tesseract-ocr/chi-sim/eng（issue #50 OCR，apt 层 +109MB）；pip pin PyMuPDF/python-docx/openpyxl/python-pptx/pytesseract/Pillow + onnxruntime/transformers/numpy（issue #67 PG 进程内推理，版本 pin 自原 promptguard 容器实测；镜像总 900MB，2026-08-19 实测）+ psycopg（issue #72 key 归属 SQL 直改，函数级懒加载）） | DLP 词表/PII 适配 + 注入规则层 `inject_rules`（issue #104：16 模式组正则 µs 级，纯 stdlib；`rules.enabled`/`rules.block` 双开关默认关，shadow 层名 `rules`，block 开=命中即 451）+ PromptGuard 2 注入检测引擎 `pg_engine`（issue #67 并入进程内，原 promptguard 容器退役；函数级懒加载，pg.enabled=false 时零加载零开销；模型卷 `./.local/promptguard-model:/models/promptguard:ro` + `HF_HUB_OFFLINE=1`）+ 飞书告警适配 `/feishu-alert`（issue #17）+ 统一配置 admin 平面 `/dlp-admin/*`（issue #31–#36）+ 告警巡检 daemon 线程（issue #56 并入原 alert-poller：fail-open 探活/渠道与 key 额度轮询/shadow 层可用率（issue #92）/审批同步 30s，与检测路径隔离；issue #19 提额 + issue #72 新建 Key 审批并存，新建通过→自动建 key 归申请人→挂体验档→私信交付明文）+ shadow 判定观测出口 `/dlp-admin/shadow-verdicts`（issue #92，judge/PG/rules/judge_inject（issue #105 judge 注入第二职责：专用注入 prompt + `judge.inject_enabled` 默认关，永不阻断不告警）判定持久化于 `alert-state/shadow-verdicts.jsonl`） |
 | mock-upstream（可选） | `python:3.12-alpine` | 仅无 OAuth 凭据时验证链路用 |
+| opf（可选，profile `opf`） | 本地构建 `../opf`（python:3.12-slim + torch CPU 轮 + openai/privacy-filter pin commit） | privacy-filter 中文 PII NER sidecar（issue #127，预接入默认关；#122 实测 torch CPU 延迟不可用故不进默认路径，GPU/Q4 机型就绪后启用） |
 
 ## 快速开始
 
@@ -35,6 +36,7 @@ cd ../shim && python3 -m venv .venv && .venv/bin/pip install -r requirements-dev
 - **settings.json 优先于 env（issue #35）**：judge/edm/pg 开关与阈值三级取值 `deploy/dlp/settings.json` > env > 内置默认，shim 每请求重读热生效；维护走 `GET/PUT /dlp-admin/settings` 或配置中心页，`.env` 的 `JUDGE_*`/`EDM_*`/`PG_*` 仅作文件缺失时的回退层。凭据（`JUDGE_API_KEY`/`FEISHU_*`）永远只走 env，禁止写入 settings.json。
 - **分层总开关（issue #40）**：settings.json 增 `l1`/`l2`/`response` 三段（单键 enabled，内置默认 true 保现网行为；env 回退层 `L1_ENABLED`/`L2_ENABLED`/`RESPONSE_ENABLED`，compose 默认透传 1）。l1 关=格式规则全族撤防（密钥拦截全敞口）且 config.yaml 标记区块联动渲染撤空；l2 关=词表/Presidio PII 整体跳过；response 关=响应侧整段放行。翻转 l1 经 `PUT /dlp-admin/settings` 自动联动渲染（失败回滚 settings 并 500）；手改 settings.json 后用 `POST /dlp-admin/format-rules/render` 兜底同步。
 - **pg.normalize（issue #44）**：settings.json `pg` 段增 `normalize` 键（布尔，必填；内置默认 false 保现网行为，env 回退 `PG_NORMALIZE`）。true=PG 打分前置归一化（base64 内联解码/零宽清除/全角转半角，只改打分输入不改转发原文）；issue #67 起为 shim 进程内单点（`pg_engine.normalize_for_scoring`），原 promptguard 服务 `/guard` 透传随 PG_URL 一并退役。shadow/fail-open 语义不变。
+- **OPF 第二检测器（issue #127，预接入默认关）**：L2 内嵌 privacy-filter 中文 NER，与 Presidio span 合并（重叠取长）统一掩码——不是新管线层，开关在 `l2.opf` 子节（`enabled`/`timeout_ms`/`max_chars`，可选 `url` 缺省 `http://opf:8081`；settings > env `OPF_ENABLED`/`OPF_URL` > 内置默认）。启用步骤：① `docker compose --profile opf up -d opf`（首启自动下载模型 ~1.5GB 至 `opf_model` 卷，torch CPU 短文本 p50 ~0.4s/长文分钟级，只适合有 GPU/Q4 机型）② `PUT /dlp-admin/settings` 置 `l2.opf.enabled=true`（规则页 L2 节点有 OPF 徽标）③ 回归验证：`scripts/dlp-regression.py` 的 OPF 段（假 sidecar 自包含，不依赖真模型）。sidecar 不可达/超时 fail-open 放行（对齐 judge/PG 纪律）。
 
 - 管理面：http://localhost:3000 （经 agentgateway 反代；宿主不再单独暴露 axonhub 调试口，issue #60），用 `.env` 中的 `AXONHUB_ADMIN_EMAIL` / `AXONHUB_ADMIN_PASSWORD` 登录（本地账号；阶段 1 切 飞书 OAuth→Casdoor→OIDC）。
 - 员工入口：`http://localhost:3000/v1`（OpenAI 兼容），唯一对员工的端口。

@@ -198,6 +198,17 @@ export interface RoutingSettings {
 export interface LayerSwitchSettings {
   enabled: boolean;
 }
+/** issue #127：L2 内嵌 OPF（privacy-filter）第二检测器可选子节（缺席=关态合法，
+ * 运行侧回退 env/内置默认；url 可选增补键，缺席=env OPF_URL/内置默认） */
+export interface OpfSettings {
+  enabled: boolean;
+  timeout_ms: number;
+  max_chars: number;
+  url?: string;
+}
+export interface L2Settings extends LayerSwitchSettings {
+  opf?: OpfSettings;
+}
 export interface DlpSettings {
   version: number;
   _comment?: string;
@@ -206,7 +217,7 @@ export interface DlpSettings {
   pg: PgSettings;
   rules: InjectRulesSettings; // issue #104：#104 前旧文件可能缺段，读侧经 normalizeInjectRules 补齐
   l1?: LayerSwitchSettings;
-  l2?: LayerSwitchSettings;
+  l2?: L2Settings;
   response?: LayerSwitchSettings;
   /** issue #117/#119：智能路由可选节（缺席=关态合法，读侧不在本页 normalize——
    * rules 页整体 PUT 原样透传；配置读写走智能路由页（issue #120）normalizeRouting 补默认） */

@@ -3419,5 +3419,339 @@ class TestShadowVerdictsRouterApi(unittest.TestCase):
         self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject", "router"})
 
 
+# ---------------------------------------------------------------------------
+# issue #127：L2 内嵌 OPF（privacy-filter）第二检测器——开关缺省关，fail-open
+# ---------------------------------------------------------------------------
+
+
+class _FakeOpf(BaseHTTPRequestHandler):
+    """假 OPF sidecar：POST /analyze {text} → {"spans": [...]}（只顶替线路边界）。"""
+
+    mode = "ok"   # ok=按 spans 应答；drop=无响应断连（模拟 sidecar 不可达）
+    spans = []    # 应答 span 列表
+    captured = {}  # 最近一次收到的请求体（验 max_chars 截断/零调用）
+
+    def log_message(self, *args):  # 静默
+        pass
+
+    def do_POST(self):
+        if self.path != "/analyze":
+            self.send_error(404)
+            return
+        length = int(self.headers.get("Content-Length") or 0)
+        _FakeOpf.captured = json.loads(self.rfile.read(length) or b"{}")
+        if _FakeOpf.mode == "drop":
+            self.connection.close()  # 无响应断连 → 客户端网络错误
+            return
+        body = json.dumps({"spans": _FakeOpf.spans}).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+class OpfConfigTest(unittest.TestCase):
+    """opf_config(settings)（issue #127）：l2.opf 子节 → 运行配置；关/缺席/坏类型 → None；
+    env OPF_ENABLED=1 仅在子节缺席时回退启用（settings 显式关优先于 env）。"""
+
+    def test_absent_or_empty_returns_none(self):
+        self.assertIsNone(shim_app.opf_config({"l2": {"enabled": True}}))
+        self.assertIsNone(shim_app.opf_config({}))
+        self.assertIsNone(shim_app.opf_config({"l2": "bad"}))
+
+    def test_disabled_returns_none(self):
+        s = {"l2": {"enabled": True, "opf": {"enabled": False, "timeout_ms": 8000, "max_chars": 4000}}}
+        self.assertIsNone(shim_app.opf_config(s))
+
+    def test_enabled_reads_values(self):
+        s = {"l2": {"enabled": True, "opf": {"enabled": True, "timeout_ms": 5000,
+                                             "max_chars": 2000, "url": "http://opf:1234"}}}
+        self.assertEqual(shim_app.opf_config(s),
+                         {"url": "http://opf:1234", "timeout": 5.0, "max_chars": 2000})
+
+    def test_bad_value_types_fall_back_to_defaults(self):
+        s = {"l2": {"enabled": True, "opf": {"enabled": True, "timeout_ms": "x",
+                                             "max_chars": -1, "url": ""}}}
+        self.assertEqual(shim_app.opf_config(s),
+                         {"url": shim_app.OPF_URL, "timeout": 8.0, "max_chars": 4000})
+
+    def test_env_fallback_only_when_section_absent(self):
+        os.environ["OPF_ENABLED"] = "1"
+        try:
+            # 子节缺席 → env 回退启用（内置默认参数，url 走模块级 OPF_URL）
+            self.assertEqual(shim_app.opf_config({}),
+                             {"url": shim_app.OPF_URL, "timeout": 8.0, "max_chars": 4000})
+            # 子节出席且显式关 → settings 优先，env 不顶替
+            s = {"l2": {"enabled": True, "opf": {"enabled": False, "timeout_ms": 8000, "max_chars": 4000}}}
+            self.assertIsNone(shim_app.opf_config(s))
+        finally:
+            del os.environ["OPF_ENABLED"]
+
+
+class OpfMergeSpansTest(unittest.TestCase):
+    """merge_spans/apply_spans 纯函数（issue #127）：重叠取长，start 降序回替换不错位。"""
+
+    def test_non_overlapping_all_kept_sorted_desc(self):
+        spans = [(0, 2, "A", "e1"), (5, 8, "B", "e2")]
+        self.assertEqual(shim_app.merge_spans(spans), [(5, 8, "B", "e2"), (0, 2, "A", "e1")])
+
+    def test_overlap_keeps_longer(self):
+        spans = [(2, 4, "短", "e1"), (2, 9, "长长长", "e2")]
+        self.assertEqual(shim_app.merge_spans(spans), [(2, 9, "长长长", "e2")])
+
+    def test_containment_keeps_outer(self):
+        spans = [(3, 5, "内", "e1"), (1, 10, "外………", "e2")]
+        self.assertEqual(shim_app.merge_spans(spans), [(1, 10, "外………", "e2")])
+
+    def test_equal_length_overlap_keeps_earlier_start(self):
+        spans = [(4, 8, "B", "e2"), (2, 6, "A", "e1")]
+        self.assertEqual(shim_app.merge_spans(spans), [(2, 6, "A", "e1")])
+
+    def test_apply_spans_replaces_and_reports_entities(self):
+        text = "我是张伟，电话13812345678"
+        spans = shim_app.merge_spans([(2, 4, "【PII:姓名】", "姓名"), (7, 18, "【PII:电话】", "电话")])
+        masked, ents = shim_app.apply_spans(text, spans)
+        self.assertEqual(masked, "我是【PII:姓名】，电话【PII:电话】")
+        self.assertEqual(ents, ["姓名", "电话"])
+
+    def test_apply_spans_empty(self):
+        self.assertEqual(shim_app.apply_spans("原文", []), ("原文", []))
+
+
+class OpfAnalyzeTest(unittest.TestCase):
+    """opf_analyze 线路行为（issue #127）：假 sidecar 顶替边界；任何线路异常 fail-open 不抛。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._srv = _start_server(_FakeOpf)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._srv.shutdown()
+
+    def setUp(self):
+        _FakeOpf.mode = "ok"
+        _FakeOpf.spans = []
+        _FakeOpf.captured = {}
+        # cfg 形态即 shim opf_config 产出（url 来自 settings l2.opf.url 或 env/默认）
+        self._cfg = {"url": f"http://127.0.0.1:{self._srv.server_address[1]}",
+                     "timeout": 2.0, "max_chars": 4000}
+
+    def test_maps_known_labels_to_zh_replacement(self):
+        _FakeOpf.spans = [{"label": "private_person", "start": 2, "end": 4, "text": "张伟"},
+                          {"label": "private_phone", "start": 7, "end": 18, "text": "13812345678"}]
+        spans = shim_app.opf_analyze("我是张伟，电话13812345678", self._cfg)
+        self.assertEqual(spans, [(2, 4, "【PII:姓名】", "姓名"), (7, 18, "【PII:电话】", "电话")])
+
+    def test_unknown_label_and_bad_offsets_dropped(self):
+        _FakeOpf.spans = [{"label": "mystery", "start": 0, "end": 2},          # 未知标签
+                          {"label": "private_person", "start": 3, "end": 1},   # st>en
+                          {"label": "private_person", "start": 0, "end": 999},  # 越界
+                          {"label": "private_email", "start": 0, "end": 2}]
+        spans = shim_app.opf_analyze("我是张伟", self._cfg)
+        self.assertEqual(spans, [(0, 2, "【PII:邮箱】", "邮箱")])
+
+    def test_fail_open_on_unreachable(self):
+        self._cfg["url"] = "http://127.0.0.1:1"  # 拒连
+        self.assertEqual(shim_app.opf_analyze("张伟", self._cfg), [])
+
+    def test_fail_open_on_drop(self):
+        _FakeOpf.mode = "drop"
+        self.assertEqual(shim_app.opf_analyze("张伟", self._cfg), [])
+
+    def test_max_chars_truncates_before_send(self):
+        self._cfg["max_chars"] = 5
+        shim_app.opf_analyze("一二三四五六七八九十", self._cfg)
+        self.assertEqual(_FakeOpf.captured.get("text"), "一二三四五")
+
+
+class OpfMaskPipelineTest(unittest.TestCase):
+    """mask_pipeline L2 内 OPF 合并（issue #127，/request HTTP 级 seam）。
+    fixture：临时 settings.json（l2.opf 开关由用例写）+ 假 OPF sidecar；
+    词表/format-rules/recognizers 路径指空文件（L1 无命中、Presidio recs 空 → 只走 OPF），
+    judge/pg 段关（隔离语义层与注入层，对齐既有测试隔离纪律）。"""
+
+    @classmethod
+    def setUpClass(cls):
+        cls._opf_srv = _start_server(_FakeOpf)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._opf_srv.shutdown()
+
+    def setUp(self):
+        _FakeOpf.mode = "ok"
+        _FakeOpf.spans = []
+        _FakeOpf.captured = {}
+        self._tmp = tempfile.TemporaryDirectory()
+        d = self._tmp.name
+        self.settings_path = os.path.join(d, "settings.json")
+        self.format_rules_path = os.path.join(d, "format-rules.json")  # 缺省不写=L1 无规则
+        self._fixture = json.loads(json.dumps(_SETTINGS_FIXTURE))
+        self._fixture["judge"]["enabled"] = False
+        self._fixture["pg"]["enabled"] = False
+        self._fixture["l2"]["opf"] = {"enabled": True, "timeout_ms": 5000, "max_chars": 4000,
+                                      "url": f"http://127.0.0.1:{self._opf_srv.server_address[1]}"}
+        self._write()
+        self._saved = (shim_app.SETTINGS_PATH, shim_app.WORDLIST_PATH,
+                       shim_app.FORMAT_RULES_PATH, shim_app.PII_RECOGNIZERS_PATH)
+        shim_app.SETTINGS_PATH = self.settings_path
+        shim_app.WORDLIST_PATH = os.path.join(d, "no-wordlist.json")
+        shim_app.FORMAT_RULES_PATH = self.format_rules_path
+        shim_app.PII_RECOGNIZERS_PATH = os.path.join(d, "no-recs.json")
+        self._saved_env = os.environ.pop("OPF_ENABLED", None)
+
+    def tearDown(self):
+        (shim_app.SETTINGS_PATH, shim_app.WORDLIST_PATH, shim_app.FORMAT_RULES_PATH,
+         shim_app.PII_RECOGNIZERS_PATH) = self._saved
+        if self._saved_env is not None:
+            os.environ["OPF_ENABLED"] = self._saved_env
+        self._tmp.cleanup()
+
+    def _write(self):
+        with open(self.settings_path, "w", encoding="utf-8") as f:
+            json.dump(self._fixture, f, ensure_ascii=False)
+
+    def _post(self, content):
+        return _request("POST", "/request", payload={"body": {"messages": content}})
+
+    def test_opf_on_masks_name(self):
+        """opf 开：姓名样本经 OPF 掩码 → MaskAction 改写消息，reason 带中文实体名。"""
+        _FakeOpf.spans = [{"label": "private_person", "start": 2, "end": 4, "text": "张伟"}]
+        status, body = self._post([{"role": "user", "content": "我是张伟，请多关照"}])
+        self.assertEqual(status, 200)
+        msgs = body["action"]["body"]["messages"]
+        self.assertEqual(msgs[0]["content"], "我是【PII:姓名】，请多关照")
+        self.assertIn("姓名", body["action"]["reason"])
+
+    def test_opf_off_passes_without_calling_sidecar(self):
+        """opf 关（子节 enabled=false）：同样本放行，OPF sidecar 零调用。"""
+        self._fixture["l2"]["opf"]["enabled"] = False
+        self._write()
+        _FakeOpf.spans = [{"label": "private_person", "start": 2, "end": 4, "text": "张伟"}]
+        status, body = self._post([{"role": "user", "content": "我是张伟，请多关照"}])
+        self.assertEqual(status, 200)
+        self.assertEqual(body["action"].get("reason"), "pass")
+        self.assertEqual(_FakeOpf.captured, {})
+
+    def test_opf_sidecar_down_fail_open(self):
+        """opf 开但 sidecar 断连 → fail-open 放行（不 500、不阻断），对齐 judge/PG 纪律。"""
+        _FakeOpf.mode = "drop"
+        status, body = self._post([{"role": "user", "content": "我是张伟，请多关照"}])
+        self.assertEqual(status, 200)
+        self.assertEqual(body["action"].get("reason"), "pass")
+
+    def test_l1_hit_short_circuits_opf(self):
+        """L1 命中时 L2 整体短路（#40 既定语义）：OPF 零调用，掩码来自 L1 规则。"""
+        with open(self.format_rules_path, "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "rules": [
+                {"code": "pii.phone", "action": "mask", "enabled": True, "entity": "ZH_PHONE",
+                 "replacement": "【PII:手机号】", "shim_patterns": ["(?<!\\d)1[3-9]\\d{9}(?!\\d)"]}]},
+                      f, ensure_ascii=False)
+        _FakeOpf.spans = [{"label": "private_person", "start": 0, "end": 2, "text": "打我"}]
+        status, body = self._post([{"role": "user", "content": "打我手机 13800138000"}])
+        self.assertEqual(status, 200)
+        self.assertIn("【PII:手机号】", body["action"]["body"]["messages"][0]["content"])
+        self.assertEqual(_FakeOpf.captured, {})
+
+    def test_list_content_shape_masked(self):
+        """content 多模态 list 形态：text 段同样经 OPF 掩码，非 text 段不动。"""
+        _FakeOpf.spans = [{"label": "private_person", "start": 2, "end": 4, "text": "张伟"}]
+        status, body = self._post([{"role": "user", "content": [
+            {"type": "text", "text": "我是张伟"},
+            {"type": "image_url", "image_url": {"url": "https://example.invalid/x.png"}}]}])
+        self.assertEqual(status, 200)
+        parts = body["action"]["body"]["messages"][0]["content"]
+        self.assertEqual(parts[0]["text"], "我是【PII:姓名】")
+        self.assertEqual(parts[1]["type"], "image_url")
+
+
+class AdminSettingsL2OpfTest(unittest.TestCase):
+    """settings l2.opf 可选子节（issue #127）：缺席合法（旧文件/控制台 GET→PUT 往返不卡）；
+    出席即整节校验（enabled/timeout_ms/max_chars 三键齐全 + 类型/范围）。fixture 同
+    AdminSettingsRoutingTest。"""
+
+    _OPF_OK = {"enabled": False, "timeout_ms": 8000, "max_chars": 4000}
+
+    def setUp(self):
+        _FAKE_STATE["mode"] = "ok"
+        _FAKE_STATE["tokens"] = {
+            "writer-token": {"id": "7", "isOwner": False, "scopes": ["read_channels", "write_channels"]},
+        }
+        self._tmp = tempfile.TemporaryDirectory()
+        self.settings_path = os.path.join(self._tmp.name, "settings.json")
+        with open(self.settings_path, "w", encoding="utf-8") as f:
+            json.dump(_SETTINGS_FIXTURE, f, ensure_ascii=False)
+        self._saved = admin_api.SETTINGS_PATH
+        admin_api.SETTINGS_PATH = self.settings_path
+
+    def tearDown(self):
+        admin_api.SETTINGS_PATH = self._saved
+        self._tmp.cleanup()
+
+    def _put(self, payload):
+        return _request("PUT", "/dlp-admin/settings", token="writer-token", payload=payload)
+
+    def test_put_l2_without_opf_still_200(self):
+        """无 opf 子节的旧形态 l2 → 200（可选子节后向兼容：还原 PUT 不被校验卡住）。"""
+        status, body = self._put(json.loads(json.dumps(_SETTINGS_FIXTURE)))
+        self.assertEqual(status, 200)
+        self.assertEqual(body["l2"], {"enabled": True})
+
+    def test_put_l2_opf_valid_200(self):
+        """附合法 l2.opf 子节整体替换 → 200，落盘内容一致（热更新由 shim 每请求重读生效）；
+        url 可选增补键（出席合法，缺席=运行侧 env/默认）。"""
+        new = json.loads(json.dumps(_SETTINGS_FIXTURE))
+        new["l2"]["opf"] = dict(self._OPF_OK, enabled=True, timeout_ms=5000,
+                                url="http://host.docker.internal:9999")
+        status, body = self._put(new)
+        self.assertEqual(status, 200)
+        self.assertEqual(body["l2"]["opf"]["enabled"], True)
+        self.assertEqual(body["l2"]["opf"]["timeout_ms"], 5000)
+        self.assertEqual(body["l2"]["opf"]["url"], "http://host.docker.internal:9999")
+        with open(self.settings_path, encoding="utf-8") as f:
+            self.assertEqual(json.load(f)["l2"]["opf"], new["l2"]["opf"])
+        # url 缺席同样合法（运行侧回退 env OPF_URL/内置默认）
+        new = json.loads(json.dumps(_SETTINGS_FIXTURE))
+        new["l2"]["opf"] = dict(self._OPF_OK)
+        status, body = self._put(new)
+        self.assertEqual(status, 200)
+        self.assertNotIn("url", body["l2"]["opf"])
+
+    def test_put_l2_opf_invalid_400(self):
+        """l2.opf 非法变体 → 400 带具体原因，落盘文件不被污染。"""
+        def mutated(fn):
+            d = json.loads(json.dumps(_SETTINGS_FIXTURE))
+            d["l2"]["opf"] = json.loads(json.dumps(self._OPF_OK))
+            fn(d)
+            return d
+        cases = [
+            ("opf 非对象", lambda d: d["l2"].update({"opf": 1})),
+            ("opf 未知字段", lambda d: d["l2"]["opf"].update({"typo": 1})),
+            ("opf 缺 enabled", lambda d: d["l2"]["opf"].pop("enabled")),
+            ("opf 缺 timeout_ms", lambda d: d["l2"]["opf"].pop("timeout_ms")),
+            ("opf 缺 max_chars", lambda d: d["l2"]["opf"].pop("max_chars")),
+            ("opf.enabled 非布尔", lambda d: d["l2"]["opf"].update({"enabled": 1})),
+            ("opf.timeout_ms 为零", lambda d: d["l2"]["opf"].update({"timeout_ms": 0})),
+            ("opf.timeout_ms 为布尔", lambda d: d["l2"]["opf"].update({"timeout_ms": True})),
+            ("opf.timeout_ms 为字符串", lambda d: d["l2"]["opf"].update({"timeout_ms": "8000"})),
+            ("opf.max_chars 为浮点", lambda d: d["l2"]["opf"].update({"max_chars": 2.5})),
+            ("opf.max_chars 为零", lambda d: d["l2"]["opf"].update({"max_chars": 0})),
+            ("opf.max_chars 为布尔", lambda d: d["l2"]["opf"].update({"max_chars": True})),
+            ("opf.url 空串", lambda d: d["l2"]["opf"].update({"url": ""})),
+            ("opf.url 非字符串", lambda d: d["l2"]["opf"].update({"url": 1})),
+            # 放最后：显式 null 不放行（对齐 routing 节纪律），避免污染后续断言
+            ("opf 为 null", lambda d: d["l2"].update({"opf": None})),
+        ]
+        for label, fn in cases:
+            with self.subTest(label=label):
+                status, body = self._put(mutated(fn))
+                self.assertEqual(status, 400, f"{label}: 期望 400，实际 {status}")
+                self.assertIn("error", body)
+                with open(self.settings_path, encoding="utf-8") as f:
+                    self.assertEqual(json.load(f), _SETTINGS_FIXTURE)  # 落盘未被污染
+
+
 if __name__ == "__main__":
     unittest.main()
