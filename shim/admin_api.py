@@ -577,6 +577,15 @@ def _validate_format_rules(data) -> str | None:
             err = _check_pattern(p, f"rules[{i}].shim_patterns[{j}]")
             if err:
                 return err
+        # issue #126 review：gateway_scope 白名单校验（可选字段；坏值会静默渲染进 config.yaml，
+        # 网关热载才报解析错——把防线前移到 PUT）
+        gs = r.get("gateway_scope")
+        if gs is not None:
+            if not isinstance(gs, list) or any(not isinstance(s, str) for s in gs):
+                return f"rules[{i}].gateway_scope 必须是字符串数组"
+            for s in gs:
+                if s not in _VALID_SCOPES:
+                    return f"rules[{i}].gateway_scope 含非法 scope: {s}（可选 {sorted(_VALID_SCOPES)}）"
     return None
 
 
@@ -609,10 +618,21 @@ def _yaml_single_quote(s: str) -> str:
     return "'" + s.replace("'", "''") + "'"
 
 
+# issue #126：v1.5.0 promptGuard ContentScope（camelCase 序列化）。reject 规则缺省全量四目标
+# ——tool 调用参数/结果常携带文件内容，是 Secrets 泄漏通道；mask 规则缺省不渲染 scope
+# （网关默认 systemPrompt+messages），规避 mask 把 tool arguments 改写成非法 JSON 的官方警告；
+# 规则可用 gateway_scope 显式覆盖（reject 收窄 / mask 显式开启）。
+_DEFAULT_REJECT_SCOPE = ["systemPrompt", "messages", "toolInput", "toolOutput"]
+_VALID_SCOPES = frozenset(_DEFAULT_REJECT_SCOPE)  # 四值即全枚举，校验白名单复用
+
+
 def render_gateway_block(rules: list, include_l1: bool = True) -> str:
     """渲染 promptGuard request 段的 - regex 条目文本（issue #33）。
     缩进对齐现网（条目 12 空格级，模板化确定性构造兜底 stdlib 无 YAML 解析器）；
     enabled=false 或 gateway_patterns 为空（shim-only）的规则不渲染进网关。
+    scope（issue #126）：reject 规则缺省渲染 _DEFAULT_REJECT_SCOPE 四目标；mask 规则缺省
+    不渲染（保网关默认 systemPrompt+messages）；规则级 gateway_scope 显式覆盖——
+    空数组 = 不渲染 scope 键（显式收窄回网关默认），非"扫描零目标"。
     l1 总开关（issue #40）：include_l1=False 时格式规则全族不渲染（返回空串，标记区块渲染为空，
     网关层同步撤防——l1 管辖 format-rules.json 全族，含 L1 reject 与 L1.5 格式 mask）。"""
     lines = []
@@ -625,6 +645,15 @@ def render_gateway_block(rules: list, include_l1: bool = True) -> str:
         lines.append("                rules:")
         for p in patterns:
             lines.append(f"                  - pattern: {_yaml_single_quote(p)}")
+        # scope（issue #126）：reject 缺省四目标；gateway_scope=[] 显式收窄=不渲染 scope 键
+        # （回网关默认 systemPrompt+messages），非"扫描零目标"
+        scope = r.get("gateway_scope")
+        if scope is None and r["action"] == "reject":
+            scope = _DEFAULT_REJECT_SCOPE
+        if scope:
+            lines.append("              scope:")
+            for s in scope:
+                lines.append(f"                - {s}")
         if r["action"] == "reject":
             body = json.dumps(
                 {"error": {"message": f"Blocked by ai4s DLP: {r['message']}",

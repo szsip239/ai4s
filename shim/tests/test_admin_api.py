@@ -601,6 +601,59 @@ class AdminFormatRulesTest(unittest.TestCase):
         self.assertLess(block.index("secrets.anthropic_sk"), block.index("secrets.openai_sk"))
         self.assertNotIn("bank_card", block)
 
+    def test_render_reject_rules_emit_tool_call_scope(self):
+        """issue #126：reject 规则缺省渲染 scope 四目标（systemPrompt/messages/toolInput/toolOutput，
+        v1.5.0 ContentScope，camelCase 序列化）——tool 调用参数/结果纳入 Secrets 扫描；
+        mask 规则不显式配置 gateway_scope 时不渲染 scope（保留网关默认 systemPrompt+messages，
+        规避 mask 把 tool arguments 改写成非法 JSON 的官方警告风险）。"""
+        rules = [
+            {"code": "secrets.test", "layer": "L1", "action": "reject", "enabled": True,
+             "message": "test secret", "gateway_patterns": ["sk-test-[0-9]{4}"]},
+            {"code": "pii.test", "layer": "L1.5", "action": "mask", "enabled": True,
+             "gateway_patterns": ["\\b1[3-9]\\d{9}\\b"]},
+        ]
+        block = admin_api.render_gateway_block(rules)
+        # reject 条目带 scope（RequestGuard 级，与 rejection 同 14 空格缩进）
+        self.assertIn("              scope:\n", block)
+        for s in ("systemPrompt", "messages", "toolInput", "toolOutput"):
+            self.assertIn(f"                - {s}\n", block)
+        # scope 仅出现在 reject 条目；mask 条目不带
+        self.assertEqual(block.count("              scope:\n"), 1)
+        # scope 与 rejection 同 entry（rejection 仍渲染）
+        self.assertIn("              rejection:", block)
+
+    def test_render_gateway_scope_override(self):
+        """issue #126：规则级 gateway_scope 显式覆盖缺省（reject 可收窄、mask 可显式开启）。"""
+        rules = [
+            {"code": "secrets.custom", "layer": "L1", "action": "reject", "enabled": True,
+             "message": "x", "gateway_patterns": ["FOO[0-9]{4}"],
+             "gateway_scope": ["messages", "toolInput"]},
+            {"code": "pii.custom", "layer": "L1.5", "action": "mask", "enabled": True,
+             "gateway_patterns": ["BAR[0-9]{4}"],
+             "gateway_scope": ["messages"]},
+        ]
+        block = admin_api.render_gateway_block(rules)
+        self.assertEqual(block.count("              scope:\n"), 2)
+        # 覆盖生效：reject 收窄为两目标且无 toolOutput；mask 显式仅 messages
+        self.assertIn("                - toolInput\n", block)
+        self.assertNotIn("                - toolOutput\n", block)
+        # mask 条目的 scope 仅 messages 一项（其 scope 块内不得出现 systemPrompt）
+        mask_seg = block[block.index("BAR[0-9]{4}"):]
+        self.assertIn("              scope:\n                - messages\n", mask_seg)
+        self.assertNotIn("systemPrompt", mask_seg)
+
+    def test_put_format_rules_bad_gateway_scope_400(self):
+        """issue #126 review：gateway_scope 枚举校验——非数组/非字符串元素/枚举外值
+        （如 toolinput 笔误）一律 400 不落盘（否则坏值静默渲染进 config.yaml，
+        网关热载才报错，防线太晚）。"""
+        import copy
+        for bad in ("messages", [123], ["toolinput"]):
+            with self.subTest(bad=bad):
+                doc = copy.deepcopy(_FR_FIXTURE)
+                doc["rules"][0]["gateway_scope"] = bad
+                status, _ = _request("PUT", "/dlp-admin/format-rules", token="writer-token", payload=doc)
+                self.assertEqual(status, 400)
+
     def test_splice_marker_block(self):
         """splice：替换 BEGIN/END 标记间内容（标记行与区块外保留）；标记缺失 → ValueError（→500）。"""
         block = "            - regex:\n                action: mask\n"

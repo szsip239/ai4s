@@ -41,6 +41,9 @@ reason=session_inherit → PUT 还原快照（GET 原文逐字节回写）；shi
 链路口径），不达标非零即回归失败。
 语义层水位门禁段（issue #99）：紧跟注入门禁段 subprocess 跑 semantic-eval.py
 （/judge-test 直测 judge，慢调用 ~2 分钟，放前面早失败），退出码非零即回归失败。
+tool scope 专项段（issue #126）：紧随主向量循环，读 tool-scope-vectors.json 直发完整
+messages（tool_calls/tool role/system prompt 形态），纯向量段无 settings 改动；
+网关未渲染 scope 时 reject 向量会放行——属 FAIL 非 SKIP（正是本段要抓的回归）。
 
 公共部分（常量/登录/渠道/send/classify/admin API）在 dlp_testkit.py（issue #42 提取）。
 自动准备（幂等）：起 mock-upstream（profile mock）+ 建 dlp-echo 渠道（model=echo-test）。
@@ -59,8 +62,30 @@ import dlp_testkit as tk
 
 DEPLOY_DIR = tk.DEPLOY_DIR
 VECTORS_PATH = os.path.join(DEPLOY_DIR, "tests", "dlp-vectors.json")
+TOOLSCOPE_PATH = os.path.join(DEPLOY_DIR, "tests", "tool-scope-vectors.json")
 # 纯 CJK 临时词：走 shim 子串直配路径（不依赖 Presidio NLP 分词，确定性命中）
 ADMIN_TMP_TERM = "统一配置回归验证词玄武"
+
+
+def run_tool_scope_section(api_key):
+    """tool scope 专项段（issue #126，v1.5.0 ContentScope）：secrets reject 规则渲染
+    scope=[systemPrompt, messages, toolInput, toolOutput] 后，tool_calls arguments /
+    tool 结果回填 / system prompt 内嵌密钥均应 451，干净 tool 调用放行。
+    纯向量段（无 settings 改动，无自还原义务）；网关配置未含 scope 时（v1.4.x 或
+    未重渲染）前 3 条会放行——属 FAIL 而非 SKIP：scope 漏配正是本段要抓的回归。
+    本段无 GAP 语义（fail = not ok，与主循环的 note 豁免口径不同——向量均不带 note）。"""
+    print("\n==> tool scope 专项段（issue #126，ContentScope 四目标）")
+    vectors = json.load(open(TOOLSCOPE_PATH, encoding="utf-8"))["vectors"]
+    rows = []
+    for v in vectors:
+        status, reply = tk.send_messages(v["messages"], api_key)
+        got = tk.classify(status, reply, v.get("sensitive"))
+        ok = got == v["expect"]
+        print(f"[{'OK ' if ok else 'FAIL'}] {v['name']}: expect={v['expect']} got={got}")
+        rows.append({"name": v["name"], "layer": "toolscope", "expect": v["expect"],
+                     "got": got, "ok": ok, "fail": not ok, "note": v.get("note", "")})
+        time.sleep(0.2)
+    return rows
 
 
 def run_edm_section(api_key):
@@ -807,6 +832,10 @@ def main():
         mark = "OK " if ok else ("GAP" if not fail else "FAIL")
         print(f"[{mark}] {v['name']}: expect={v['expect']} got={got}" + (f"（{v['note']}）" if not ok and v.get("note") else ""))
         time.sleep(0.2)
+
+    # tool scope 专项段（issue #126）：紧随主向量循环（同为纯向量段，无需 admin 凭据），
+    # 行并入主结果集（layer="toolscope"），参与分层水位与总计
+    results.extend(run_tool_scope_section(api_key))
 
     # 汇总
     layers = {}

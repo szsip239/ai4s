@@ -50,6 +50,11 @@ routes:
                 action: reject
                 rules:
                   - pattern: 'sk-ant-[A-Za-z0-9_\-]{20,}'
+              scope:
+                - systemPrompt
+                - messages
+                - toolInput
+                - toolOutput
               rejection:
                 status: 451
                 headers:
@@ -61,6 +66,11 @@ routes:
                 action: reject
                 rules:
                   - pattern: 'sk-(proj-)?[A-Za-z0-9_\-]{20,}'
+              scope:
+                - systemPrompt
+                - messages
+                - toolInput
+                - toolOutput
               rejection:
                 status: 451
                 headers:
@@ -73,6 +83,11 @@ routes:
                 rules:
                   - pattern: 'gh[pousr]_[A-Za-z0-9]{20,}'
                   - pattern: 'github_pat_[A-Za-z0-9_]{20,}'
+              scope:
+                - systemPrompt
+                - messages
+                - toolInput
+                - toolOutput
               rejection:
                 status: 451
                 headers:
@@ -85,6 +100,11 @@ routes:
                 rules:
                   - pattern: 'AKIA[0-9A-Z]{16}'
                   - pattern: 'ASIA[0-9A-Z]{16}'
+              scope:
+                - systemPrompt
+                - messages
+                - toolInput
+                - toolOutput
               rejection:
                 status: 451
                 headers:
@@ -96,6 +116,11 @@ routes:
                 action: reject
                 rules:
                   - pattern: '-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----'
+              scope:
+                - systemPrompt
+                - messages
+                - toolInput
+                - toolOutput
               rejection:
                 status: 451
                 headers:
@@ -107,6 +132,11 @@ routes:
                 action: reject
                 rules:
                   - pattern: 'LTAI[A-Za-z0-9]{12,}'
+              scope:
+                - systemPrompt
+                - messages
+                - toolInput
+                - toolOutput
               rejection:
                 status: 451
                 headers:

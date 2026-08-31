@@ -93,7 +93,13 @@ def prepare():
 
 
 def send(content, api_key):
-    body = json.dumps({"model": ECHO_MODEL, "messages": [{"role": "user", "content": content}]}).encode()
+    return send_messages([{"role": "user", "content": content}], api_key)
+
+
+def send_messages(messages, api_key):
+    """完整 messages 数组直发（issue #126 toolscope 段：tool_calls/tool role 形态）；
+    返回 (status, reply_text)，口径与 send 一致。"""
+    body = json.dumps({"model": ECHO_MODEL, "messages": messages}).encode()
     req = urllib.request.Request(GATEWAY + "/v1/chat/completions", data=body,
                                  headers={"Content-Type": "application/json",
                                           "Authorization": f"Bearer {api_key}"})

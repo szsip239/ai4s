@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "_comment": "L1/L1.5 格式规则单一源（issue #33）。gateway_patterns 渲染进 agentgateway YAML（Rust regex，禁 lookaround/backreference）；shim_patterns 为归一化检测变体（Python regex）——无 shim_patterns 的规则不参与 shim 归一化检测（不静默回退 gateway_patterns，漏检面显式可见，review #5）。gateway_patterns 为空的规则是 shim-only（不渲染进网关）。",
+  "_comment": "L1/L1.5 格式规则单一源（issue #33）。gateway_patterns 渲染进 agentgateway YAML（Rust regex，禁 lookaround/backreference）；shim_patterns 为归一化检测变体（Python regex）——无 shim_patterns 的规则不参与 shim 归一化检测（不静默回退 gateway_patterns，漏检面显式可见，review #5）。gateway_patterns 为空的规则是 shim-only（不渲染进网关）。gateway_scope（可选，issue #126）：覆盖 promptGuard 扫描目标，枚举 systemPrompt/messages/toolInput/toolOutput；缺省 reject 规则渲染四目标、mask 规则不渲染（保网关默认）。",
   "rules": [
     {
       "code": "secrets.anthropic_sk",

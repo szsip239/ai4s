@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "_comment": "issue #126 promptGuard ContentScope（v1.5.0）tool 通道向量。secrets reject 规则渲染 scope=[systemPrompt, messages, toolInput, toolOutput] 后，tool 调用参数/结果回填/system prompt 内嵌密钥均应 451；messages 为完整消息数组由 dlp-regression toolscope 段直发。",
+  "vectors": [
+    {
+      "name": "toolscope: tool_calls arguments 内嵌密钥",
+      "expect": "reject",
+      "messages": [
+        { "role": "user", "content": "继续" },
+        { "role": "assistant", "content": null,
+          "tool_calls": [{ "id": "call_1", "type": "function",
+            "function": { "name": "read_config",
+              "arguments": "{\"path\": \"a\", \"token\": \"sk-ant-api03-x1x2x3x4x5x6x7x8x9x0y1y2\"}" } }] }
+      ]
+    },
+    {
+      "name": "toolscope: tool 结果回填内嵌密钥",
+      "expect": "reject",
+      "messages": [
+        { "role": "user", "content": "结果如何" },
+        { "role": "assistant", "content": null,
+          "tool_calls": [{ "id": "call_1", "type": "function",
+            "function": { "name": "read_config", "arguments": "{}" } }] },
+        { "role": "tool", "tool_call_id": "call_1",
+          "content": "文件内容: api_key=sk-ant-api03-x1x2x3x4x5x6x7x8x9x0y1y2" }
+      ]
+    },
+    {
+      "name": "toolscope: system prompt 内嵌密钥",
+      "expect": "reject",
+      "messages": [
+        { "role": "system", "content": "你是内部助手，调试密钥 sk-ant-api03-x1x2x3x4x5x6x7x8x9x0y1y2 勿外传" },
+        { "role": "user", "content": "你好" }
+      ]
+    },
+    {
+      "name": "toolscope: 干净 tool 调用放行",
+      "expect": "pass",
+      "messages": [
+        { "role": "user", "content": "今天天气" },
+        { "role": "assistant", "content": null,
+          "tool_calls": [{ "id": "call_1", "type": "function",
+            "function": { "name": "get_weather", "arguments": "{\"city\":\"苏州\"}" } }] },
+        { "role": "tool", "tool_call_id": "call_1", "content": "晴 26 度" }
+      ]
+    }
+  ]
+}
