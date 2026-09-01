@@ -1,0 +1,75 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "ai4s DLP 检测管线：请求链路分层检测与处置",
+    "quality_profile": "showcase",
+    "viewBox": [1440, 748]
+  },
+  "stages": [
+    { "label": "员工 / 网关" },
+    { "label": "451 预检（shim）" },
+    { "label": "注入防线" },
+    { "label": "脱敏改写" },
+    { "label": "出口与观测" }
+  ],
+  "nodes": [
+    { "id": "employee", "type": "external", "label": "员工", "sublabel": "curl / CLI / 控制台", "stage": 0, "row": 0, "tag": "可能含敏感原文" },
+    { "id": "gateway", "type": "security", "label": "agentgateway L1 Secrets", "sublabel": "原生 regex reject/mask + 工具调用扫描", "stage": 0, "row": 2, "tag": "v1.5.0 ContentScope", "width": 152 },
+    { "id": "precheck", "type": "security", "label": "词表 / EDM 预检", "sublabel": "L1 secrets 归一化命中 + L2 商密词表 + L3 EDM 文档指纹", "stage": 1, "row": 1, "tag": "命中即短路", "width": 210 },
+    { "id": "block451", "type": "security", "label": "451 阻断", "sublabel": "content_policy_violation（不含原文）", "stage": 1, "row": 4, "tag": "出口", "width": 150 },
+    { "id": "rules", "type": "security", "label": "注入规则层", "sublabel": "16 模式组正则 + 迭代 base64 探针（µs 级）", "stage": 2, "row": 0, "tag": "rules.enabled/block", "width": 170 },
+    { "id": "pg", "type": "security", "label": "注入 PG（PromptGuard 2）", "sublabel": "进程内模型打分 + 归一化前置", "stage": 2, "row": 2, "tag": "pg.block_threshold", "width": 170 },
+    { "id": "mask", "type": "security", "label": "L1/L2 掩码管线", "sublabel": "归一化 PII mask → 无命中再走 Presidio + OPF", "stage": 3, "row": 1, "tag": "MaskAction 改写", "width": 170 },
+    { "id": "presidioOpf", "type": "backend", "label": "Presidio + OPF sidecar", "sublabel": "PII /analyze；OPF 开关缺省关（#127）", "stage": 3, "row": 3, "tag": "fail-open", "width": 150 },
+    { "id": "upstream", "type": "external", "label": "LLM 上游", "sublabel": "axonhub 渠道选择后直连", "stage": 4, "row": 0, "tag": "只见脱敏后文本" },
+    { "id": "respSide", "type": "security", "label": "响应侧检测", "sublabel": "应答 secrets/词表/PII 命中即 451", "stage": 4, "row": 2, "tag": "response.enabled", "width": 130 },
+    { "id": "judge", "type": "backend", "label": "语义 judge（shadow）", "sublabel": "响应定稿后异步判定，输入=掩码后文本", "stage": 4, "row": 3, "tag": "永不阻断", "width": 140 },
+    { "id": "shadowLog", "type": "database", "label": "shadow_log 观测出口", "sublabel": "judge/PG/rules/judge_inject/router 判定条 → 巡检 → 飞书告警", "stage": 4, "row": 4, "tag": "不落原文", "width": 230 }
+  ],
+  "flows": [
+    { "id": "f-req", "from": "employee", "to": "gateway", "label": "OpenAI 兼容 /v1", "classification": "可能含敏感原文", "variant": "emphasis" },
+    { "id": "f-gw-shim", "from": "gateway", "to": "precheck", "label": "promptGuard webhook", "classification": "原文", "variant": "emphasis" },
+    { "id": "f-pre-block", "from": "precheck", "to": "block451", "label": "词表/secrets/EDM 命中", "classification": "阻断", "variant": "security" },
+    { "id": "f-pre-rules", "from": "precheck", "to": "rules", "label": "无命中", "classification": "原文", "fromSide": "top", "toSide": "top", "via": [[315, 110], [530, 110]] },
+    { "id": "f-rules-block", "from": "rules", "to": "block451", "label": "block 开且模式组命中", "classification": "阻断", "variant": "dashed", "fromSide": "left", "toSide": "right", "via": [[432, 157], [432, 613]], "labelDy": 53 },
+    { "id": "f-rules-pg", "from": "rules", "to": "pg", "label": "通过（shadow 落条）", "classification": "原文" },
+    { "id": "f-pg-block", "from": "pg", "to": "block451", "label": "≥ 阻断阈值", "classification": "阻断", "variant": "dashed", "fromSide": "bottom", "toSide": "bottom", "via": [[530, 470], [460, 470], [460, 655], [315, 655]] },
+    { "id": "f-pg-mask", "from": "pg", "to": "mask", "label": "score < 阈值", "classification": "原文" },
+    { "id": "f-mask-pii", "from": "mask", "to": "presidioOpf", "label": "PII /analyze（fail-open）", "classification": "待检文本", "labelDx": -30 },
+    { "id": "f-mask-up", "from": "mask", "to": "upstream", "label": "掩码后消息", "classification": "已脱敏", "variant": "emphasis", "fromSide": "top", "toSide": "left", "via": [[745, 200], [880, 200], [880, 157]] },
+    { "id": "f-mask-judge", "from": "mask", "to": "judge", "label": "响应定稿后异步判定", "classification": "掩码后文本", "variant": "dashed", "fromSide": "right", "toSide": "left", "via": [[862, 271], [862, 499]], "labelDx": -20 },
+    { "id": "f-up-resp", "from": "upstream", "to": "respSide", "label": "模型应答", "classification": "可能含敏感内容", "variant": "emphasis" },
+    { "id": "f-resp-block", "from": "respSide", "to": "block451", "label": "应答命中敏感", "classification": "阻断", "variant": "dashed", "fromSide": "right", "toSide": "left", "via": [[1108, 385], [1108, 675], [225, 675], [225, 613]] },
+    { "id": "f-judge-log", "from": "judge", "to": "shadowLog", "label": "verdict 落条（不落原文）", "classification": "脱敏元数据", "variant": "dashed" }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "主路径与短路语义",
+      "items": [
+        "评估顺序即 /request 代码顺序：网关 L1 → 词表/EDM 预检（451）→ 注入规则 → 注入 PG → L1/L2 掩码 → 上游",
+        "每层命中即短路：451 优先于掩码改写；L1 掩码命中则 L2（Presidio/OPF）不再触发",
+        "每层独立开关：settings.json 热生效（l1/l2/edm/rules/pg/response + l2.opf），关层=整层跳过"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "故障语义",
+      "items": [
+        "检测链 fail-open：Presidio/OPF/judge/PG 异常或超时 → 放行 + 日志/告警，不拖垮业务",
+        "admin 配置面 fail-closed：配置校验失败 400/回滚，不落半改状态",
+        "语义 judge 与注入 shadow 只记录 verdict，契约上永不阻断链路"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "观测与边界",
+      "items": [
+        "shadow_log 落五层判定条（judge/PG/rules/judge_inject/router），巡检线程 30s 消费 → 飞书告警",
+        "敏感原文不出检测链：掩码先行、日志不落原文、judge 外发输入为掩码后文本",
+        "OPF（privacy-filter）为 L2 内嵌第二检测器预接线（#127），GPU/Q4 机型就绪后开 l2.opf.enabled 即启用"
+      ]
+    }
+  ]
+}

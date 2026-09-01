@@ -31,6 +31,7 @@ cd ../shim && python3 -m venv .venv && .venv/bin/pip install -r requirements-dev
 
 ## DLP 统一配置（issue #31–#36）
 
+- **管线全景图**：请求链路分层检测与处置（评估顺序/短路/故障语义）见 [`../docs/architecture/ai4s-dlp-pipeline.png`](../docs/architecture/ai4s-dlp-pipeline.png)（交互版 `ai4s-dlp-pipeline.html` 同目录，clone 后浏览器打开）。
 - **唯一写入口 = admin API**：`/dlp-admin/*`（本机 `http://localhost:18080`，仅绑 127.0.0.1），Bearer 鉴权——token 透传 axonhub 内省，读需 `read_channels`、写需 `write_channels`（isOwner 直通）。凭据取 env `DLP_ADMIN_TOKEN`，缺省读 `deploy/.local/admin-jwt`（bootstrap 产物）。`web/`「脱敏规则」配置中心页是其前端；不直改 `dlp/`、`recognizers/`、`edm/` 下的配置文件（会绕过校验/原子写/渲染联动）。
 - **edm-add.py 流程变更（issue #34）**：原直写指纹库逻辑已收编进 shim admin 平面，脚本只剩 CLI 薄壳（用法不变）：`POST /dlp-admin/edm/corpus` 入库、`DELETE /dlp-admin/edm/corpus/<name>` 移除（`--remove`）；同名重复入库 400，更新文档须先 `--remove` 再重新入库。
 - **settings.json 优先于 env（issue #35）**：judge/edm/pg 开关与阈值三级取值 `deploy/dlp/settings.json` > env > 内置默认，shim 每请求重读热生效；维护走 `GET/PUT /dlp-admin/settings` 或配置中心页，`.env` 的 `JUDGE_*`/`EDM_*`/`PG_*` 仅作文件缺失时的回退层。凭据（`JUDGE_API_KEY`/`FEISHU_*`）永远只走 env，禁止写入 settings.json。

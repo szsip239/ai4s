@@ -24,6 +24,12 @@
   - L3 EDM 文档指纹：整篇粘贴内部文档命中即 451；
   - 语义 judge（shadow 观测 + 置信度分档告警，永不阻断）与注入双通道（16 组规则正则 + PromptGuard 2 模型打分，可选 451 阻断试点）；
   - 响应侧检测：模型应答命中敏感内容同样处置。
+
+  管线全景（请求链路评估顺序、短路与故障语义见底部卡片）：
+
+  ![ai4s DLP 检测管线](docs/architecture/ai4s-dlp-pipeline.png)
+
+  > 交互版（缩放/聚焦/明暗切换/导出）：[`docs/architecture/ai4s-dlp-pipeline.html`](docs/architecture/ai4s-dlp-pipeline.html)（clone 后用浏览器打开；由 archify 生成，showcase 校验通过）
 - **智能路由**：`model=auto` 请求经分类器判档 simple/complex → 映射真实模型；会话档位稳定（首轮定档/继承/升档锁、tool-loop/thinking 锁），分类故障 fail-open 落旗舰。
 - **Key 治理**：三档额度模板（体验/标准/高）；员工飞书审批自助新建 Key、按 Key 提档；审批通过自动签发并私信交付明文；管理端 Key 管理/项目/成员/额度全图形化。
 - **SSO 与账号**：Casdoor 枢纽，飞书 OAuth 一键登录，JIT 建号自动入 Default 项目。
