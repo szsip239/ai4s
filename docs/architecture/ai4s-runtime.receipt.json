@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "ok": true,
+  "command": "deliver",
+  "type": "architecture",
+  "input": "/Users/clawdbot/hostdb/ai4s/docs/architecture/ai4s-runtime.architecture.json",
+  "output": "/Users/clawdbot/hostdb/ai4s/docs/architecture/ai4s-runtime.html",
+  "specification": {
+    "sha256": "29f1b7bee3cd5549a815d947de730b64c9cfee9eef80ca56a749084cdba3e96a",
+    "bytes": 7699
+  },
+  "artifact": {
+    "sha256": "2c0614873e66b4c395367f15075b74efd04eae767c9f0334b3b22aaecce01061",
+    "bytes": 645837
+  },
+  "validation": {
+    "checksPassed": 9,
+    "checkCount": 9,
+    "compositionProfile": "showcase",
+    "compositionStatus": "pass",
+    "errors": 0,
+    "warnings": 0
+  }
+}

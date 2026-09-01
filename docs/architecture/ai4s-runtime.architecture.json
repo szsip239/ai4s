@@ -1,0 +1,366 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "ai4s 运行时架构：企业 AI 接入及安全网关",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1240,
+      520
+    ]
+  },
+  "components": [
+    {
+      "id": "employee",
+      "type": "external",
+      "label": "员工",
+      "sublabel": "curl / CLI / 浏览器",
+      "pos": [
+        24,
+        208
+      ],
+      "size": [
+        136,
+        72
+      ]
+    },
+    {
+      "id": "edgeNginx",
+      "type": "external",
+      "label": "local-edge-nginx",
+      "sublabel": "公网入口 ai4s.example.com:8445",
+      "pos": [
+        80,
+        60
+      ],
+      "size": [
+        168,
+        68
+      ]
+    },
+    {
+      "id": "agentgateway",
+      "type": "security",
+      "label": "agentgateway v1.5.0",
+      "sublabel": "入口网关 · DLP 执行点（:3000 / mTLS :3443）",
+      "pos": [
+        280,
+        208
+      ],
+      "size": [
+        184,
+        80
+      ]
+    },
+    {
+      "id": "webStatic",
+      "type": "frontend",
+      "label": "控制台前端",
+      "sublabel": "web/dist 经 nginx 托管（SPA）",
+      "pos": [
+        320,
+        60
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "axonhub",
+      "type": "backend",
+      "label": "axonhub v1.0.0-beta6",
+      "sublabel": "控制面：渠道/Key/额度/追踪（内网 :8090）",
+      "pos": [
+        600,
+        208
+      ],
+      "size": [
+        200,
+        80
+      ]
+    },
+    {
+      "id": "postgres",
+      "type": "database",
+      "label": "PostgreSQL 16",
+      "sublabel": "axonhub / casdoor 数据",
+      "pos": [
+        760,
+        380
+      ],
+      "size": [
+        168,
+        64
+      ]
+    },
+    {
+      "id": "shim",
+      "type": "security",
+      "label": "shim（DLP 适配服务）",
+      "sublabel": "webhook 检测 + admin/self 平面 + 巡检线程",
+      "pos": [
+        440,
+        380
+      ],
+      "size": [
+        200,
+        80
+      ]
+    },
+    {
+      "id": "presidio",
+      "type": "backend",
+      "label": "Presidio Analyzer",
+      "sublabel": "PII 识别（仅 shim 内部调用）",
+      "pos": [
+        56,
+        380
+      ],
+      "size": [
+        184,
+        64
+      ]
+    },
+    {
+      "id": "casdoor",
+      "type": "security",
+      "label": "Casdoor SSO",
+      "sublabel": "飞书 OAuth → 标准 OIDC",
+      "pos": [
+        600,
+        60
+      ],
+      "size": [
+        160,
+        64
+      ]
+    },
+    {
+      "id": "feishu",
+      "type": "external",
+      "label": "飞书",
+      "sublabel": "SSO 登录 · 告警群机器人 · 审批",
+      "pos": [
+        980,
+        380
+      ],
+      "size": [
+        170,
+        68
+      ]
+    },
+    {
+      "id": "llmUpstreams",
+      "type": "external",
+      "label": "LLM 上游",
+      "sublabel": "Claude / Codex OAuth 订阅渠道",
+      "pos": [
+        980,
+        208
+      ],
+      "size": [
+        170,
+        72
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "security-group",
+      "label": "容器内网 ai4s（docker bridge；宿主仅暴露 127.0.0.1:3000/3443/18080 与 casdoor :8000）",
+      "wraps": [
+        "agentgateway",
+        "webStatic",
+        "axonhub",
+        "postgres",
+        "shim",
+        "presidio",
+        "casdoor"
+      ]
+    },
+    {
+      "kind": "region",
+      "label": "外部依赖（出域）",
+      "wraps": [
+        "feishu",
+        "llmUpstreams"
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "req-main",
+      "from": "employee",
+      "to": "agentgateway",
+      "label": "OpenAI 兼容 /v1",
+      "variant": "emphasis"
+    },
+    {
+      "id": "req-public",
+      "from": "employee",
+      "to": "edgeNginx",
+      "label": "公网 HTTPS",
+      "variant": "dashed",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "public-gw",
+      "from": "edgeNginx",
+      "to": "agentgateway",
+      "label": "转发 host:3000",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "via": [
+        [
+          164,
+          160
+        ],
+        [
+          372,
+          160
+        ]
+      ]
+    },
+    {
+      "id": "gw-dlp",
+      "from": "agentgateway",
+      "to": "shim",
+      "label": "extAuthz /classify + promptGuard webhook",
+      "fromSide": "bottom",
+      "toSide": "left"
+    },
+    {
+      "id": "shim-presidio",
+      "from": "shim",
+      "to": "presidio",
+      "label": "PII /analyze（fail-open）",
+      "fromSide": "left",
+      "toSide": "right"
+    },
+    {
+      "id": "gw-axon",
+      "from": "agentgateway",
+      "to": "axonhub",
+      "label": "转发 /v1·/admin·/oauth",
+      "variant": "emphasis"
+    },
+    {
+      "id": "gw-static",
+      "from": "agentgateway",
+      "to": "webStatic",
+      "label": "控制台静态资源",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelDx": 60
+    },
+    {
+      "id": "axon-upstream",
+      "from": "axonhub",
+      "to": "llmUpstreams",
+      "label": "OAuth 渠道直连",
+      "variant": "emphasis"
+    },
+    {
+      "id": "axon-db",
+      "from": "axonhub",
+      "to": "postgres",
+      "label": "SQL",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelDx": 24
+    },
+    {
+      "id": "shim-axon",
+      "from": "shim",
+      "to": "axonhub",
+      "label": "judge 中转 + token 内省 + 巡检 GraphQL",
+      "fromSide": "right",
+      "toSide": "bottom",
+      "labelAt": [
+        650,
+        474
+      ]
+    },
+    {
+      "id": "axon-casdoor",
+      "from": "axonhub",
+      "to": "casdoor",
+      "label": "OIDC",
+      "fromSide": "top",
+      "toSide": "bottom"
+    },
+    {
+      "id": "casdoor-feishu",
+      "from": "casdoor",
+      "to": "feishu",
+      "label": "飞书 OAuth",
+      "fromSide": "right",
+      "toSide": "right",
+      "via": [
+        [
+          1170,
+          92
+        ],
+        [
+          1170,
+          414
+        ]
+      ],
+      "labelAt": [
+        1150,
+        294
+      ]
+    },
+    {
+      "id": "shim-feishu",
+      "from": "shim",
+      "to": "feishu",
+      "label": "告警 webhook + 审批 API",
+      "variant": "dashed",
+      "fromSide": "bottom",
+      "toSide": "bottom",
+      "via": [
+        [
+          540,
+          500
+        ],
+        [
+          1065,
+          500
+        ]
+      ]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "主请求路径",
+      "items": [
+        "员工 → agentgateway：L1 Secrets regex 网关原生拦截密钥",
+        "extAuthz 调 shim /classify 判档改写 auto 模型；promptGuard webhook 送 shim 检测（L2 词表/PII、EDM 指纹、注入规则/PG）",
+        "放行/脱敏/451 之后，axonhub 按成本/额度/健康度选渠道 → OAuth 订阅上游"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "语义层与故障语义",
+      "items": [
+        "judge 响应定稿后异步判定，只记 verdict 不落原文；判定输入取 L1/L2 掩码后文本",
+        "action 四档 off/shadow/warn/reject，语义层永不阻断链路",
+        "检测链 fail-open：shim 超时/5xx → 放行 + 飞书告警 + 审计；admin 平面 fail-closed"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "治理面与信任边界",
+      "items": [
+        "/dlp-admin/* 为 DLP 配置唯一写入口（Bearer 经 axonhub 内省鉴权）；/self/* 员工自助按本人身份过滤",
+        "shim 巡检线程 30s：fail-open 探活、额度轮询、审批同步、新员工自动入项",
+        "axonhub 宿主口已收（仅容器内网 :8090）；公网仅经 local-edge-nginx 8444/8445"
+      ]
+    }
+  ]
+}
