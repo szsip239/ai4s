@@ -39,12 +39,13 @@ export function useAdminKeyRequests(projectId: string | null) {
 export function useResolveKeyRequest() {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: ({ id, action, reason, tier }: { id: string; action: 'approve' | 'reject'; reason?: string; tier?: string }) =>
+    mutationFn: ({ id, action, reason, tier, projectOverride }: { id: string; action: 'approve' | 'reject'; reason?: string; tier?: string; projectOverride?: string }) =>
       apiRequest<{ request: AdminKeyRequest }>(`/dlp-admin/key-requests/${action}/${id}`, {
         method: 'POST',
         requireAuth: true,
         // issue #81：approve 带管理员选定档位（空串=shim 端默认）；api-client 统一 JSON.stringify
-        body: action === 'reject' ? { reason: reason || '' } : { tier: tier || '' },
+        // issue #128：approve 同带 project_override（项目 gid；空串=按申请单项目原样执行，仅 kind=new 有意义）
+        body: action === 'reject' ? { reason: reason || '' } : { tier: tier || '', project_override: projectOverride || '' },
       }),
     onSuccess: () => qc.invalidateQueries({ queryKey: QK }),
   });

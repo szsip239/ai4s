@@ -16,6 +16,8 @@
  * 点批不带项目头：执行落申请单记录的项目（与管理员当前项目解耦，切错项目不批错单）。
  * issue #91 P2-1：审批卡/降级群通知的链接带 ?project=<gid>，本页读 search 后在本人可见
  * 项目范围内切换 projectStore 选中项——管理员点开卡片即落在申请所属项目（不越权不报错）。
+ * issue #128：新建申请的批准弹窗可改选目标项目（默认申请单项目快照），随 approve body 传
+ * project_override（gid；空串=按申请单项目原样执行）；记录带 projectNameOverride 时项目列优先展示。
  */
 import { useEffect, useState } from 'react';
 import { format } from 'date-fns';
@@ -38,6 +40,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
 import { useMe } from '@/features/auth/data/auth';
+import { useMyProjects } from '@/features/projects/data/projects';
 import { useProjectStore, useSelectedProjectId } from '@/stores/projectStore';
 import { usePermissions } from '@/hooks/usePermissions';
 import { useAdminKeyRequests, useResolveKeyRequest, type AdminKeyRequest } from './api';
@@ -83,20 +86,25 @@ export default function Ai4sKeyRequestsPage() {
   const canResolve = channelPermissions.canWrite;
   const [approveTarget, setApproveTarget] = useState<AdminKeyRequest | null>(null);
   const [approveTier, setApproveTier] = useState<string>(APPROVE_TIERS[0]);
+  // issue #128：批准弹窗的目标项目改选（仅 kind=new）；打开弹窗时默认申请单项目快照
+  const [approveProjectId, setApproveProjectId] = useState('');
   const [rejectTarget, setRejectTarget] = useState<AdminKeyRequest | null>(null);
   const [reason, setReason] = useState('');
+  // issue #128：改选项目下拉数据源复用顶部项目切换器的 myProjects（本人可见项目）
+  const { data: myProjects } = useMyProjects();
 
   const requests = query.data?.requests ?? [];
 
-  const doResolve = (id: string, action: 'approve' | 'reject', rejectReason = '', tier = '') => {
+  const doResolve = (id: string, action: 'approve' | 'reject', rejectReason = '', tier = '', projectOverride = '') => {
     resolve.mutate(
-      { id, action, reason: rejectReason, tier },
+      { id, action, reason: rejectReason, tier, projectOverride },
       {
         onSuccess: (data) => {
           toast.success(data.request.result || t(`ai4s.keyRequests.${action}Ok`));
           setApproveTarget(null);
           setRejectTarget(null);
           setReason('');
+          setApproveProjectId('');
         },
         onError: (e) => toast.error(e.message),
       }
@@ -147,8 +155,9 @@ export default function Ai4sKeyRequestsPage() {
                         {/* issue #86：提额申请显示所选 Key（名称快照优先，fail-open 回退 id）；存量申请回退只显示目标档 */}
                         {r.kind === 'new' ? r.purpose : (upgradeDetailLabel(r) ?? r.tier)}
                       </TableCell>
-                      {/* issue #89：项目名快照；存量申请无字段按 Default 显示（与 shim 过滤/执行同口径） */}
-                      <TableCell className='text-muted-foreground'>{r.projectName || 'Default'}</TableCell>
+                      {/* issue #89：项目名快照；存量申请无字段按 Default 显示（与 shim 过滤/执行同口径）。
+                          issue #128：批准改选过项目的记录优先显示 override 后的项目名 */}
+                      <TableCell className='text-muted-foreground'>{r.projectNameOverride || r.projectName || 'Default'}</TableCell>
                       <TableCell className='text-muted-foreground'>
                         {r.createdAt ? format(new Date(r.createdAt), 'yyyy-MM-dd HH:mm') : '—'}
                       </TableCell>
@@ -169,6 +178,8 @@ export default function Ai4sKeyRequestsPage() {
                               onClick={() => {
                                 setApproveTarget(r);
                                 setApproveTier(defaultApproveTier(r));
+                                // issue #128：默认选中申请单项目快照；存量申请无快照回退当前选中项目
+                                setApproveProjectId(r.projectId || projectId || '');
                               }}
                             >
                               {t('ai4s.keyRequests.approve')}
@@ -219,6 +230,24 @@ export default function Ai4sKeyRequestsPage() {
                 </SelectContent>
               </Select>
             </div>
+            {/* issue #128：新建申请可改选目标项目（默认申请单项目快照），随 approve body 传 project_override */}
+            {approveTarget?.kind === 'new' && (
+              <div className='flex items-center gap-3'>
+                <span className='text-sm text-muted-foreground'>{t('ai4s.keyRequests.approveProjectLabel')}</span>
+                <Select value={approveProjectId} onValueChange={setApproveProjectId}>
+                  <SelectTrigger className='w-40'>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {(myProjects ?? []).map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
             {approveTarget?.kind === 'upgrade' && (
               <p className='text-sm text-muted-foreground'>{t('ai4s.keyRequests.approveUpgradeNote')}</p>
             )}
@@ -226,7 +255,10 @@ export default function Ai4sKeyRequestsPage() {
               <AlertDialogCancel>{t('common.cancel', '取消')}</AlertDialogCancel>
               <AlertDialogAction
                 disabled={resolve.isPending}
-                onClick={() => approveTarget && doResolve(approveTarget.id, 'approve', '', approveTier)}
+                onClick={() =>
+                  approveTarget &&
+                  doResolve(approveTarget.id, 'approve', '', approveTier, approveTarget.kind === 'new' ? approveProjectId : '')
+                }
               >
                 {t('ai4s.keyRequests.approve')}
               </AlertDialogAction>

@@ -833,13 +833,15 @@ class TestApprovalSyncKeyKind(unittest.TestCase):
 
 
 class TestPendingDefaultProjectUsers(unittest.TestCase):
-    """issue #73 筛选纯函数：activated、非 owner、不在 Default 项目。"""
+    """issue #73 筛选纯函数：activated、非 owner、持 OIDC 身份（#128）、不在 Default 项目。"""
 
     PID = "gid://axonhub/Project/1"
 
-    def _node(self, uid, email, owner=False, status="activated", projects=("gid://axonhub/Project/1",)):
+    def _node(self, uid, email, owner=False, status="activated", projects=("gid://axonhub/Project/1",),
+              oidc=("id1",)):
         return {"node": {"id": f"gid://axonhub/User/{uid}", "email": email, "isOwner": owner,
                          "status": status,
+                         "oidcIdentities": [{"id": o} for o in oidc],
                          "projects": {"edges": [{"node": {"id": p}} for p in projects]}}}
 
     def test_filters(self):
@@ -849,14 +851,20 @@ class TestPendingDefaultProjectUsers(unittest.TestCase):
             self._node(3, "new@x", projects=()),                         # 待入项
             self._node(4, "disabled@x", status="disabled", projects=()), # 非 activated 跳过
             self._node(5, "other@x", projects=("gid://axonhub/Project/9",)),  # 在别的项目 → 待入项
+            self._node(6, "invited@ext.com", projects=(), oidc=()),      # 无 OIDC 身份（邀请注册）跳过
+            self._node(7, "ou_fake@casdoor.oidc", projects=(), oidc=()), # 伪造后缀但无身份链接 → 跳过
         ]
         out = ap.pending_default_project_users(edges, self.PID)
         self.assertEqual([n["email"] for n in out], ["new@x", "other@x"])
 
     def test_empty_and_no_projects_edge(self):
         self.assertEqual(ap.pending_default_project_users([], self.PID), [])
-        n = {"node": {"id": "u1", "email": "a@x", "isOwner": False, "status": "activated", "projects": None}}
+        n = {"node": {"id": "u1", "email": "a@x", "isOwner": False, "status": "activated",
+                      "oidcIdentities": [{"id": "id1"}], "projects": None}}
         self.assertEqual([x["email"] for x in ap.pending_default_project_users([n], self.PID)], ["a@x"])
+        # projects 为 None 且无 OIDC 身份 → 跳过（None 容差不放水）
+        n2 = {"node": {"id": "u2", "email": "b@x", "isOwner": False, "status": "activated", "projects": None}}
+        self.assertEqual(ap.pending_default_project_users([n2], self.PID), [])
 
 
 class TestAutoAssignProject(unittest.TestCase):
@@ -885,9 +893,10 @@ class TestAutoAssignProject(unittest.TestCase):
             ap.auto_assign_project(ax)
         return sends, adds
 
-    def _user(self, uid, email, projects=()):
+    def _user(self, uid, email, projects=(), oidc=("id1",)):
         return {"node": {"id": f"gid://axonhub/User/{uid}", "email": email, "isOwner": False,
                          "status": "activated",
+                         "oidcIdentities": [{"id": o} for o in oidc],
                          "projects": {"edges": [{"node": {"id": p}} for p in projects]}}}
 
     def test_pending_assigned_and_notified(self):
@@ -902,6 +911,16 @@ class TestAutoAssignProject(unittest.TestCase):
     def test_member_skipped_idempotent(self):
         # 已入项成员不重复处理（幂等验证点：零 mutation 零通知）
         sends, adds = self._run([self._user(7, "existing-member@x", projects=("gid://axonhub/Project/1",))])
+        self.assertEqual(adds, [])
+        self.assertEqual(sends, [])
+
+    def test_local_account_skipped(self):
+        # issue #128：无 OIDC 身份的本地账号（邀请注册外部人员）不自动入 Default 项目——
+        # 其正式项目归属由管理员审批 Key 时指定；伪造 @casdoor.oidc 邮箱后缀同样不放水
+        sends, adds = self._run([
+            self._user(11, "invited@ext.com", oidc=()),
+            self._user(12, "ou_fake@casdoor.oidc", oidc=()),
+        ])
         self.assertEqual(adds, [])
         self.assertEqual(sends, [])
 

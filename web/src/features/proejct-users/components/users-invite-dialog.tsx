@@ -1,7 +1,4 @@
 import { useState } from 'react';
-import { z } from 'zod';
-import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
 import { IconCheck, IconCopy, IconMailPlus } from '@tabler/icons-react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
@@ -9,17 +6,12 @@ import { apiRequest } from '@/lib/api-client';
 import { useSelectedProjectId } from '@/stores/projectStore';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogClose, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
-const formSchema = z.object({
-  expiresInHours: z.enum(['1', '6', '24', '168', '0']),
-  maxUses: z.enum(['1', '0']),
-});
-
-type InviteForm = z.infer<typeof formSchema>;
+// issue #128：邀请策略定稿为 7 天有效、仅可注册 1 次，不再让发起人选择
+const INVITE_EXPIRES_IN_HOURS = 168;
+const INVITE_MAX_USES = 1;
 
 interface Props {
   open: boolean;
@@ -31,41 +23,41 @@ export function UsersInviteDialog({ open, onOpenChange }: Props) {
   const selectedProjectId = useSelectedProjectId();
   const [inviteLink, setInviteLink] = useState('');
   const [isCopied, setIsCopied] = useState(false);
-  const form = useForm<InviteForm>({
-    resolver: zodResolver(formSchema),
-    defaultValues: { expiresInHours: '168', maxUses: '1' },
-  });
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const closeDialog = (nextOpen: boolean) => {
     if (!nextOpen) {
-      form.reset();
       setInviteLink('');
       setIsCopied(false);
     }
     onOpenChange(nextOpen);
   };
 
-  const onSubmit = async (values: InviteForm) => {
+  const onSubmit = async () => {
     if (!selectedProjectId) {
       return;
     }
 
+    setIsSubmitting(true);
     try {
       const response = await apiRequest<{ token: string }>('/admin/invitations', {
         method: 'POST',
         requireAuth: true,
         headers: { 'X-Project-ID': selectedProjectId },
         body: {
-          expiresInHours: Number(values.expiresInHours),
-          maxUses: Number(values.maxUses),
+          expiresInHours: INVITE_EXPIRES_IN_HOURS,
+          maxUses: INVITE_MAX_USES,
         },
       });
+      // 邀请链接指向当前控制台 origin 的 /sign-up?invite=<token>
       const url = new URL('/sign-up', window.location.origin);
       url.searchParams.set('invite', response.token);
       setInviteLink(url.toString());
       toast.success(t('users.messages.invitationCreated'));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('common.errors.internalServerError'));
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -89,7 +81,7 @@ export function UsersInviteDialog({ open, onOpenChange }: Props) {
           </DialogTitle>
           <DialogDescription>{t('users.dialogs.invite.description')}</DialogDescription>
         </DialogHeader>
-        {inviteLink ? (
+        {inviteLink && (
           <div className='space-y-3'>
             <Label htmlFor='invitation-link'>{t('users.form.invitationLink')}</Label>
             <div className='flex gap-2'>
@@ -100,56 +92,6 @@ export function UsersInviteDialog({ open, onOpenChange }: Props) {
             </div>
             <p className='text-sm text-muted-foreground'>{t('users.messages.invitationLinkReady')}</p>
           </div>
-        ) : (
-          <Form {...form}>
-            <form id='project-user-invite-form' onSubmit={form.handleSubmit(onSubmit)} className='space-y-4'>
-              <FormField
-                control={form.control}
-                name='expiresInHours'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('users.form.invitationExpiry')}</FormLabel>
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        <SelectItem value='1'>{t('users.invitation.expiry.oneHour')}</SelectItem>
-                        <SelectItem value='6'>{t('users.invitation.expiry.sixHours')}</SelectItem>
-                        <SelectItem value='24'>{t('users.invitation.expiry.oneDay')}</SelectItem>
-                        <SelectItem value='168'>{t('users.invitation.expiry.sevenDays')}</SelectItem>
-                        <SelectItem value='0'>{t('users.invitation.expiry.never')}</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name='maxUses'
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>{t('users.form.invitationUseLimit')}</FormLabel>
-                    <Select value={field.value} onValueChange={field.onChange}>
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        <SelectItem value='1'>{t('users.invitation.uses.single')}</SelectItem>
-                        <SelectItem value='0'>{t('users.invitation.uses.unlimited')}</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-            </form>
-          </Form>
         )}
         <DialogFooter>
           {inviteLink ? (
@@ -159,7 +101,7 @@ export function UsersInviteDialog({ open, onOpenChange }: Props) {
               <DialogClose asChild>
                 <Button variant='outline'>{t('common.buttons.cancel')}</Button>
               </DialogClose>
-              <Button type='submit' form='project-user-invite-form' disabled={form.formState.isSubmitting}>
+              <Button type='button' onClick={onSubmit} disabled={isSubmitting}>
                 {t('users.buttons.createInvitation')}
               </Button>
             </>

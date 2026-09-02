@@ -80,6 +80,9 @@ export interface KeyRequest {
   /** issue #89：申请目标项目（gid + 名称快照）；存量申请无此字段（shim/页面均按 Default 口径） */
   projectId?: string | null;
   projectName?: string | null;
+  /** issue #128：批准时管理员改选的目标项目（gid + 名称快照）；有值时展示优先于申请快照 */
+  projectOverride?: string | null;
+  projectNameOverride?: string | null;
 }
 
 /**

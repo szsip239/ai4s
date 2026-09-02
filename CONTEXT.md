@@ -108,6 +108,10 @@ _Avoid_: 追 latest/unstable
 **JIT 用户（JIT User）**:
 飞书 SSO 首登时 axonhub 自动创建的账号，email 形如 `ou_<open_id>@casdoor.oidc`；open_id 是其与飞书通讯录的唯一关联键。
 
+**邀请用户（Invited User）**:
+非飞书组织的外部人员账号（issue #128）：管理员在隔离项目 `External-Quarantine`（gid `gid://axonhub/Project/6`，无渠道/无额度档/成员空 scopes）发邀请链接（7 天、单次），受邀者经 `/sign-up?invite=<token>` 注册本地账号即激活（邀请=预审，无注册后审批闸门）；落地隔离项目零模型调用能力，shim 巡检 `auto_assign_project` 对无 OIDC 身份者跳过（不自动入 Default——判别用服务端身份链接，email 后缀可伪造不可用）；模型调用只能经 Key：控制台自助申请（`/self/key-requests`），管理员审批时指定正式项目与额度档，明文经 `/self/keys` 本人自取。Casdoor 公网自助注册已在边缘封禁（`/signup`、`/api/signup` → 404）。
+_Avoid_: 外部员工、访客账号
+
 **员工能力档（Employee Posture）**:
 issue #68（2026-08-20）定稿：JIT 系统档为空，能力一律走项目级 `user_projects.scopes`，员工仅持 `read_requests, write_requests`（观测 + playground/请求写入 + 自己的 settings）。员工**不自助建/管 Key**——上游项目级 `read_api_keys`/`write_api_keys` 无属主过滤（明文横读、自助提额同源同闸），Key 由管理员签发、提额走飞书审批。issue #70（2026-08-20）：项目级种子角色 Developer/Viewer 删除（含 read_users/read_api_keys/write_api_keys，授予即绕开 #68；实证重启不复活）；playground 渠道/模型选择器保持为空——项目级 `read_channels` 上游 resolver 不认（仍 403），系统级放开面超员工最小集。
 _Avoid_: 员工基础档（旧口径，已废止）

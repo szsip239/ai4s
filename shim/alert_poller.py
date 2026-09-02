@@ -697,6 +697,7 @@ def approval_sync(ax: Axonhub, state: dict):
 # 超规模时需改 after 分页；projects(first:50) 同理（单用户项目数上限）。
 USERS_WITH_PROJECTS_QUERY = (
     "query { users(first: 200) { edges { node { id email isOwner status "
+    "oidcIdentities { id } "
     "projects(first: 50) { edges { node { id } } } } } } }"
 )
 MY_PROJECTS_QUERY = "query { myProjects { id name } }"
@@ -709,11 +710,18 @@ PROJECT_MEMBER_SCOPES = ["read_requests", "write_requests"]
 
 
 def pending_default_project_users(users_edges: list, project_gid: str) -> list:
-    """筛待入项用户（纯函数）：activated、非 owner、尚不在 Default 项目。返回 [node]。"""
+    """筛待入项用户（纯函数）：activated、非 owner、持 OIDC 身份、尚不在 Default 项目。返回 [node]。
+
+    issue #128：无 OIDC 身份的本地账号（邀请注册的外部人员）不自动入项——其正式项目归属由
+    管理员审批 Key 时指定；若自动补进 Default 并授予 read/write_requests，等于绕过审批白送
+    playground。判别用服务端身份链接（oidcIdentities）而非 email 后缀——外部注册邮箱自填、
+    可伪造 @casdoor.oidc 后缀，后缀判别会被冒名绕过。"""
     out = []
     for e in users_edges:
         n = e["node"]
         if n.get("isOwner") or n.get("status") != "activated":
+            continue
+        if not n.get("oidcIdentities"):
             continue
         member = {p["node"]["id"] for p in ((n.get("projects") or {}).get("edges") or [])}
         if project_gid not in member:

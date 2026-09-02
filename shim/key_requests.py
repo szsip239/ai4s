@@ -24,6 +24,14 @@ issue #90：dup 判定键从（email, kind）补为（email, kind, projectId）�
 仍只允许一条 pending（防 spam 不变），跨项目互不阻塞；409 文案带冲突项目名。
 issue #91 P2-1：审批卡按钮与降级群文本的 URL 追加 ?project=<urlencoded gid>
 （_console_url，存量申请按 Default）——管理员点开即切到申请所属项目，不再面对空列表。
+issue #128 审批指定正式项目：邀请注册的外部人员落「隔离项目」（空 scopes、零能力），管理员
+批准新建申请时可指定正式项目（approve body project_override=项目 gid，仅 kind=new 接受；
+upgrade 带 override → 400——提额不涉及项目变更）。gid 先经 myProjects 存在性校验（慢调用故
+锁外、_executing 登记后执行；不存在 400、查询异常 502，均保持 pending 可重试），通过后落
+projectOverride/projectNameOverride 快照并持久化；执行落 override 项目——申请人非成员先以
+scopes=[] 零能力入项（与员工自动入项 PROJECT_MEMBER_SCOPES 的 read/write_requests 刻意不同：
+审批只解决「落在哪」，不白送请求读写能力，能力由项目管理员后续按需下发）再建 Key，已是成员
+直接建；无 override 时 #89 fail-closed 成员复查原样不动。
 申请人撤回（issue #80）：POST /self/key-requests/<id>/cancel，仅本人 + 仅 pending，
 置 canceled + 管理员回执（卡片更新/无卡降级群文本），幂等不重复通知。
 
@@ -208,8 +216,9 @@ _STATUS_COLOR = {"pending": "orange", "approved": "green", "rejected": "red", "e
 
 def _detail_line(req: dict) -> str:
     # issue #89：审批卡/回执显示项目名（管理员不再只能去控制台辨认目标项目）；
-    # 存量申请无快照 → Default（与过滤/执行同口径）
-    project = f"**项目**: {req.get('projectName') or 'Default'}"
+    # 存量申请无快照 → Default（与过滤/执行同口径）；
+    # issue #128：批准时指定了正式项目则覆盖显示 override 名（回执卡/结果可核对落点）
+    project = f"**项目**: {req.get('projectNameOverride') or req.get('projectName') or 'Default'}"
     if req["kind"] == "new":
         return f"{project}\n**用途**: {req.get('purpose') or '—'}"
     # issue #86：提额按所选 Key 列名（名称快照）；fail-open 无快照但有 keyIds 时回退列 id；
@@ -449,6 +458,8 @@ def create_request(me: dict, kind: str, purpose: str, tier: str, key_ids=None, p
             "keyNames": key_names,  # 名称快照（显示用；fail-open 无快照为 None）
             "projectId": pid,                # issue #89：目标项目（执行/过滤同以此为据）
             "projectName": proj.get("name"), # 项目名快照（显示用，审批期间改名不影响）
+            "projectOverride": None,      # issue #128：管理员批准时指定的正式项目 gid（None=落申请项目）
+            "projectNameOverride": None,  # override 项目名快照（显示用；仅批准指定后非 None）
             "cardMessageId": None,
         }
         reqs.append(req)
@@ -497,15 +508,26 @@ def _execute(req: dict, tier_override: str = ""):
     issue #89：执行落在申请单记录的项目（与管理员当前所在项目解耦，切错项目不批错单）；
     无项目字段的存量申请视为 Default。kind=new 执行时复查成员资格——审批期间被移出项目
     则不建 Key，结果文本说明（参照上方「无用户」先例，申请照常转 approved 落结果）。
+    issue #128：req.projectOverride 非空（管理员批准时指定正式项目）时执行落该项目——
+    申请人非成员先以 scopes=[] 零能力入项（与员工自动入项 PROJECT_MEMBER_SCOPES 的
+    read/write_requests 刻意不同：审批只解决「落在哪」，不白送请求读写能力，能力由项目
+    管理员后续按需下发）再建 Key；已是成员直接建；projectOverride 为空时上方 #89
+    fail-closed 成员复查原样不动。
     异常上抛——调用方保持 pending 供重试。"""
     email = (req.get("applicant") or {}).get("email") or ""
     user = alert_poller.find_user_by_email(_get_ax(), email)
     if not user:
         return f"axonhub 中无 {email} 用户（已删除？），未执行", None, None
-    pid = _req_project_id(req)
+    pid = req.get("projectOverride") or _req_project_id(req)  # issue #128：override 优先
     if req["kind"] == "new":
         projs = alert_poller.query_user_projects(_get_ax(), user["id"])  # 异常上抛=保持 pending 重试
-        if pid not in {p.get("id") for p in projs}:
+        if req.get("projectOverride"):
+            # issue #128：override 项目——申请人非成员先零能力入项（scopes=[]，语义见 docstring）
+            # 再建 Key；入项 gql 失败上抛=保持 pending 重试（与成员复查查询同纪律）
+            if pid not in {p.get("id") for p in projs}:
+                _get_ax().gql(alert_poller.ADD_USER_TO_PROJECT_MUTATION, {"input": {
+                    "projectId": pid, "userId": user["id"], "isOwner": False, "scopes": []}})
+        elif pid not in {p.get("id") for p in projs}:
             return (f"申请人已不在项目 {req.get('projectName') or pid} 中（审批期间被移除），未建 Key",
                     None, None)
         # seed：飞书身份用 open_id（与 #72 命名一致），非飞书用 u<uid>（同名幂等不受影响——tail 是申请 id）
@@ -516,6 +538,9 @@ def _execute(req: dict, tier_override: str = ""):
             _get_ax(), user, seed, req.get("purpose") or "", day, req["id"],
             tier=tier_name, project_id=pid)
         result, dm_text = _deliver_new_key(req, name, plain, owner_note, tier_name)
+        if req.get("projectOverride"):
+            # issue #128：结果摘要体现落点项目（回执卡/申请列表可核对批到了哪个项目）
+            result += f"，项目: {req.get('projectNameOverride') or pid}"
         return result, name, dm_text
     result = alert_poller.apply_tier_to_user(
         _get_ax(), user, tier_override or (req.get("tier") or ""),
@@ -525,11 +550,18 @@ def _execute(req: dict, tier_override: str = ""):
     return result, None, dm
 
 
-def resolve_request(rid: str, action: str, reason: str = "", tier_override: str = ""):
+def resolve_request(rid: str, action: str, reason: str = "", tier_override: str = "",
+                    project_override: str = ""):
     """管理员点批：approve=执行 + 回执；reject=标记 + 回执。
     tier_override=批准时改定的档位（issue #81）：非空必须在白名单内，否则 400——
     kind=new 为 ALLOWED_TIERS 全集，kind=upgrade 收窄为 TIERS（issue #85，提额语义不含体验档）；
     空串=默认（新建体验档/提额所求档）。
+    project_override=批准时指定的正式项目 gid（issue #128）：仅 kind=new 接受——upgrade 带
+    override 直接 400（廉价校验与 tier 白名单同位，提额不涉及项目变更）；非空先经 myProjects
+    存在性校验（慢调用不能进锁，放在 _executing 登记后的锁外段——校验期间并发 reject/
+    重复 approve/sweep 已被挡让位；不存在 400、查询异常 502，均保持 pending 可重试，
+    fail-closed 不猜项目），通过后锁内落 projectOverride/projectNameOverride 快照再执行；
+    空串=落申请单记录的项目（#89 语义不变）。
     返回 (req_public 或 None, (status, 文案) 或 None)：
       - (None, (404, ...)) 未找到；(req, None) 成功/幂等现状；执行失败 (req, (502, ...)) 保持 pending；
         目标正在执行 approve（并发点批）→ (req, (409, ...))。
@@ -551,6 +583,10 @@ def resolve_request(rid: str, action: str, reason: str = "", tier_override: str 
             allowed = ALLOWED_TIERS if req["kind"] == "new" else TIERS
             if tier_override not in allowed:
                 return shape_public(req), (400, f"tier 必须是 {'/'.join(allowed)}")
+        if action == "approve" and project_override and req["kind"] != "new":
+            # issue #128：提额不涉及项目变更——upgrade 带 project_override 直接 400
+            # （廉价校验与 tier 白名单同位：不执行、状态保持 pending，不触发任何慢调用）
+            return shape_public(req), (400, "提额申请不支持 project_override（指定正式项目仅新建申请可用）")
         if action == "approve" and time.time() - req.get("ts", 0) > REQUEST_TTL:
             # 超时申请不可批：就地转 expired（sweep 未跑到时的兜底），回执后返回现状
             req["status"] = "expired"
@@ -581,6 +617,37 @@ def resolve_request(rid: str, action: str, reason: str = "", tier_override: str 
         return shape_public(snap), None
     # approve：执行在锁外（gql/飞书慢调用）；rid 已登记 _executing，并发 reject/重复 approve/sweep 让位
     try:
+        if project_override:
+            # issue #128：override 项目存在性校验——myProjects 是慢调用不能进锁，故放在
+            # _executing 登记后的锁外段（与执行同一段并发纪律：校验期间 reject/重复 approve/
+            # sweep 让位；本段任何 return 都经 finally 摘除标记）。校验通过落 override 快照
+            # （锁内持久化 + 同步内存 req 供 _execute 同据）；不存在 400 / 查询异常 502
+            # 都保持 pending 可重试（fail-closed 不猜项目，语义同 tier 白名单 400/执行 502）。
+            try:
+                projs = _get_ax().gql(alert_poller.MY_PROJECTS_QUERY)["myProjects"] or []
+            except Exception as e:
+                print(f"[keyreq] override 项目校验查询异常 {rid}: {type(e).__name__}: {e}", flush=True)
+                return shape_public(req), (502, f"项目校验暂不可用（状态保持待审批，可重试）: "
+                                                f"{type(e).__name__}: {str(e)[:120]}")
+            proj = next((p for p in projs if p.get("id") == project_override), None)
+            if proj is None:
+                return shape_public(req), (400, f"项目不存在: {project_override}")
+            with _lock:
+                reqs = _load()
+                cur = next((r for r in reqs if r["id"] == rid), None)
+                if cur is None:
+                    return None, (404, "request not found")
+                if cur["status"] != "pending":
+                    # 防御性让位：_executing 已挡 reject/重复 approve/sweep，正常到不了这里；
+                    # 万一到达（未来改动破坏约定），尚未产生任何副作用，只让位并记日志
+                    print(f"[keyreq] override 落快照时申请已非 pending {rid}"
+                          f"（status={cur['status']}），让位", flush=True)
+                    return shape_public(cur), None
+                cur["projectOverride"] = proj["id"]
+                cur["projectNameOverride"] = proj.get("name")
+                _save(reqs)
+            req["projectOverride"] = proj["id"]  # 执行用内存快照同步（_execute 以 req 为据）
+            req["projectNameOverride"] = proj.get("name")
         try:
             result, key_name, dm_text = _execute(req, tier_override)
         except Exception as e:

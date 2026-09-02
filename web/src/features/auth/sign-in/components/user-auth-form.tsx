@@ -190,6 +190,13 @@ export function UserAuthForm({ className, ...props }: UserAuthFormProps) {
           </div>
         )}
 
+        {/* issue #128：受邀外部人员入口——不显眼链接直达 /sign-up（邀请注册页） */}
+        <div className='mt-6 text-center'>
+          <Link to='/sign-up' className='text-sm text-slate-500 transition-colors hover:text-slate-700 hover:underline'>
+            {t('auth.signIn.links.inviteSignUp')}
+          </Link>
+        </div>
+
     </Form>
   );
 }

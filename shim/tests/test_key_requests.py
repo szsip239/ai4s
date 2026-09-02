@@ -959,5 +959,145 @@ class TestProjectScope(_Base):
         self.assertIsNone(err2)
 
 
+_P3 = "gid://axonhub/Project/3"
+
+
+class TestProjectOverride(_Base):
+    """issue #128：管理员批准新建申请时指定正式项目（project_override）。
+    锁外 myProjects 存在性校验（不存在 400 / 查询异常 502，均保持 pending 可重试）→ 落
+    projectOverride/projectNameOverride 快照 → 执行落 override 项目：非成员先 scopes=[]
+    零能力入项再建 Key，已是成员直接建；upgrade 带 override 400（锁内廉价校验，零 gql）；
+    无 override 存量 #89 fail-closed 成员复查原样。
+    mock 边界与 _Base 同款线路边界：ax.gql 按查询串分流 myProjects/addUserToProject，
+    成员资格仍走 query_user_projects mock。"""
+
+    def _ax_mock(self, projects, events):
+        """假 Axonhub：myProjects 返回给定项目列表；addUserToProject 记录入项 input 到 events。"""
+        ax = mock.Mock()
+
+        def _gql(query, variables=None):
+            if "myProjects" in query:
+                return {"myProjects": projects}
+            if "addUserToProject" in query:
+                events.append(("add", variables["input"]))
+                return {"addUserToProject": {"id": "m-1"}}
+            raise AssertionError(f"unexpected gql: {query}")
+
+        ax.gql.side_effect = _gql
+        return ax
+
+    def _ensure_mock(self, events):
+        """ensure_emp_key side_effect：记录建 Key 事件（顺序断言用），返回标准三元组。"""
+        def _ensure(*_a, **kw):
+            events.append(("key", kw.get("project_id")))
+            return ("emp-x", "ah-x", "")
+        return _ensure
+
+    def test_override_non_member_zero_scope_add_then_key(self):
+        # ①override 到非成员项目：先零能力入项（scopes==[]）再建 Key 于 override 项目
+        req = self._create(_ME_LOCAL)
+        events = []
+        ax = self._ax_mock([{"id": kr.alert_poller.KEY_PROJECT_ID, "name": "Default"},
+                            {"id": _P3, "name": "P-Formal"}], events)
+        with mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_LOCAL), \
+             mock.patch.object(kr.alert_poller, "ensure_emp_key",
+                               side_effect=self._ensure_mock(events)), \
+             mock.patch.object(kr, "_get_ax", return_value=ax):
+            out, err = kr.resolve_request(req["id"], "approve", project_override=_P3)
+        self.assertIsNone(err)
+        self.assertEqual(out["status"], "approved")
+        # 顺序锁定：先入项后建 Key；入项 input 逐项断言（零能力 scopes==[] 是 #128 核心语义）
+        self.assertEqual([e[0] for e in events], ["add", "key"])
+        add_input = events[0][1]
+        self.assertEqual(add_input["projectId"], _P3)
+        self.assertEqual(add_input["userId"], _USER_LOCAL["id"])
+        self.assertEqual(add_input["isOwner"], False)
+        self.assertEqual(add_input["scopes"], [])
+        self.assertEqual(events[1][1], _P3)  # ensure_emp_key 落 override 项目
+        # 快照落申请单并经 shape_public 透出；结果摘要/详情行体现落点项目名
+        self.assertEqual(out["projectOverride"], _P3)
+        self.assertEqual(out["projectNameOverride"], "P-Formal")
+        self.assertIn("项目: P-Formal", out["result"])
+        stored = [r for r in kr._load() if r["id"] == req["id"]][0]
+        self.assertEqual(stored["projectOverride"], _P3)
+        self.assertEqual(stored["projectNameOverride"], "P-Formal")
+        self.assertIn("**项目**: P-Formal", kr._detail_line(stored))  # 回执卡项目行覆盖显示
+
+    def test_override_member_direct_key_no_add(self):
+        # ②override 到已是成员项目：不重复入项，直接建 Key
+        req = self._create(_ME_LOCAL)
+        events = []
+        ax = self._ax_mock([{"id": _P3, "name": "P-Formal"}], events)
+        with mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_LOCAL), \
+             mock.patch.object(kr.alert_poller, "query_user_projects",
+                               side_effect=lambda ax_, uid: [
+                                   {"id": kr.alert_poller.KEY_PROJECT_ID, "name": "Default"},
+                                   {"id": _P3, "name": "P-Formal"}]), \
+             mock.patch.object(kr.alert_poller, "ensure_emp_key",
+                               side_effect=self._ensure_mock(events)), \
+             mock.patch.object(kr, "_get_ax", return_value=ax):
+            out, err = kr.resolve_request(req["id"], "approve", project_override=_P3)
+        self.assertIsNone(err)
+        self.assertEqual(out["status"], "approved")
+        self.assertEqual(events, [("key", _P3)])  # 无入项事件
+
+    def test_override_unknown_project_400(self):
+        # ③override gid 不在 myProjects → 400「项目不存在」；不执行、保持 pending、不落快照
+        req = self._create(_ME_LOCAL)
+        ax = self._ax_mock([{"id": kr.alert_poller.KEY_PROJECT_ID, "name": "Default"}], [])
+        with mock.patch.object(kr.alert_poller, "ensure_emp_key") as ek, \
+             mock.patch.object(kr, "_get_ax", return_value=ax):
+            out, err = kr.resolve_request(req["id"], "approve", project_override=_P3)
+        self.assertEqual(err[0], 400)
+        self.assertIn("项目不存在", err[1])
+        self.assertEqual(out["status"], "pending")
+        ek.assert_not_called()
+        stored = [r for r in kr._load() if r["id"] == req["id"]][0]
+        self.assertIsNone(stored["projectOverride"])
+
+    def test_override_query_error_502_retryable(self):
+        # ③b myProjects 查询异常 → 502 保持 pending 可重试（fail-closed 不猜项目）
+        req = self._create(_ME_LOCAL)
+        ax = mock.Mock()
+        ax.gql.side_effect = RuntimeError("gql down")
+        with mock.patch.object(kr.alert_poller, "ensure_emp_key") as ek, \
+             mock.patch.object(kr, "_get_ax", return_value=ax):
+            out, err = kr.resolve_request(req["id"], "approve", project_override=_P3)
+        self.assertEqual(err[0], 502)
+        self.assertIn("项目校验", err[1])
+        self.assertEqual(out["status"], "pending")
+        ek.assert_not_called()
+        stored = [r for r in kr._load() if r["id"] == req["id"]][0]
+        self.assertIsNone(stored["projectOverride"])
+
+    def test_upgrade_with_override_400(self):
+        # ④upgrade 带 override → 400（提额不涉及项目变更）；锁内廉价校验——不触发任何 gql
+        req = self._create(_ME_LOCAL, kind="upgrade", tier="标准档")
+        with mock.patch.object(kr.alert_poller, "apply_tier_to_user") as at, \
+             mock.patch.object(kr, "_get_ax") as get_ax:
+            out, err = kr.resolve_request(req["id"], "approve", project_override=_P3)
+        self.assertEqual(err[0], 400)
+        self.assertIn("project_override", err[1])
+        self.assertEqual(out["status"], "pending")
+        at.assert_not_called()
+        get_ax.assert_not_called()
+
+    def test_no_override_legacy_member_recheck_unchanged(self):
+        # ⑤无 override：#89 存量 fail-closed 成员复查原样——审批期间被移出项目不建 Key、
+        # 照常 approved 落结果；override 字段保持 None
+        req = self._create(_ME_LOCAL)
+        with mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_LOCAL), \
+             mock.patch.object(kr.alert_poller, "query_user_projects",
+                               side_effect=lambda ax_, uid: []), \
+             mock.patch.object(kr.alert_poller, "ensure_emp_key") as ek, \
+             mock.patch.object(kr, "_get_ax", return_value=object()):
+            out, err = kr.resolve_request(req["id"], "approve")
+        self.assertIsNone(err)
+        self.assertEqual(out["status"], "approved")
+        self.assertIn("已不在项目", out["result"])
+        ek.assert_not_called()
+        self.assertIsNone(out["projectOverride"])
+
+
 if __name__ == "__main__":
     unittest.main()
