@@ -46,7 +46,7 @@ cd ../shim && python3 -m venv .venv && .venv/bin/pip install -r requirements-dev
 - **公网访问（2026-08-22 起，替代 tailnet serve）**：宿主 `local-edge-nginx` 发布两条 example.com HTTPS 入口（模板 `sibling-project/.deploy/nginx-consolidation/local/templates/ai4s.conf.template`；iKuai dnat id=22/23 对齐 18999 模式）：
   - console+API：`https://example.com:8445`（→ host.docker.internal:3000；本机 localhost:3000 入口不受影响）
   - **子域规范入口（2026-08-31 起）**：`https://ai4s.example.com:8445`（同 upstream，SNI 分流，独立 DV 证书 2026-11-29 到期）。起因：与 sibling-project(:13100) 同 host 不同端口跑两个 PWA，Android intent-filter 按 host 匹配不认端口、WebAPK 互相抢链接；独立子域后隔离。DNS 为 CNAME→example.com（跟随主域 DDNS）。SSO 规范名已切子域：`axonhub/config.yml` public_url/redirect_url=ai4s.example.com:8445；casdoor `ai4s` 应用 redirect_uris 三轨（localhost/主域/子域）。主域入口保留兼容，新登录统一回子域。
-  - Casdoor：`https://example.com:8444`（→ host.docker.internal:8000）
+  - Casdoor：`https://example.com:8444`（→ host.docker.internal:8000）。**公网自助注册已封（2026-09-02）**：边缘模板对 `/signup`、`/api/signup` 返回 404（Casdoor 应用 `enable_sign_up` 保持 true——关掉会连带阻断新员工飞书 JIT，Casdoor `controllers/auth.go` 两处共用此开关）；飞书 SSO 走 `/api/login` 不受影响；管理员预建账号走内网直连 :8000。
   - tailnet serve 8444/8445 已取消（8443/9443 属其他服务，保留）。
   - SSO 规范名：`axonhub/config.yml` 的 public_url/redirect_url=ai4s.example.com:8445、issuer_url=example.com:8444，`casdoor/app.conf` origin=example.com:8444（issuer 与 origin 必须一致）。
   - **前置依赖（飞书后台手工项）**：飞书开放平台应用（cli_xxxxxxxxxxxxxxxx）→ 安全设置 → 重定向 URL 须含 `https://example.com:8444/callback`，否则 SSO 最后一步报错误码 20029。
