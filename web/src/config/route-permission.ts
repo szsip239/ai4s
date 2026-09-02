@@ -129,18 +129,8 @@ export const routeConfigs: RouteGroup[] = [
         requireProjectOwner: true,
       },
       {
-        path: '/project/traces',
-        requiredScopes: ['read_requests'],
-        mode: 'hidden',
-      },
-      {
         path: '/project/threads',
         requiredScopes: ['read_requests'],
-        mode: 'hidden',
-      },
-      {
-        path: '/project/users',
-        requiredScopes: ['read_users'],
         mode: 'hidden',
       },
       {
@@ -228,7 +218,6 @@ const LANDING_CANDIDATE_PATHS = [
   '/project/api-keys',
   '/project/requests',
   '/project/prompts',
-  '/project/users',
   '/project/playground',
   '/project/my-keys',
 ];

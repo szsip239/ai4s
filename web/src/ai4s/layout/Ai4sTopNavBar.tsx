@@ -8,12 +8,12 @@ import { useAi4sNavItems, isAi4sNavActive } from './useAi4sNavItems';
  * issue #54 归并：渠道管理+模型 →「接入管理」（页内 Tab 切换），用户+角色 →「用户与角色」；
  * 日志域的用量统计/追踪/线程、成员域的用户/角色同样经各页 Ai4sPageTabs 可达。
  * issue #55 收尾：「审计日志」统一为「观测」（与 ⌘K 域名一致）；补「成员」入口
- * （/project/users、/project/roles 直达时顶栏有激活项）。
+ * （人员域子路由直达时顶栏有激活项）。
  * issue #80：「观测」改名「日志」（zh）/ Logs（en），键名 sidebar.items.observability 与路由不变。
  * issue #65：成员（项目域）+ 用户与角色（全局域）合并为单一「人员」入口，
  * 四个人员域页面经统一 people Tab 组互跳；顶栏 10 项 → 9 项。
- * issue #65 评审 P2：人员入口按权限回落——有系统级 read_users 落全局 /users，
- * 否则落项目域 /project/users（route-permission：/users 属 system 组，/project/users 属 any 组）。
+ * issue #65 评审 P2：人员入口曾按权限回落项目域 /project/users；该页现已整删
+ * （项目成员管理收归全局 /users 页内对话框），无系统级 read_users 即整项隐藏。
  * issue #69 P3：入口按 routeConfigs mode:'hidden' 语义做权限过滤（与侧栏/⌘K 的 filterNavItems 一致），
  * 无权限且 mode=hidden 的入口不再渲染（此前员工可见 9 个入口、其中 7 个点进去 Access Denied）。
  * issue #70：label 走 i18n（与 ⌘K 同源复用 sidebar.items.*；zh 文案与 ⌘K 不同的四项——

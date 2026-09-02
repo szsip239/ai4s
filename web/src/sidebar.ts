@@ -62,12 +62,10 @@ export function useSidebarData(): SidebarData {
   };
 
   // 原始导航组配置（issue #54 侧栏归并 17→11：同域页面合并为入口+页内 Tab，
-  // 被合并路由（/models、/roles、/project/usage-stats、/project/traces、/project/threads、
+  // 被合并路由（/models、/roles、/project/usage-stats、/project/threads、
   // /project/roles）保持可达，经各页 PageTabs 切换；
-  // issue #65 人员域再归并：项目「成员」并入管理组「人员」（/users 入口），
-  // /project/users、/project/roles 经 people Tab 组可达；
-  // issue #65 评审 P2：项目组加回「人员」（/project/users）——与管理组 /users 同名不同组，
-  // 经 filterNavGroups/checkRouteAccess 按各自 scopeLevel 过滤（/users=system 组，/project/users=any 组））
+  // issue #65 人员域再归并：项目「成员」并入管理组「人员」（/users 入口）；
+  // 后续 /project/users 整页删除——项目成员管理（加入项目/角色/scopes）收归全局 /users 页内对话框）
   const rawNavGroups: NavGroup[] = [
     {
       title: t('sidebar.groups.admin'),
@@ -151,11 +149,6 @@ export function useSidebarData(): SidebarData {
           title: t('sidebar.items.playground'),
           url: '/project/playground',
           icon: IconRobot,
-        } as NavLink,
-        {
-          title: t('sidebar.items.people'),
-          url: '/project/users',
-          icon: IconUsers,
         } as NavLink,
         // {
         //   title: t('sidebar.items.usageLogs'),
