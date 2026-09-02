@@ -13,6 +13,7 @@
   "sidebar.items.requests": "请求",
   "sidebar.items.traces": "追踪",
   "sidebar.items.threads": "线程",
+  "sidebar.items.blocks": "拦截",
   "sidebar.items.usageLogs": "用量日志",
   "sidebar.items.apiKeys": "Key 管理",
   "sidebar.items.usageStats": "用量统计",

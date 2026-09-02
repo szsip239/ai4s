@@ -26,11 +26,11 @@ export const pageTabGroups = {
     { label: t('sidebar.items.users'), url: '/users' },
     { label: t('sidebar.items.roles'), url: '/project/roles' },
   ],
-  /** 日志（项目组，issue #80 改名，键名 observability 保留）：请求 | 用量统计 | 追踪 | 线程 */
+  /** 日志（项目组，issue #80 改名，键名 observability 保留）：请求 | 用量统计 | 拦截
+      （issue #132：追踪/线程上游无数据摘下（路由保留可直访），新增「拦截」消费 shim block 层审计） */
   observability: (t: (key: string) => string): PageTab[] => [
     { label: t('sidebar.items.requests'), url: '/project/requests' },
     { label: t('sidebar.items.usageStats'), url: '/project/usage-stats' },
-    { label: t('sidebar.items.traces'), url: '/project/traces' },
-    { label: t('sidebar.items.threads'), url: '/project/threads' },
+    { label: t('sidebar.items.blocks'), url: '/project/blocks' },
   ],
 };

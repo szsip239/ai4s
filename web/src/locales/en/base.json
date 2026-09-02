@@ -13,6 +13,7 @@
   "sidebar.items.requests": "Requests",
   "sidebar.items.traces": "Traces",
   "sidebar.items.threads": "Threads",
+  "sidebar.items.blocks": "Blocks",
   "sidebar.items.usageLogs": "Usage Logs",
   "sidebar.items.apiKeys": "Key Management",
   "sidebar.items.usageStats": "Usage Statistics",

@@ -34,6 +34,6 @@ test('people/observability 组不受 issue #113 影响', () => {
   );
   assert.deepEqual(
     pageTabGroups.observability(t).map((tab) => tab.url),
-    ['/project/requests', '/project/usage-stats', '/project/traces', '/project/threads']
+    ['/project/requests', '/project/usage-stats', '/project/blocks']
   );
 });

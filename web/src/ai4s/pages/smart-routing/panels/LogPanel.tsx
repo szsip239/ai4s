@@ -2,7 +2,7 @@
  * 决策日志面板（智能路由页标签项，不再首页直出）：GET /dlp-admin/shadow-verdicts?layer=router&n=50
  * 只读表格（时间/档位/p_complex/原因/改写目标/延迟/会话），手动刷新不轮询。
  * issue #129：顶部视图切换加「Key 绕行」（layer=bypass 审计条：时间/模型/说明）。
- * issue #130：再加「内容阻断」（layer=block 阻断条：时间/模型/命中规则族）。
+ * issue #132：「内容阻断」视图迁出至日志页「拦截」tab（/project/blocks），本面板只留 router/bypass。
  */
 import { useState } from 'react';
 import { format } from 'date-fns';
@@ -13,14 +13,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import {
-  useRouterVerdicts,
-  useBypassVerdicts,
-  useBlockVerdicts,
-  type RouterVerdict,
-  type BypassVerdict,
-  type BlockVerdict,
-} from '../api';
+import { useRouterVerdicts, useBypassVerdicts, type RouterVerdict, type BypassVerdict } from '../api';
 
 /** 决策行（router 层五决策字段非 None 才写，读侧全部可选；error 条=分类失败 fail-open） */
 function VerdictRow({ r }: { r: RouterVerdict }) {
@@ -63,33 +56,14 @@ function BypassRow({ r }: { r: BypassVerdict }) {
   );
 }
 
-/** 内容阻断审计行（issue #130 block 层：规则族标识/模型名，不落原文） */
-function BlockRow({ r }: { r: BlockVerdict }) {
-  const rules = (r.rule_ids ?? []).join(', ');
-  return (
-    <TableRow>
-      <TableCell className='text-muted-foreground whitespace-nowrap'>
-        {typeof r.ts === 'number' ? format(new Date(r.ts * 1000), 'MM-dd HH:mm:ss') : '—'}
-      </TableCell>
-      <TableCell className='max-w-56 truncate font-mono text-xs' title={r.model ?? undefined}>
-        {r.model ?? '—'}
-      </TableCell>
-      <TableCell className='font-mono text-xs' title={rules || undefined}>
-        {rules ? rules.split(', ').map((id) => <Badge key={id} variant='destructive' className='mr-1'>{id}</Badge>) : '—'}
-      </TableCell>
-    </TableRow>
-  );
-}
-
-type LogView = 'router' | 'bypass' | 'block';
+type LogView = 'router' | 'bypass';
 
 export function Ai4sRoutingLogPanel() {
   const { t } = useTranslation();
   const [view, setView] = useState<LogView>('router');
   const verdicts = useRouterVerdicts();
   const bypass = useBypassVerdicts();
-  const block = useBlockVerdicts();
-  const active = view === 'router' ? verdicts : view === 'bypass' ? bypass : block;
+  const active = view === 'router' ? verdicts : bypass;
   const records = active.data?.records ?? [];
 
   return (
@@ -102,7 +76,7 @@ export function Ai4sRoutingLogPanel() {
           </div>
           <div className='flex items-center gap-2'>
             <div className='flex gap-1'>
-              {(['router', 'bypass', 'block'] as const).map((v) => (
+              {(['router', 'bypass'] as const).map((v) => (
                 <Button
                   key={v}
                   variant={view === v ? 'default' : 'outline'}
@@ -130,13 +104,7 @@ export function Ai4sRoutingLogPanel() {
           </Alert>
         ) : records.length === 0 ? (
           <p className='text-muted-foreground py-6 text-center text-sm'>
-            {t(
-              view === 'router'
-                ? 'ai4s.smartRouting.log.empty'
-                : view === 'bypass'
-                  ? 'ai4s.smartRouting.log.bypassEmpty'
-                  : 'ai4s.smartRouting.log.blockEmpty'
-            )}
+            {t(view === 'router' ? 'ai4s.smartRouting.log.empty' : 'ai4s.smartRouting.log.bypassEmpty')}
           </p>
         ) : view === 'router' ? (
           <Table>
@@ -157,7 +125,7 @@ export function Ai4sRoutingLogPanel() {
               ))}
             </TableBody>
           </Table>
-        ) : view === 'bypass' ? (
+        ) : (
           <Table>
             <TableHeader>
               <TableRow>
@@ -169,21 +137,6 @@ export function Ai4sRoutingLogPanel() {
             <TableBody>
               {(records as BypassVerdict[]).map((r, i) => (
                 <BypassRow key={`${r.ts}-${i}`} r={r} />
-              ))}
-            </TableBody>
-          </Table>
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>{t('ai4s.smartRouting.log.columns.time')}</TableHead>
-                <TableHead>{t('ai4s.smartRouting.log.columns.model')}</TableHead>
-                <TableHead>{t('ai4s.smartRouting.log.columns.rules')}</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {(records as BlockVerdict[]).map((r, i) => (
-                <BlockRow key={`${r.ts}-${i}`} r={r} />
               ))}
             </TableBody>
           </Table>
