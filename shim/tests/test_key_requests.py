@@ -923,6 +923,13 @@ class TestProjectScope(_Base):
         self._create_p2()
         self.assertIn("?project=" + urllib.parse.quote(_P2, safe=""), self.group[0])
 
+    def test_card_time_shown_as_cst(self):
+        # 飞卡卡面时间统一东八：存储仍是 ISO Z，显示转 UTC+8
+        req = {"id": "kr-20260902-abcdef", "kind": "new", "purpose": "联调", "createdAt": "2026-09-02T13:36:45Z"}
+        content = kr._request_card(req)["elements"][0]["text"]["content"]
+        self.assertIn("2026-09-02 21:36:45 UTC+8", content)
+        self.assertNotIn("2026-09-02T13:36:45", content)
+
     def test_dup_same_project_409_with_project_name(self):
         # issue #90：同项目同 kind pending 仍 409（防 spam 不变），文案带冲突项目名
         req = self._create_p2()

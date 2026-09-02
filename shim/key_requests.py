@@ -65,6 +65,7 @@ import urllib.request
 
 import admin_api  # write_json_atomic 原子写复用（唯一 tmp + .bak 滚动 + finally 清理）
 import alert_poller  # 执行体/飞书 helper 复用（import 不起线程；feishu_dm/ensure_emp_key 等）
+import feishu_lib  # 卡面时间东八 helper（iso_to_cst/day_key_cst）
 
 REQUESTS_PATH = os.environ.get(
     "KEY_REQUESTS_PATH",
@@ -247,7 +248,7 @@ def _request_card(req: dict) -> dict:
     content = (
         f"**申请人**: {(req.get('applicant') or {}).get('email')}\n"
         f"{_detail_line(req)}\n"
-        f"**申请 ID**: {req['id']}\n**时间**: {req.get('createdAt')}"
+        f"**申请 ID**: {req['id']}\n**时间**: {feishu_lib.iso_to_cst(req.get('createdAt'))}"
     )
     return {
         "config": {"wide_screen_mode": True},
@@ -443,7 +444,7 @@ def create_request(me: dict, kind: str, purpose: str, tier: str, key_ids=None, p
             return None, (409, f"项目 {dup.get('projectName') or 'Default'} "
                                f"已有待审批的同类申请（{dup['id']}），请等待处理或联系管理员")
         req = {
-            "id": f"kr-{time.strftime('%Y%m%d', time.gmtime(now))}-{secrets.token_hex(3)}",
+            "id": f"kr-{feishu_lib.day_key_cst(now)}-{secrets.token_hex(3)}",
             "kind": kind,
             "purpose": purpose,
             "tier": tier,
@@ -532,7 +533,7 @@ def _execute(req: dict, tier_override: str = ""):
                     None, None)
         # seed：飞书身份用 open_id（与 #72 命名一致），非飞书用 u<uid>（同名幂等不受影响——tail 是申请 id）
         seed = (req.get("applicant") or {}).get("openId") or f"u{str(user['id']).rsplit('/', 1)[-1]}"
-        day = time.strftime("%Y%m%d", time.gmtime(req.get("ts") or time.time()))
+        day = feishu_lib.day_key_cst(req.get("ts") or time.time())
         tier_name = tier_override or alert_poller.KEY_INIT_TIER
         name, plain, owner_note = alert_poller.ensure_emp_key(
             _get_ax(), user, seed, req.get("purpose") or "", day, req["id"],

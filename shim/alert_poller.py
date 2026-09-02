@@ -593,12 +593,13 @@ def create_emp_key(ax: Axonhub, open_id: str, purpose: str, day: str, ic: str) -
 
 
 def _approval_day(inst: dict) -> str:
-    """实例发起时间 → yyyymmdd（命名用实例时间而非处理时间：跨天重试名字不变，幂等）。"""
+    """实例发起时间 → yyyymmdd（命名用实例时间而非处理时间：跨天重试名字不变，幂等）。
+    日界统一东八（feishu_lib.day_key_cst），与国内直觉一致。"""
     try:
         ms = int(inst.get("start_time") or 0)
-        return time.strftime("%Y%m%d", time.gmtime(ms / 1000)) if ms else time.strftime("%Y%m%d", time.gmtime())
+        return feishu_lib.day_key_cst(ms / 1000) if ms else feishu_lib.day_key_cst()
     except Exception:
-        return time.strftime("%Y%m%d", time.gmtime())
+        return feishu_lib.day_key_cst()
 
 
 def _process_approved(ax: Axonhub, kind: str, ic: str, inst: dict) -> bool:
@@ -783,7 +784,7 @@ def save_state(state: dict):
 
 
 def now_str() -> str:
-    return time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime())
+    return feishu_lib.fmt_cst()
 
 
 # ---- 巡检判定纯函数（issue #56：借迁移给核心分支补单测）----
@@ -955,14 +956,14 @@ def pg_block_pending(recs: list, cursor: float, keymap=None) -> list:
                 f"层: 注入规则\n"
                 f"命中模式组: {','.join(r.get('groups') or ['-'])}\n"
                 f"请求模型: {r.get('model') or '-'}\n"
-                f"时间: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(r['ts']))}"
+                f"时间: {feishu_lib.fmt_cst(r['ts'])}"
             )
         elif r.get("layer") == "block":
             text = (
                 f"[ai4s 告警] DLP 内容已阻断（451）{ident}\n"
                 f"命中规则: {','.join(r.get('rule_ids') or ['-'])}\n"
                 f"请求模型: {r.get('model') or '-'}\n"
-                f"时间: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(r['ts']))}"
+                f"时间: {feishu_lib.fmt_cst(r['ts'])}"
             )
         else:
             score = r.get("score")
@@ -972,7 +973,7 @@ def pg_block_pending(recs: list, cursor: float, keymap=None) -> list:
                 f"层: 注入 PG\n"
                 f"score: {score_txt} ≥ 阻断阈值 {r.get('block_threshold')}\n"
                 f"请求模型: {r.get('model') or '-'}\n"
-                f"时间: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(r['ts']))}"
+                f"时间: {feishu_lib.fmt_cst(r['ts'])}"
             )
         out.append((r["ts"], text))
     return out[:PG_BLOCK_ALERT_BATCH]
@@ -1001,7 +1002,7 @@ def judge_warn_pending(recs: list, cursor: float) -> list:
             f"confidence: {conf_txt}\n"
             f"实体命中数: {entities if entities is not None else '-'}\n"
             f"请求模型: {r.get('model') or '-'}\n"
-            f"时间: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(r['ts']))}"
+            f"时间: {feishu_lib.fmt_cst(r['ts'])}"
         )))
     return out[:JUDGE_WARN_ALERT_BATCH]
 

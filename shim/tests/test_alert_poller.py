@@ -2195,5 +2195,61 @@ class TestCheckCycleCardSync(unittest.TestCase):
         s.assert_not_called()
 
 
+class TestFeishuTimezone(unittest.TestCase):
+    """飞书卡面时间统一东八（UTC+8）：feishu_lib 三 helper + 告警卡「时间:」行后缀。"""
+
+    def test_fmt_cst_epoch(self):
+        # 2026-09-02 13:36:45 UTC = 东八 21:36:45
+        import feishu_lib
+        s = feishu_lib.fmt_cst(1788356205.0)
+        self.assertTrue(s.endswith(" UTC+8"), s)
+        self.assertIn("21:36:45", s)
+
+    def test_fmt_cst_default_now(self):
+        import feishu_lib
+        self.assertTrue(feishu_lib.fmt_cst().endswith(" UTC+8"))
+
+    def test_day_key_cst_rollover(self):
+        # UTC 2026-09-02 16:30 = 东八 9 月 3 日 00:30——日界按东八翻篇（审批/key 命名日界）
+        import datetime
+        import feishu_lib
+        ts = datetime.datetime(2026, 9, 2, 16, 30, tzinfo=datetime.timezone.utc).timestamp()
+        self.assertEqual(feishu_lib.day_key_cst(ts), "20260903")
+        ts2 = datetime.datetime(2026, 9, 2, 15, 30, tzinfo=datetime.timezone.utc).timestamp()
+        self.assertEqual(feishu_lib.day_key_cst(ts2), "20260902")
+
+    def test_iso_to_cst(self):
+        import feishu_lib
+        self.assertEqual(feishu_lib.iso_to_cst("2026-09-02T13:36:45Z"), "2026-09-02 21:36:45 UTC+8")
+        self.assertEqual(feishu_lib.iso_to_cst(""), "")  # 空值原样
+        self.assertEqual(feishu_lib.iso_to_cst("garbage"), "garbage")  # 非 ISO 原样（fail-open）
+
+    def test_block_alert_text_cst_suffix(self):
+        # 阻断告警卡「时间:」行东八后缀（三条分支都过一遍：rules / block / pg）
+        base = {"ts": 1788356205.0, "blocked": True, "model": "m"}
+        for rec in ({**base, "layer": "rules", "groups": ["g"]},
+                    {**base, "layer": "block", "rule_ids": ["r"]},
+                    {**base, "layer": "pg", "score": 0.99, "block_threshold": 0.9}):
+            out = ap.pg_block_pending([rec], 0)
+            self.assertEqual(len(out), 1)
+            self.assertIn("21:36:45 UTC+8", out[0][1])
+            self.assertNotIn(" UTC\n", out[0][1])
+
+    def test_judge_warn_text_cst_suffix(self):
+        recs = [{"ts": 1788356205.0, "warned": True, "confidence": 0.9, "entities": 2, "model": "m"}]
+        out = ap.judge_warn_pending(recs, 0)
+        self.assertIn("21:36:45 UTC+8", out[0][1])
+
+    def test_now_str_cst(self):
+        self.assertTrue(ap.now_str().endswith(" UTC+8"))
+
+    def test_approval_day_cst(self):
+        # 审批实例命名日界按东八：UTC 16:30（=东八次日 00:30）的实例落次日
+        import datetime
+        inst = {"start_time": str(int(datetime.datetime(
+            2026, 9, 2, 16, 30, tzinfo=datetime.timezone.utc).timestamp() * 1000))}
+        self.assertEqual(ap._approval_day(inst), "20260903")
+
+
 if __name__ == "__main__":
     unittest.main()
