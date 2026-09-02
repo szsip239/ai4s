@@ -3165,7 +3165,7 @@ class TestShadowVerdictsApi(unittest.TestCase):
         shadow_log.record("pg", hit=False, score=0.2, latency_ms=40, path=self.log_path)
         status, body = _get("/dlp-admin/shadow-verdicts", token="reader-token")
         self.assertEqual(status, 200)
-        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject", "router", "bypass"})  # #104 rules / #105 judge_inject / #117 router 层 stats 同槽透出
+        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject", "router", "bypass", "block"})  # #104 rules / #105 judge_inject / #117 router 层 stats 同槽透出
         self.assertEqual(body["stats"]["judge"]["total"], 2)
         self.assertEqual(body["stats"]["judge"]["errors"], 1)
         self.assertEqual(body["stats"]["judge"]["hits"], 1)
@@ -3212,6 +3212,19 @@ class TestShadowVerdictsApi(unittest.TestCase):
         status, _ = _get("/dlp-admin/shadow-verdicts?layer=bogus", token="reader-token")
         self.assertEqual(status, 400)
 
+    def test_layer_block_accepted(self):
+        """issue #130：layer 过滤接受 block（词表/归一化 secrets/EDM 内容阻断条）——
+        records 带 rule_ids 脱敏字段；stats 加 block 层。"""
+        import shadow_log
+        shadow_log.record("block", hit=True, blocked=True,
+                          rule_ids=["confidential.codename"], model="echo-test", path=self.log_path)
+        shadow_log.record("pg", hit=False, score=0.2, latency_ms=40, path=self.log_path)
+        status, body = _get("/dlp-admin/shadow-verdicts?layer=block", token="reader-token")
+        self.assertEqual(status, 200)
+        self.assertEqual([r["layer"] for r in body["records"]], ["block"])
+        self.assertEqual(body["records"][0]["rule_ids"], ["confidential.codename"])
+        self.assertEqual(body["stats"]["block"]["hits"], 1)
+
     def test_layer_judge_inject_accepted(self):
         """issue #105：layer 过滤接受 judge_inject（judge 注入第二职责判定条，独立于商密 judge 层
         分层统计）——records 带 attack_type 判定类型标签；stats 聚合四层同槽透出。"""
@@ -3227,7 +3240,7 @@ class TestShadowVerdictsApi(unittest.TestCase):
         self.assertEqual(body["stats"]["judge"]["hits"], 1)  # 商密层独立聚合不串档
         status, body = _get("/dlp-admin/shadow-verdicts", token="reader-token")
         self.assertEqual(status, 200)
-        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject", "router", "bypass"})
+        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject", "router", "bypass", "block"})
 
     def test_empty_store_200_zeros(self):
         status, body = _get("/dlp-admin/shadow-verdicts", token="reader-token")
@@ -3428,7 +3441,7 @@ class TestShadowVerdictsRouterApi(unittest.TestCase):
         self.assertEqual(body["stats"]["router"]["errors"], 1)
         status, body = _get("/dlp-admin/shadow-verdicts", token="reader-token")
         self.assertEqual(status, 200)
-        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject", "router", "bypass"})
+        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject", "router", "bypass", "block"})
 
 
 # ---------------------------------------------------------------------------

@@ -53,7 +53,8 @@ def _max_bytes() -> int:
 def record(layer: str, hit=None, score=None, confidence=None, latency_ms=None,
            error=None, entities=None, path=None, blocked=None, block_threshold=None, model=None,
            warned=None, groups=None, attack_type=None,
-           resolved_model=None, tier=None, p_complex=None, reason=None, session=None):
+           resolved_model=None, tier=None, p_complex=None, reason=None, session=None,
+           rule_ids=None):
     """追加一条 shadow 判定。entities 只存命中数（不存字符串——不落原文）；
     error 非 None 表示该次判定不可用（hit/score/confidence 应为 None）。永不抛。
     issue #103：blocked=True 表示该次判定触发了 451 阻断（PG 高分试点；语义层永不阻断），
@@ -70,7 +71,10 @@ def record(layer: str, hit=None, score=None, confidence=None, latency_ms=None,
     非原文，同 groups 脱敏先例）；只在非 None 时写入。
     issue #117：router 层（auto 智能路由）决策字段——resolved_model（改写目标模型）/
     tier（simple/complex）/p_complex（0~1 校准分数）/reason（决策路径标签）/
-    session（会话命中布尔位；会话 key 本体不落条）；全部只在非 None 时写入。"""
+    session（会话命中布尔位；会话 key 本体不落条）；全部只在非 None 时写入。
+    issue #130：rule_ids 存 block 层（词表/归一化 secrets/EDM 内容阻断）命中规则族标识
+    列表（如 ["confidential.codename","secrets.openai_sk"]——规则标识非原文，同 groups
+    脱敏先例）；只在非 None 时写入。"""
     rec = {
         "ts": time.time(),
         "layer": layer,
@@ -86,7 +90,8 @@ def record(layer: str, hit=None, score=None, confidence=None, latency_ms=None,
                  ("groups", groups),  # groups：issue #104 规则层命中模式组
                  ("attack_type", attack_type),  # attack_type：issue #105 judge 注入判定类型标签
                  ("resolved_model", resolved_model), ("tier", tier),  # issue #117：router 决策条
-                 ("p_complex", p_complex), ("reason", reason), ("session", session)):
+                 ("p_complex", p_complex), ("reason", reason), ("session", session),
+                 ("rule_ids", rule_ids)):  # rule_ids：issue #130 block 层命中规则族
         if v is not None:
             rec[k] = v
     p = path or _default_path()

@@ -84,6 +84,7 @@ const QK = {
   settings: ['dlp-admin', 'settings'],
   routerVerdicts: ['dlp-admin', 'shadow-verdicts', 'router'],
   bypassVerdicts: ['dlp-admin', 'shadow-verdicts', 'bypass'],
+  blockVerdicts: ['dlp-admin', 'shadow-verdicts', 'block'],
 } as const;
 
 const BASE = '/dlp-admin';
@@ -136,5 +137,27 @@ export function useBypassVerdicts() {
     queryKey: QK.bypassVerdicts,
     queryFn: () =>
       apiRequest<BypassVerdictsResp>(`${BASE}/shadow-verdicts?layer=bypass&n=50`, { requireAuth: true }),
+  });
+}
+
+// ---- 内容阻断审计（issue #130，shim shadow_log block 层：rule_ids 命中规则族标识/model，不落原文）----
+
+export interface BlockVerdict {
+  ts: number; // epoch 秒
+  layer: string;
+  model?: string; // 请求模型名（x-model 头，issue #116）
+  rule_ids?: string[]; // 命中规则族标识（confidential.*/secrets.*/edm.doc_match——非原文）
+}
+
+export interface BlockVerdictsResp {
+  stats: Record<string, unknown>;
+  records: BlockVerdict[]; // 新到旧
+}
+
+export function useBlockVerdicts() {
+  return useQuery({
+    queryKey: QK.blockVerdicts,
+    queryFn: () =>
+      apiRequest<BlockVerdictsResp>(`${BASE}/shadow-verdicts?layer=block&n=50`, { requireAuth: true }),
   });
 }

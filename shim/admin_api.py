@@ -48,6 +48,8 @@ issue #129：Key 绕行名单 CRUD——GET/POST /dlp-admin/bypass-keys + PUT/DE
 /dlp-admin/bypass-keys/<id>（只存 SHA-256(token) 不落明文，id 即哈希；校验错误
 不回显 token）；shadow-verdicts 出口 layer 过滤接受 bypass、stats 加 bypass 层
 （绕行审计条只带模型名与范围，不落原文不记 token）。
+issue #130：shadow-verdicts 出口 layer 过滤接受 block、stats 加 block 层（词表/
+归一化 secrets/EDM 内容阻断条，records 带 rule_ids 命中规则族标识——脱敏字段）。
 
 与检测路径（/request /response 调用链）完全隔离：admin 平面 fail-closed——
 内省不可达回 503，不适用检测链的 fail-open 分级（契约 docs/contracts/dlp-webhook-shim.md）。
@@ -1136,7 +1138,7 @@ def _kr_reject_item(handler, me, rid):
 
 def _shadow_verdicts(handler, _me):
     """GET /dlp-admin/shadow-verdicts：各层 stats + 近期判定记录（新到旧，不落原文）。
-    query 参数：n（默认 50，1..500 截断）、layer（judge/pg/rules/judge_inject/router/bypass 过滤，非法值 400）。
+    query 参数：n（默认 50，1..500 截断）、layer（judge/pg/rules/judge_inject/router/bypass/block 过滤，非法值 400）。
     issue #101：stats 透出 warned 聚合数（judge warn 试点观察期误报对账口径：
     warned/hits 同窗可比），records 逐条带 warned/model 脱敏字段供核对。
     issue #104：rules 层（注入规则层）判定条同槽透出，records 带 groups 命中模式组名。
@@ -1144,7 +1146,9 @@ def _shadow_verdicts(handler, _me):
     attack_type 攻击类型标签；与商密 judge 层分层统计（独立层名，天然不串档）。
     issue #117：router 层（auto 智能路由）决策条同槽透出，records 带 resolved_model/
     tier/p_complex/reason/session 字段（决策日志供阈值校准回放）。
-    issue #129：bypass 层（Key 绕行审计）条同槽透出，records 带 reason 范围说明。"""
+    issue #129：bypass 层（Key 绕行审计）条同槽透出，records 带 reason 范围说明。
+    issue #130：block 层（词表/归一化 secrets/EDM 内容阻断）条同槽透出，records 带
+    rule_ids 命中规则族标识。"""
     q = urllib.parse.parse_qs(urllib.parse.urlsplit(handler.path).query)
     try:
         n = int((q.get("n") or ["50"])[0])
@@ -1152,11 +1156,11 @@ def _shadow_verdicts(handler, _me):
         n = 50
     n = max(1, min(500, n))
     layer = (q.get("layer") or [""])[0] or None
-    if layer not in (None, "judge", "pg", "rules", "judge_inject", "router", "bypass"):
-        _respond(handler, 400, {"error": "layer 必须是 judge、pg、rules、judge_inject、router 或 bypass"})
+    if layer not in (None, "judge", "pg", "rules", "judge_inject", "router", "bypass", "block"):
+        _respond(handler, 400, {"error": "layer 必须是 judge、pg、rules、judge_inject、router、bypass 或 block"})
         return
     _respond(handler, 200, {
-        "stats": {l: shadow_log.stats(l) for l in ("judge", "pg", "rules", "judge_inject", "router", "bypass")},
+        "stats": {l: shadow_log.stats(l) for l in ("judge", "pg", "rules", "judge_inject", "router", "bypass", "block")},
         "records": shadow_log.tail(n, layer=layer),
     })
 

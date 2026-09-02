@@ -36,6 +36,9 @@
     scope=layers → 生成所选层 enabled=False 的 settings 覆盖副本继续链路（下游门控
     统一经 setting_value，全覆盖；请求/响应两侧只对本侧生效层落「按层跳过」审计条，
     不记与本侧无关的层）。审计落 shadow_log layer=bypass（不落原文不记 token）
+  - 内容阻断观测（issue #130）：/request 词表/归一化 secrets/EDM 451 分支落
+    shadow_log layer=block（blocked=True + rule_ids 规则族标识 + model，不落原文）+
+    日志行；alert_poller 巡检项 5 复用阻断游标通道发飞书卡
 本模块（检测路径）依赖仅标准库；镜像 python:3.12-slim（issue #48 起含 doc_extract 文档解析依赖，
 检测路径不 import 第三方库，纪律不变）。
 """
@@ -1617,6 +1620,13 @@ class Handler(BaseHTTPRequestHandler):
             return
         if pre_rules or hits:
             rule_ids = sorted(set(pre_rules) | {h["rule_id"] for h in hits})
+            # 观测闭环（issue #130）：内容阻断条先于应答落盘——alert_poller 巡检项 5
+            # 复用阻断通道消费发飞书；脱敏字段只带规则族标识/模型名，不落原文不记 token
+            # （rule_ids 如 confidential.codename/secrets.*/edm.doc_match——规则标识非敏感值）。
+            # record 永不抛（shadow_log 纪律），日志行同样只带规则标识。
+            shadow_log.record("block", hit=True, blocked=True, rule_ids=rule_ids,
+                              model=self._req_model(payload))
+            print(f"[dlp.block] 451 rules={','.join(rule_ids)}", flush=True)
             body = json.dumps(
                 {
                     "error": {

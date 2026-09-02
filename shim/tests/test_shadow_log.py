@@ -116,6 +116,16 @@ class TestRecordTail(unittest.TestCase):
         self.assertEqual(h["attack_type"], "extract")
         self.assertNotIn("attack_type", recs[0])
 
+    def test_record_rule_ids_roundtrip(self):
+        """内容阻断观测（issue #130）：block 层 rule_ids（命中规则族标识列表——脱敏安全，
+        同 #104 groups 先例）随条落盘并读回；未带键不落盘（体积纪律，消费方 .get() 兜底）。"""
+        shadow_log.record("block", hit=True, blocked=True,
+                          rule_ids=["confidential.codename"], model="echo-test", path=self.path)
+        shadow_log.record("block", hit=True, blocked=True, path=self.path)  # 未带 rule_ids
+        recs = shadow_log.tail(10, path=self.path)
+        self.assertEqual(recs[1]["rule_ids"], ["confidential.codename"])
+        self.assertNotIn("rule_ids", recs[0])
+
     def test_stats_layer_separation_judge_inject(self):
         """分层统计（issue #105 AC：商密 vs 注入判定可分层）：judge_inject 层 stats 独立聚合，
         不混入 judge 商密层——同窗口两层各自 total/hits/error_rate。"""
