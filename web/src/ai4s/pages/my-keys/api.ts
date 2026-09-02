@@ -13,7 +13,7 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiRequest } from '@/lib/api-client';
-import type { UsageEntry } from './key-usage';
+import type { KeyUsageStats, UsageEntry, UsageWindow } from './key-usage';
 
 export interface MyKeyProfileQuota {
   requests?: number | null;
@@ -57,6 +57,28 @@ export function useMyKeys(projectId: string | null) {
       }),
     retry: false,
     enabled: !!projectId,
+  });
+}
+
+// ---- 时间窗用量（不设限档也显示用量）：shim 代查 apiKeyTokenUsageStats（与管理员侧 token chart 同源） ----
+
+interface KeyUsageStatsResponse {
+  stats: KeyUsageStats;
+  window: string;
+  since?: string | null;
+}
+
+/** 本人 key 时间窗 token 用量（day=今日/month=本月/all=累计）；tz 传浏览器偏移（getTimezoneOffset），窗口界按本地时区算 */
+export function useKeyUsageStats(keyId: string | null, window: UsageWindow, projectId: string | null) {
+  return useQuery({
+    queryKey: ['self', 'key-usage-stats', keyId, window, projectId],
+    queryFn: () =>
+      apiRequest<KeyUsageStatsResponse>(
+        `/self/key-usage-stats?key=${encodeURIComponent(keyId as string)}&window=${window}&tz=${new Date().getTimezoneOffset()}`,
+        { requireAuth: true, headers: { 'X-Project-ID': projectId as string } }
+      ),
+    retry: false,
+    enabled: !!projectId && !!keyId,
   });
 }
 

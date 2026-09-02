@@ -20,6 +20,8 @@ UserPersonalAPIKeyReadRule 对 type≠personal 的 key 不做属主隔离，read
 申请列表按项目过滤（存量无项目字段视为 Default）；POST 非项目成员 403（key_requests 校验）。
 本模块不进检测路径；单请求失败只影响本请求。
 """
+import urllib.parse
+
 import admin_api  # _introspect/_respond 复用（issue #74 实现约定）
 import alert_poller  # Axonhub gql 客户端复用（login + 401 重登重试）；import 不起线程
 import key_requests  # 控制台申请通道（issue #79）：store/校验/通知；顶层 import 无环（其依赖 admin_api←alert_poller）
@@ -49,6 +51,16 @@ _QUOTA_USAGES_QUERY = (
 _KEY_FIELDS = ("id", "name", "key", "status", "createdAt", "profiles", "usage")
 # 用量条目白名单（与管理员侧 APIKeyProfileQuotaUsage 同形，原样透传这四个键）
 _USAGE_FIELDS = ("profileName", "quota", "window", "usage")
+# 窗口 token 用量（不设限档也显示用量）：代查 apiKeyTokenUsageStats（与管理员侧
+# token chart 同一上游查询），input 透传 apiKeyIds/createdAtGTE；白名单透传五键。
+# 员工直查同 quotaUsages 一样 FORBIDDEN，属主闸门=key gid ∈ 本人本项目 key 集。
+_USAGE_STATS_QUERY = (
+    "query($input: APIKeyTokenUsageStatsInput) { apiKeyTokenUsageStats(input: $input) { "
+    "apiKeyId inputTokens outputTokens cachedTokens reasoningTokens "
+    "topModels { modelId inputTokens outputTokens cachedTokens reasoningTokens } } }"
+)
+_USAGE_STATS_FIELDS = ("inputTokens", "outputTokens", "cachedTokens", "reasoningTokens", "topModels")
+_USAGE_STATS_WINDOWS = ("day", "month", "all")
 
 _ax = None  # 模块级 Axonhub 单例（token 缓存；login 惰性）
 
@@ -69,6 +81,41 @@ def query_key_usages(key_gid: str) -> list:
     """admin token 代查单 key 各档用量（issue #83）。条目经白名单塑形后原样透传。"""
     data = _get_ax().gql(_QUOTA_USAGES_QUERY, {"apiKeyId": key_gid})
     return [{k: u.get(k) for k in _USAGE_FIELDS} for u in (data.get("apiKeyQuotaUsages") or [])]
+
+
+def query_own_key_ids(user_gid: str, project_id: str = alert_poller.KEY_PROJECT_ID) -> list:
+    """本人本项目 key gid 集（轻量属主校验用——不内嵌 usage 代查，免 N+1）。"""
+    data = _get_ax().gql(_SELF_KEYS_QUERY, {"uid": user_gid, "projectID": project_id})
+    return [e["node"]["id"] for e in data["apiKeys"]["edges"]]
+
+
+def _window_gte(window: str, tz_offset_min: int = 0):
+    """窗口起点 ISO8601（带偏移）：day=今日 00:00 / month=本月 1 号 00:00 / all → None。
+    tz_offset_min 取浏览器 getTimezoneOffset 语义（本地=UTC-offset，如 UTC+8 传 -480）。"""
+    import datetime
+    if window == "all":
+        return None
+    tz = datetime.timezone(datetime.timedelta(minutes=-tz_offset_min))
+    now = datetime.datetime.now(tz)
+    if window == "day":
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    else:  # month
+        start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return start.isoformat()
+
+
+def query_usage_stats(key_gid: str, created_at_gte: str | None = None) -> dict:
+    """admin token 代查单 key 时间窗 token 用量（apiKeyTokenUsageStats）。
+    白名单五键透传；上游无该 key 条（空窗）兜底全零。"""
+    input_ = {"apiKeyIds": [key_gid]}
+    if created_at_gte:
+        input_["createdAtGTE"] = created_at_gte
+    data = _get_ax().gql(_USAGE_STATS_QUERY, {"input": input_})
+    for s in data.get("apiKeyTokenUsageStats") or []:
+        if s.get("apiKeyId") == key_gid:
+            return {k: s.get(k) for k in _USAGE_STATS_FIELDS}
+    return {"inputTokens": 0, "outputTokens": 0, "cachedTokens": 0, "reasoningTokens": 0,
+            "topModels": []}
 
 
 def query_own_keys(user_gid: str, project_id: str = alert_poller.KEY_PROJECT_ID) -> list:
@@ -176,6 +223,48 @@ def _self_key_request_cancel(handler, me: dict, rid: str):
     admin_api._respond(handler, 200, {"request": req})
 
 
+def _self_key_usage_stats(handler, me: dict):
+    """GET /self/key-usage-stats?key=<gid>&window=day|month|all&tz=<offset_min>：
+    本人 key 时间窗 token 用量（不设限档也有用量可显示）。属主闸门：gid ∈ 本人本项目 key 集，
+    否则 404（不区分存在性）；window/tz 非法 400；代查失败 503。"""
+    qs = urllib.parse.parse_qs(urllib.parse.urlsplit(handler.path).query)
+    key_gid = (qs.get("key") or [""])[0]
+    window = (qs.get("window") or ["all"])[0]
+    if not key_gid:
+        admin_api._respond(handler, 400, {"error": "缺少 key 参数"})
+        return
+    if window not in _USAGE_STATS_WINDOWS:
+        admin_api._respond(handler, 400, {"error": f"window 必须是 {'/'.join(_USAGE_STATS_WINDOWS)}"})
+        return
+    try:
+        tz = int((qs.get("tz") or ["0"])[0])
+        if abs(tz) > 840:  # 合法时区偏移上限 ±14h
+            raise ValueError
+    except ValueError:
+        admin_api._respond(handler, 400, {"error": "tz 必须是 ±840 内的整数（分钟）"})
+        return
+    pid = _project_or_400(handler)
+    if not pid:
+        return
+    try:
+        ids = query_own_key_ids(me["id"], pid)
+    except Exception as e:
+        print(f"[self] 本人 key id 查询失败: {type(e).__name__}: {e}", flush=True)
+        admin_api._respond(handler, 503, {"error": "key query unavailable"})
+        return
+    if key_gid not in ids:
+        admin_api._respond(handler, 404, {"error": "key 不存在"})
+        return
+    try:
+        stats = query_usage_stats(key_gid, created_at_gte=_window_gte(window, tz))
+    except Exception as e:
+        print(f"[self] 用量统计代查失败 {key_gid}: {type(e).__name__}: {e}", flush=True)
+        admin_api._respond(handler, 503, {"error": "usage stats unavailable"})
+        return
+    admin_api._respond(handler, 200, {"stats": stats, "window": window,
+                                      "since": _window_gte(window, tz)})
+
+
 def handle(handler, method: str) -> bool:
     """/self/* 分发（与 admin_api.handle 同约定）：命中即处理返回 True，否则 False 交还。
     鉴权=有效登录用户（内省通过即可，无 scope 门槛）。
@@ -195,6 +284,8 @@ def handle(handler, method: str) -> bool:
         return True
     if method == "GET" and path == "/self/keys":
         _self_keys(handler, me)
+    elif method == "GET" and path == "/self/key-usage-stats":
+        _self_key_usage_stats(handler, me)
     elif method == "GET" and path == "/self/key-requests":
         _self_key_requests_get(handler, me)
     elif method == "POST" and path == "/self/key-requests":

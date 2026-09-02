@@ -386,5 +386,129 @@ class TestQueryOwnKeysUsage(unittest.TestCase):
         self.assertFalse(any("apiKeyQuotaUsages" in q for q, _ in calls))  # 无 key 不查用量
 
 
+class TestSelfKeyUsageStats(unittest.TestCase):
+    """GET /self/key-usage-stats?key=<gid>&window=day|month|all&tz=<offset_min>：
+    本人 key 按时间窗代查 token 用量（apiKeyTokenUsageStats 代查透传，不设限档也有用量可显示）。
+    属主闸门：key gid 须 ∈ 本人本项目 key 集（query_own_key_ids），否则 404 不区分存在性。"""
+
+    _KID = "gid://axonhub/APIKey/9"
+    _STATS = {"inputTokens": 1200, "outputTokens": 3400, "cachedTokens": 50,
+              "reasoningTokens": 10, "topModels": [{"modelId": "gpt-x", "inputTokens": 1}]}
+
+    def _run(self, path, me_id="gid://axonhub/User/2", ids=None, stats=None, stats_exc=None):
+        h = _FakeHandler(path=path, auth="Bearer emp-token")
+        if ids is None:
+            ids = [self._KID]
+        with mock.patch.object(self_api.admin_api, "_introspect", return_value=({"id": me_id}, None)), \
+             mock.patch.object(self_api, "query_own_key_ids", return_value=ids) as qids, \
+             mock.patch.object(self_api, "query_usage_stats",
+                               return_value=stats if stats is not None else self._STATS) as qus:
+            if stats_exc is not None:
+                qus.side_effect = stats_exc
+            self.assertTrue(self_api.handle(h, "GET"))
+        return h, qids, qus
+
+    def test_day_window_200_whitelist(self):
+        h, qids, qus = self._run(f"/self/key-usage-stats?key={self._KID}&window=day")
+        self.assertEqual(h.status, 200)
+        self.assertEqual(h.body_json()["stats"], self._STATS)
+        qids.assert_called_once_with("gid://axonhub/User/2", _PID)
+        # 窗口起点 = 今日 00:00（tz 缺省 UTC），ISO8601 带偏移
+        args = qus.call_args
+        gte = args.kwargs.get("created_at_gte", args[0][1] if len(args[0]) > 1 else None)
+        self.assertIsNotNone(gte)
+        self.assertTrue(gte.endswith("+00:00"), gte)
+        self.assertTrue(gte[11:19] == "00:00:00", gte)
+
+    def test_month_window_first_day(self):
+        h, _, qus = self._run(f"/self/key-usage-stats?key={self._KID}&window=month&tz=-480")
+        self.assertEqual(h.status, 200)
+        gte = qus.call_args.kwargs["created_at_gte"]
+        self.assertTrue(gte[8:10] == "01" and gte[11:19] == "00:00:00", gte)
+        self.assertTrue(gte.endswith("+08:00"), gte)  # tz=-480（getTimezoneOffset 语义）→ UTC+8
+
+    def test_all_window_no_gte(self):
+        h, _, qus = self._run(f"/self/key-usage-stats?key={self._KID}&window=all")
+        self.assertEqual(h.status, 200)
+        self.assertIsNone(qus.call_args.kwargs["created_at_gte"])
+
+    def test_other_key_404(self):
+        # gid 不在本人 key 集 → 404（不区分存在性），代查不发起
+        h, _, qus = self._run("/self/key-usage-stats?key=gid://axonhub/APIKey/666&window=day")
+        self.assertEqual(h.status, 404)
+        qus.assert_not_called()
+
+    def test_invalid_window_400(self):
+        h, _, qus = self._run(f"/self/key-usage-stats?key={self._KID}&window=year")
+        self.assertEqual(h.status, 400)
+        qus.assert_not_called()
+
+    def test_missing_key_param_400(self):
+        h, _, qus = self._run("/self/key-usage-stats?window=day")
+        self.assertEqual(h.status, 400)
+        qus.assert_not_called()
+
+    def test_missing_project_header_400(self):
+        h = _FakeHandler(path=f"/self/key-usage-stats?key={self._KID}&window=day",
+                         auth="Bearer t", project=None)
+        with mock.patch.object(self_api.admin_api, "_introspect", return_value=({"id": "u"}, None)), \
+             mock.patch.object(self_api, "query_own_key_ids") as qids:
+            self.assertTrue(self_api.handle(h, "GET"))
+        self.assertEqual(h.status, 400)
+        qids.assert_not_called()
+
+    def test_stats_failure_503(self):
+        h, _, _ = self._run(f"/self/key-usage-stats?key={self._KID}&window=day",
+                            stats_exc=RuntimeError("gql down"))
+        self.assertEqual(h.status, 503)
+
+
+class TestUsageStatsQuery(unittest.TestCase):
+    """query_usage_stats 白名单塑形 + 空窗兜底（零值条）。"""
+
+    def test_whitelist_shape_and_zero_fallback(self):
+        calls = []
+
+        class FakeAx:
+            def gql(self, query, variables=None):
+                calls.append((query, variables or {}))
+                return {"apiKeyTokenUsageStats": [
+                    {"apiKeyId": "gid://axonhub/APIKey/9", "inputTokens": 5, "outputTokens": 7,
+                     "cachedTokens": 1, "reasoningTokens": 0, "topModels": [],
+                     "internalField": "剥掉"}]}
+
+        with mock.patch.object(self_api, "_get_ax", return_value=FakeAx()):
+            s = self_api.query_usage_stats("gid://axonhub/APIKey/9", created_at_gte="2026-09-02T00:00:00+08:00")
+        self.assertEqual(s, {"inputTokens": 5, "outputTokens": 7, "cachedTokens": 1,
+                             "reasoningTokens": 0, "topModels": []})
+        self.assertEqual(calls[0][1], {"input": {"apiKeyIds": ["gid://axonhub/APIKey/9"],
+                                                 "createdAtGTE": "2026-09-02T00:00:00+08:00"}})
+
+        class EmptyAx:
+            def gql(self, query, variables=None):
+                return {"apiKeyTokenUsageStats": []}
+
+        with mock.patch.object(self_api, "_get_ax", return_value=EmptyAx()):
+            s = self_api.query_usage_stats("gid://axonhub/APIKey/9")
+        self.assertEqual(s, {"inputTokens": 0, "outputTokens": 0, "cachedTokens": 0,
+                             "reasoningTokens": 0, "topModels": []})
+
+
+class TestWindowGte(unittest.TestCase):
+    """_window_gte 窗口界：day=今日 00:00 / month=本月 1 号 00:00（tz 偏移）/ all=None。"""
+
+    def test_day_month_all(self):
+        import datetime
+        self.assertIsNone(self_api._window_gte("all", 0))
+        day = self_api._window_gte("day", 0)
+        self.assertTrue(day.endswith("+00:00") and day[11:19] == "00:00:00", day)
+        month = self_api._window_gte("month", -480)
+        self.assertTrue(month.endswith("+08:00") and month[8:10] == "01", month)
+        # tz 语义校验：UTC+8 的今天 00:00 = UTC 昨天 16:00
+        tz8 = datetime.timezone(datetime.timedelta(hours=8))
+        expect = datetime.datetime.now(tz8).replace(hour=0, minute=0, second=0, microsecond=0)
+        self.assertEqual(day[:10], datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d"))
+
+
 if __name__ == "__main__":
     unittest.main()

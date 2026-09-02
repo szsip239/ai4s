@@ -13,7 +13,7 @@ const transpiled = ts.transpileModule(source, {
 }).outputText;
 const mod = await import(`data:text/javascript;base64,${Buffer.from(transpiled).toString('base64')}`);
 
-const { formatTokenCount, formatCredits, quotaProgress, activeUsageEntry } = mod;
+const { formatTokenCount, formatCredits, quotaProgress, activeUsageEntry, windowTotalTokens, modelTotalTokens } = mod;
 
 test('formatTokenCount: zh 万/亿口径（与 #82 指南一致；档位实值为 issue #84 放大后）', () => {
   assert.equal(formatTokenCount(0, true), '0');
@@ -80,4 +80,19 @@ test('activeUsageEntry: 按 activeProfile 名匹配；无档/无条目/空数组
   assert.equal(activeUsageEntry(entries, null), undefined);
   assert.equal(activeUsageEntry([], '体验档'), undefined);
   assert.equal(activeUsageEntry(null, '体验档'), undefined);
+});
+
+test('windowTotalTokens: 输入+输出合计；空/缺省按 0 不炸', () => {
+  assert.equal(windowTotalTokens({ inputTokens: 1200, outputTokens: 3400 }), 4600);
+  assert.equal(windowTotalTokens({ inputTokens: 0, outputTokens: 0 }), 0);
+  assert.equal(windowTotalTokens({}), 0);
+  assert.equal(windowTotalTokens(null), 0);
+  assert.equal(windowTotalTokens(undefined), 0);
+  // cached/reasoning 是子类分解，不重复计入合计（与管理员侧 token chart 同口径）
+  assert.equal(windowTotalTokens({ inputTokens: 100, outputTokens: 50, cachedTokens: 40, reasoningTokens: 10 }), 150);
+});
+
+test('modelTotalTokens: 单模型同口径合计', () => {
+  assert.equal(modelTotalTokens({ modelId: 'gpt-x', inputTokens: 10, outputTokens: 5 }), 15);
+  assert.equal(modelTotalTokens({}), 0);
 });

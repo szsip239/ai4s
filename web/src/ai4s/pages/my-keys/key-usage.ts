@@ -85,3 +85,30 @@ export function activeUsageEntry(
   if (!entries || !activeProfile) return undefined;
   return entries.find((e) => e.profileName === activeProfile);
 }
+
+/** 时间窗用量（shim /self/key-usage-stats 代查 apiKeyTokenUsageStats 透传）：不设限档也有用量可显示 */
+export type UsageWindow = 'day' | 'month' | 'all';
+
+export interface KeyUsageStats {
+  inputTokens?: number;
+  outputTokens?: number;
+  cachedTokens?: number;
+  reasoningTokens?: number;
+  topModels?: {
+    modelId?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedTokens?: number;
+    reasoningTokens?: number;
+  }[] | null;
+}
+
+/** 窗口合计 tokens = 输入+输出（与管理员侧 token chart 同口径；cached/reasoning 属子类分解，单独展示不重复计入） */
+export function windowTotalTokens(s: KeyUsageStats | null | undefined): number {
+  return Number(s?.inputTokens ?? 0) + Number(s?.outputTokens ?? 0);
+}
+
+/** 单模型窗口合计（topModels 行排序/显示用，同上加法口径） */
+export function modelTotalTokens(m: NonNullable<KeyUsageStats['topModels']>[number]): number {
+  return Number(m?.inputTokens ?? 0) + Number(m?.outputTokens ?? 0);
+}
