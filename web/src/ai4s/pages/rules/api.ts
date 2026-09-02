@@ -428,7 +428,7 @@ export function usePutSettings() {
     mutationFn: (doc: DlpSettings) => put<DlpSettings>('/settings', doc),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: QK.settings });
-      toast.success('开关与阈值已保存，即时热生效');
+      toast.success('设置已保存，即时热生效');
     },
     onError: onMutError('设置保存'),
   });

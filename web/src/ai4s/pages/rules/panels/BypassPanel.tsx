@@ -1,18 +1,24 @@
 /**
- * Key 绕行名单面板（issue #129）：可信 Key 绕开 DLP 检测的管理入口。
- * 两种粒度：全部层（含网关 L1 密钥红线——须改用 /bv1 专用入口，面板给出地址）；
- * 按层（勾选 shim 侧检测层，同 URL 无感）。名单只存 SHA-256 哈希，明文粘贴一次即弃。
+ * 白名单 Key 面板（原 Key 绕行，issue #129；改名 + 下拉登记随「开关与阈值」tab 收口）：
+ * 可信 Key 绕开 DLP 检测的管理入口。登记从既有 Key 列表按名称搜索选择（不再手贴明文），
+ * 明文仅本次提交用于服务端算 SHA-256，名单只存哈希。两种粒度：全部层（含网关 L1 密钥红线——
+ * 须改用 /bv1 专用入口，面板给出地址）；按层（勾选 shim 侧检测层，同 URL 无感）。
  * 每次绕行服务端写审计条（智能路由 → 日志标签 → Key 绕行视图可查）。
  */
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { Check, ChevronsUpDown } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Checkbox } from '@/components/ui/checkbox';
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Switch } from '@/components/ui/switch';
+import { useApiKeys } from '@/features/apikeys/data';
 import {
   BYPASSABLE_LAYERS,
   useAddBypassKey,
@@ -35,19 +41,68 @@ const LAYER_NAME: Record<BypassLayer, string> = {
   response: '响应侧',
 };
 
-function AddForm() {
+/** 浏览器侧 SHA-256（与服务端 bypass_keys 同算法）：只用于把「已登记」的候选置灰，不明文落盘 */
+async function sha256Hex(text: string): Promise<string> {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+}
+
+interface KeyOption {
+  id: string;
+  name: string;
+  token: string;
+}
+
+function AddForm({ registeredIds }: { registeredIds: Set<string> }) {
   const add = useAddBypassKey();
-  const [token, setToken] = useState('');
+  const [open, setOpen] = useState(false);
+  const [selected, setSelected] = useState<KeyOption | null>(null);
   const [label, setLabel] = useState('');
   const [scope, setScope] = useState<BypassScope>('all');
   const [layers, setLayers] = useState<BypassLayer[]>([]);
+  const [hashByKeyId, setHashByKeyId] = useState<Record<string, string>>({});
+
+  // 白名单登记面向存量正常 Key（archived 不提供）；本页路由已保证 read_api_keys 权限
+  const { data: apiKeysData, isLoading } = useApiKeys({
+    first: 200,
+    orderBy: { field: 'CREATED_AT', direction: 'DESC' },
+    where: { statusIn: ['enabled', 'disabled'] },
+  });
+  const keyOptions = useMemo<KeyOption[]>(
+    () =>
+      (apiKeysData?.edges ?? [])
+        .map((e) => e.node)
+        .filter((n) => !!n?.key)
+        .map((n) => ({ id: n.id, name: n.name || n.id, token: n.key })),
+    [apiKeysData]
+  );
+
+  // 对候选 Key 预计算哈希（id → hash），与名单条目 id（即哈希）比对出「已登记」项置灰
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const pairs = await Promise.all(keyOptions.map(async (k) => [k.id, await sha256Hex(k.token)] as const));
+      if (!cancelled) setHashByKeyId(Object.fromEntries(pairs));
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [keyOptions]);
+
+  const isRegistered = (k: KeyOption) => {
+    const h = hashByKeyId[k.id];
+    return !!h && registeredIds.has(h);
+  };
 
   const submit = () => {
+    if (!selected) return;
     add.mutate(
-      { token: token.trim(), label: label.trim(), scope, layers: scope === 'layers' ? layers : undefined },
+      { token: selected.token, label: label.trim(), scope, layers: scope === 'layers' ? layers : undefined },
       {
         onSuccess: () => {
-          setToken('');
+          setSelected(null);
           setLabel('');
           setScope('all');
           setLayers([]);
@@ -60,15 +115,49 @@ function AddForm() {
     <div className='space-y-3 rounded-md border p-4'>
       <div className='grid gap-3 md:grid-cols-2'>
         <div className='space-y-1.5'>
-          <Label htmlFor='bypass-token'>Key 明文（只算哈希，不落盘）</Label>
-          <Input
-            id='bypass-token'
-            type='password'
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            placeholder='粘贴完整 Key'
-            autoComplete='off'
-          />
+          <Label>选择 Key（按名称搜索）</Label>
+          <Popover open={open} onOpenChange={setOpen}>
+            <PopoverTrigger asChild>
+              <Button variant='outline' role='combobox' aria-expanded={open} className='w-full justify-between font-normal'>
+                <span className='truncate'>{selected ? selected.name : isLoading ? '加载中…' : '搜索并选择 Key'}</span>
+                <ChevronsUpDown className='ml-2 h-4 w-4 shrink-0 opacity-50' />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className='w-[--radix-popover-trigger-width] p-0' align='start'>
+              <Command>
+                <CommandInput placeholder='输入 Key 名称搜索…' />
+                <CommandList>
+                  <CommandEmpty>无匹配 Key</CommandEmpty>
+                  <CommandGroup>
+                    {keyOptions.map((k) => {
+                      const registered = isRegistered(k);
+                      return (
+                        <CommandItem
+                          key={k.id}
+                          value={k.id}
+                          keywords={[k.name]}
+                          disabled={registered}
+                          onSelect={() => {
+                            setSelected(k);
+                            setLabel((prev) => prev || k.name);
+                            setOpen(false);
+                          }}
+                        >
+                          <Check className={cn('mr-2 h-4 w-4', selected?.id === k.id ? 'opacity-100' : 'opacity-0')} />
+                          <span className='truncate'>{k.name}</span>
+                          {registered && (
+                            <Badge variant='outline' className='ml-auto shrink-0'>
+                              已登记
+                            </Badge>
+                          )}
+                        </CommandItem>
+                      );
+                    })}
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
         </div>
         <div className='space-y-1.5'>
           <Label htmlFor='bypass-label'>备注</Label>
@@ -76,7 +165,7 @@ function AddForm() {
             id='bypass-label'
             value={label}
             onChange={(e) => setLabel(e.target.value)}
-            placeholder='用途/负责人，如：CI 管道'
+            placeholder='默认取 Key 名称，可改为用途/负责人'
           />
         </div>
       </div>
@@ -111,10 +200,10 @@ function AddForm() {
       <div>
         <Button
           size='sm'
-          disabled={add.isPending || !token.trim() || !label.trim() || (scope === 'layers' && layers.length === 0)}
+          disabled={add.isPending || !selected || !label.trim() || (scope === 'layers' && layers.length === 0)}
           onClick={submit}
         >
-          登记绕行 Key
+          登记白名单 Key
         </Button>
       </div>
     </div>
@@ -158,7 +247,7 @@ function KeyRow({ k }: { k: BypassKey }) {
           variant='ghost'
           disabled={del.isPending}
           onClick={() => {
-            if (window.confirm(`删除绕行条目「${k.label}」？该 Key 立即恢复全量检测。`)) del.mutate(k.id);
+            if (window.confirm(`删除白名单条目「${k.label}」？该 Key 立即恢复全量检测。`)) del.mutate(k.id);
           }}
         >
           删除
@@ -170,17 +259,19 @@ function KeyRow({ k }: { k: BypassKey }) {
 
 export function Ai4sBypassPanel() {
   const { data, isError } = useBypassKeys();
+  const registeredIds = useMemo(() => new Set((data?.keys ?? []).map((k) => k.id)), [data]);
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Key 绕行</CardTitle>
+        <CardTitle>白名单 Key</CardTitle>
         <CardDescription>
-          可信 Key（自动化管道等）绕开 DLP 检测。全部层 = 含 L1 密钥红线，须改用 /bv1 专用入口；
-          按层 = 只跳过勾选的检测层，原入口不变。每次绕行都有审计记录（智能路由 → 日志 → Key 绕行）。
+          可信 Key（自动化管道等）绕开 DLP 检测。从既有 Key 中按名称搜索登记，名单只存哈希不明文落盘。
+          全部层 = 含 L1 密钥红线，须改用 /bv1 专用入口；按层 = 只跳过勾选的检测层，原入口不变。
+          每次绕行都有审计记录（智能路由 → 日志 → Key 绕行）。
         </CardDescription>
       </CardHeader>
       <CardContent className='space-y-4'>
-        <AddForm />
+        <AddForm registeredIds={registeredIds} />
         {isError && <p className='text-sm text-destructive'>名单加载失败</p>}
         <div className='space-y-2'>
           {(data?.keys ?? []).map((k) => (

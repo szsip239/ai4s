@@ -3,9 +3,10 @@
  * 布局：顶部检测管线条（节点状态=真实 settings，节点上 Switch=分层开关唯一入口，即改即存带确认）
  * → master-detail（左层导航 + 右配置面板），无常驻区块。
  * 五个可配面板对接 shim /dlp-admin/*（React Query，写后 invalidate）：
- *   商密词表 / PII 规则 / 格式规则 / EDM 语料 / 开关与阈值（judge、PG 为独立面板，另含整体视图）。
+ *   商密词表 / PII 规则 / 格式规则 / EDM 语料 / 白名单 Key（judge、PG 阈值在各自独立面板维护）。
  * issue #133：分层开关唯一控制入口=管线节点（layer-toggle.ts 纯函数合并 PUT）；面板头部 LayerSwitch 与
- * 开关与阈值 tab 的分层区撤掉重复件，阈值类配置仍留开关与阈值 tab；响应侧节点在 l1/l2 关闭时
+ * 原开关与阈值 tab 的分层区撤掉重复件；后续该 tab 收口为只挂白名单 Key 面板（judge/edm/pg 阈值
+ * 整体视图随 SettingsPanel 一并删除，各阈值回到 per-layer 面板维护）；响应侧节点在 l1/l2 关闭时
  * 显示「随 L1/L2 部分关闭」联动徽标（#40「模块关=处处关」语义的显式表达）。
  * 纵深层规则（只读）为普通导航选中项（#38：不再常驻页底）；管线点击与左导航选中联动同一 state；
  * 左导航只给已关闭的层显示「已关闭」徽标（#39：启用态与顶部管线重复不再展示；纵深层保留「只读」徽标）；
@@ -42,7 +43,6 @@ import { Ai4sInjectRulesPanel } from './panels/InjectRulesPanel';
 import { Ai4sJudgePanel } from './panels/JudgePanel';
 import { Ai4sPgPanel } from './panels/PgPanel';
 import { Ai4sRecognizersPanel } from './panels/RecognizersPanel';
-import { Ai4sSettingsPanel } from './panels/SettingsPanel';
 import { Ai4sWordlistPanel } from './panels/WordlistPanel';
 
 const ON: StatusBadge = { label: '启用', variant: 'default' };
@@ -286,12 +286,7 @@ export default function Ai4sRulesPage() {
             {selected === 'judge' && <Ai4sJudgePanel onDirtyChange={dirtyRegistry.reporter('judge')} />}
             {selected === 'rules' && <Ai4sInjectRulesPanel onDirtyChange={dirtyRegistry.reporter('rules')} />}
             {selected === 'pg' && <Ai4sPgPanel onDirtyChange={dirtyRegistry.reporter('pg')} />}
-            {selected === 'toggles' && (
-              <div className='space-y-6'>
-                <Ai4sSettingsPanel onDirtyChange={dirtyRegistry.reporter('toggles')} />
-                <Ai4sBypassPanel />
-              </div>
-            )}
+            {selected === 'toggles' && <Ai4sBypassPanel />}
             {selected === 'response' && <Ai4sResponseSideCard />}
             {selected === 'deep' && <Ai4sDeepLayerRules />}
           </div>

@@ -1,6 +1,7 @@
 /**
  * settings 段校验共享模块（issue #38 review #3）：judge/pg 段客户端预检原本在
- * JudgePanel/PgPanel/SettingsPanel 逐字重复，收敛于此三处共用。
+ * JudgePanel/PgPanel 等面板逐字重复，收敛于此共用（原整体视图 SettingsPanel 已随
+ * 「开关与阈值」tab 收口删除）。
  * issue #104 起 rules 段（注入规则层）同址。
  * 规则与服务端权威校验（shim/admin_api.py _validate_settings）同款——预检只为省一次往返，
  * 失败原因仍以 API 为准。合法返回 null，非法返回中文原因。

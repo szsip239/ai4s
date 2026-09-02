@@ -23,9 +23,10 @@ export const PIPELINE_LAYERS: LayerDef[] = [
   { key: 'response', label: '响应侧' },
 ];
 
-/** 导航附加项：开关与阈值（judge/edm/pg 整体视图）、纵深层（只读；issue #38 起为普通选中项，右侧渲染不再常驻） */
+/** 导航附加项：白名单 Key（原「开关与阈值」tab 收口——分层开关归管线节点、阈值归 per-layer 面板，
+ *  整体视图 SettingsPanel 删除后本 tab 只挂白名单 Key 面板）、纵深层（只读；issue #38 起为普通选中项） */
 export const EXTRA_NAV: LayerDef[] = [
-  { key: 'toggles', label: '开关与阈值' },
+  { key: 'toggles', label: '白名单 Key' },
   { key: 'deep', label: '纵深层规则' },
 ];
 
