@@ -1,6 +1,7 @@
 /**
- * 开关与阈值整体面板（issue #36；issue #38 起为整体视图，judge/PG 单项维护走各自独立面板；issue #40 扩六段；issue #104 加注入规则段）。
- * GET/PUT /dlp-admin/settings（L1/L2/响应侧分层总开关 + judge/edm/rules/pg 开关阈值 + judge prompt）。
+ * 开关与阈值整体面板（issue #36；issue #38 起为整体视图，judge/PG 单项维护走各自独立面板；issue #40 扩六段；issue #104 加注入规则段；
+ * issue #133 方案 A：分层总开关收归顶部管线节点（唯一控制入口），本面板只留阈值/参数类配置）。
+ * GET/PUT /dlp-admin/settings（judge/edm/rules/pg 开关阈值 + judge prompt；分层总开关不在此重复）。
  * PUT 整体替换（服务端校验七段必填且字段齐全）；本地草稿 edited===null 即无改动（dirty 供离开提示）。
  * 404/故障展示与 judge/PG 面板同款（Ai4sSettingsQueryState）。judge 区常驻警示：真实员工流量启用前必须换内网模型。
  */
@@ -66,58 +67,19 @@ export function Ai4sSettingsPanel({ onDirtyChange }: { onDirtyChange?: (dirty: b
       <CardHeader>
         <CardTitle>开关与阈值</CardTitle>
         <CardDescription>
-          L1/L2/响应侧分层总开关与 judge / EDM / 注入规则 / PG 开关阈值的整体视图，与左侧各层面板读写同一份
-          settings.json。单项维护走对应面板，这里适合整体核对；保存即热生效
+          judge / EDM / 注入规则 / PG 的阈值与参数整体视图，与左侧各层面板读写同一份
+          settings.json；分层总开关在顶部管线节点上（唯一控制入口，即改即存）。单项维护走对应面板，这里适合整体核对；保存即热生效
         </CardDescription>
       </CardHeader>
       <CardContent>
         <Ai4sSettingsQueryState isLoading={isLoading} error={error}>
           {settingsDoc && (
             <div className='space-y-8'>
-              {/* ---- L1 格式规则总开关（issue #40） ---- */}
-              <section className='space-y-4'>
-                <div className='flex items-center justify-between gap-4'>
-                  <div>
-                    <div className='font-medium'>L1 格式规则（密钥/私钥/PII 格式）</div>
-                    <div className='text-sm text-muted-foreground'>
-                      关闭后整层撤防（密钥拦截全敞口）；翻转会联动重渲染网关规则，网关侧同步撤下/恢复
-                    </div>
-                  </div>
-                  <Switch
-                    checked={settingsDoc.l1?.enabled ?? true}
-                    onCheckedChange={(c) => mutate({ ...settingsDoc, l1: { enabled: c } })}
-                  />
-                </div>
-              </section>
-
-              {/* ---- L2 词表/PII 总开关（issue #40） ---- */}
-              <section className='space-y-4'>
-                <div className='flex items-center justify-between gap-4'>
-                  <div>
-                    <div className='font-medium'>L2 词表/PII（商密词表 + PII 识别）</div>
-                    <div className='text-sm text-muted-foreground'>关闭后词表命中拦截与 PII 脱敏整体跳过</div>
-                  </div>
-                  <Switch
-                    checked={settingsDoc.l2?.enabled ?? true}
-                    onCheckedChange={(c) =>
-                      // 展开保留 l2.opf 子节（issue #127）：整体替换语义下重建 {enabled} 会丢 opf
-                      mutate({ ...settingsDoc, l2: { ...settingsDoc.l2, enabled: c } })
-                    }
-                  />
-                </div>
-              </section>
-
               {/* ---- 语义 judge ---- */}
               <section className='space-y-4'>
-                <div className='flex items-center justify-between gap-4'>
-                  <div>
-                    <div className='font-medium'>语义 judge（LLM 判定商密语义指代）</div>
-                    <div className='text-sm text-muted-foreground'>shadow 只记不拦；判定失败自动降级纯词表</div>
-                  </div>
-                  <Switch
-                    checked={settingsDoc.judge.enabled}
-                    onCheckedChange={(c) => mutate({ ...settingsDoc, judge: { ...settingsDoc.judge, enabled: c } })}
-                  />
+                <div>
+                  <div className='font-medium'>语义 judge（LLM 判定商密语义指代）</div>
+                  <div className='text-sm text-muted-foreground'>shadow 只记不拦；判定失败自动降级纯词表；总开关在顶部管线节点</div>
                 </div>
                 <Alert className='border-amber-500/60 bg-amber-50 text-amber-900 dark:border-amber-400/40 dark:bg-amber-950/40 dark:text-amber-100'>
                   <IconAlertTriangle className='size-4' />
@@ -185,7 +147,9 @@ export function Ai4sSettingsPanel({ onDirtyChange }: { onDirtyChange?: (dirty: b
                 <div className='flex items-center justify-between gap-4'>
                   <div>
                     <div className='font-medium'>L3 EDM 文档指纹</div>
-                    <div className='text-sm text-muted-foreground'>指纹命中数达阈值即 451（edm.doc_match）</div>
+                    <div className='text-sm text-muted-foreground'>
+                      指纹命中数达阈值即 451（edm.doc_match）；总开关在顶部管线节点
+                    </div>
                   </div>
                   <div className='flex items-center gap-3'>
                     <span className='text-sm text-muted-foreground'>min_hits</span>
@@ -199,10 +163,6 @@ export function Ai4sSettingsPanel({ onDirtyChange }: { onDirtyChange?: (dirty: b
                         mutate({ ...settingsDoc, edm: { ...settingsDoc.edm, min_hits: Number(e.target.value) } })
                       }
                     />
-                    <Switch
-                      checked={settingsDoc.edm.enabled}
-                      onCheckedChange={(c) => mutate({ ...settingsDoc, edm: { ...settingsDoc.edm, enabled: c } })}
-                    />
                   </div>
                 </div>
               </section>
@@ -213,7 +173,7 @@ export function Ai4sSettingsPanel({ onDirtyChange }: { onDirtyChange?: (dirty: b
                   <div>
                     <div className='font-medium'>注入规则（16 模式组）</div>
                     <div className='text-sm text-muted-foreground'>
-                      命中记 [injection.rules] 日志（shadow 不拦）；开阻断后命中即 451
+                      命中记 [injection.rules] 日志（shadow 不拦）；开阻断后命中即 451；总开关在顶部管线节点
                     </div>
                   </div>
                   <div className='flex items-center gap-3'>
@@ -221,10 +181,6 @@ export function Ai4sSettingsPanel({ onDirtyChange }: { onDirtyChange?: (dirty: b
                     <Switch
                       checked={settingsDoc.rules.block}
                       onCheckedChange={(c) => mutate({ ...settingsDoc, rules: { ...settingsDoc.rules, block: c } })}
-                    />
-                    <Switch
-                      checked={settingsDoc.rules.enabled}
-                      onCheckedChange={(c) => mutate({ ...settingsDoc, rules: { ...settingsDoc.rules, enabled: c } })}
                     />
                   </div>
                 </div>
@@ -235,7 +191,9 @@ export function Ai4sSettingsPanel({ onDirtyChange }: { onDirtyChange?: (dirty: b
                 <div className='flex items-center justify-between gap-4'>
                   <div>
                     <div className='font-medium'>注入 PG（PromptGuard 2）</div>
-                    <div className='text-sm text-muted-foreground'>shadow 只记不拦；分数 ≥ 阈值记 [injection.shadow] 日志</div>
+                    <div className='text-sm text-muted-foreground'>
+                      shadow 只记不拦；分数 ≥ 阈值记 [injection.shadow] 日志；总开关在顶部管线节点
+                    </div>
                   </div>
                   <div className='flex items-center gap-3'>
                     <span className='text-sm text-muted-foreground'>threshold（0~1）</span>
@@ -250,28 +208,7 @@ export function Ai4sSettingsPanel({ onDirtyChange }: { onDirtyChange?: (dirty: b
                         mutate({ ...settingsDoc, pg: { ...settingsDoc.pg, threshold: Number(e.target.value) } })
                       }
                     />
-                    <Switch
-                      checked={settingsDoc.pg.enabled}
-                      onCheckedChange={(c) => mutate({ ...settingsDoc, pg: { ...settingsDoc.pg, enabled: c } })}
-                    />
                   </div>
-                </div>
-              </section>
-
-              {/* ---- 响应侧输出检查总开关（issue #40） ---- */}
-              <section className='space-y-4'>
-                <div className='flex items-center justify-between gap-4'>
-                  <div>
-                    <div className='font-medium'>响应侧输出检查</div>
-                    <div className='text-sm text-muted-foreground'>
-                      模型应答命中 secrets/词表/PII 即 451 拒绝；关闭后响应侧整段放行不检测
-                      （l1/l2 总开关关闭时对应检测族在响应侧同样跳过）
-                    </div>
-                  </div>
-                  <Switch
-                    checked={settingsDoc.response?.enabled ?? true}
-                    onCheckedChange={(c) => mutate({ ...settingsDoc, response: { enabled: c } })}
-                  />
                 </div>
               </section>
 

@@ -1,12 +1,21 @@
 /**
  * 顶部检测管线条（issue #36，Variant C 血统重写）：请求 → L1 格式规则（#39 起 L1/L1.5 合并）→ L2 → L3 → judge → PG → 上游 → 响应侧。
  * 节点为可点卡片（点击=选中该层，与左侧导航同一 state）；状态徽标/规模摘要由调用方按真实查询数据组装。
+ * issue #133 方案 A：节点即分层开关唯一入口（toggle 出席时渲染即改即存 Switch，确认由调用方负责）；
+ * Switch 点击 stopPropagation 不触发选中。
  */
 import { IconArrowRight } from '@tabler/icons-react';
 import { Badge } from '@/components/ui/badge';
 import { Card, CardContent } from '@/components/ui/card';
+import { Switch } from '@/components/ui/switch';
 import { cn } from '@/lib/utils';
 import type { StatusBadge } from './layers';
+
+export interface Ai4sPipelineNodeToggle {
+  checked: boolean;
+  /** 保存进行中（防抖；父级 mutation isPending） */
+  pending?: boolean;
+}
 
 export interface Ai4sPipelineNodeView {
   key: string;
@@ -14,6 +23,8 @@ export interface Ai4sPipelineNodeView {
   badges: StatusBadge[];
   /** 节点上的规则数/规模摘要（如 "6 条规则"、"阈值 0.7"） */
   count: string;
+  /** 分层开关（issue #133）：缺席=该节点无开关（状态未知或非可控端点），不臆造 */
+  toggle?: Ai4sPipelineNodeToggle;
 }
 
 /** 状态徽标组（管线节点与左侧导航共用渲染） */
@@ -41,10 +52,12 @@ function NodeCard({
   node,
   selected,
   onSelect,
+  onToggle,
 }: {
   node: Ai4sPipelineNodeView;
   selected: boolean;
   onSelect: () => void;
+  onToggle?: (key: string, next: boolean) => void;
 }) {
   return (
     <button
@@ -55,7 +68,22 @@ function NodeCard({
         selected && 'border-primary ring-2 ring-primary/30'
       )}
     >
-      <div className='mb-1.5 text-sm font-medium'>{node.name}</div>
+      <div className='mb-1.5 flex items-center justify-between gap-2'>
+        <span className='text-sm font-medium'>{node.name}</span>
+        {node.toggle && onToggle && (
+          <span
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => e.stopPropagation()}
+            title={node.toggle.checked ? '点击关闭该层（保存即热生效）' : '点击开启该层（保存即热生效）'}
+          >
+            <Switch
+              checked={node.toggle.checked}
+              disabled={node.toggle.pending}
+              onCheckedChange={(next) => onToggle(node.key, next)}
+            />
+          </span>
+        )}
+      </div>
       <Ai4sNodeBadges badges={node.badges} />
       <div className='mt-1.5 text-xs text-muted-foreground'>{node.count}</div>
     </button>
@@ -67,11 +95,13 @@ export function Ai4sPipelineBar({
   responseNode,
   selected,
   onSelect,
+  onToggle,
 }: {
   requestNodes: Ai4sPipelineNodeView[];
   responseNode: Ai4sPipelineNodeView;
   selected: string | null;
   onSelect: (key: string) => void;
+  onToggle?: (key: string, next: boolean) => void;
 }) {
   return (
     <Card className='mb-6'>
@@ -81,7 +111,7 @@ export function Ai4sPipelineBar({
           <IconArrowRight className='size-5 shrink-0 text-muted-foreground' />
           {requestNodes.map((n, i) => (
             <div key={n.key} className='flex items-center gap-2'>
-              <NodeCard node={n} selected={selected === n.key} onSelect={() => onSelect(n.key)} />
+              <NodeCard node={n} selected={selected === n.key} onSelect={() => onSelect(n.key)} onToggle={onToggle} />
               {/* 最后一个请求侧节点后的箭头指向上游 */}
               {i === requestNodes.length - 1 ? null : <IconArrowRight className='size-5 shrink-0 text-muted-foreground' />}
             </div>
@@ -89,7 +119,7 @@ export function Ai4sPipelineBar({
           <IconArrowRight className='size-5 shrink-0 text-muted-foreground' />
           <EndpointChip label='上游' />
           <IconArrowRight className='size-5 shrink-0 text-muted-foreground' />
-          <NodeCard node={responseNode} selected={selected === responseNode.key} onSelect={() => onSelect(responseNode.key)} />
+          <NodeCard node={responseNode} selected={selected === responseNode.key} onSelect={() => onSelect(responseNode.key)} onToggle={onToggle} />
         </div>
       </CardContent>
     </Card>

@@ -2,7 +2,7 @@
  * 管理员「智能路由」页（issue #120；本轮按脱敏规则页版式重构：顶部决策路由图 + 左侧标签导航）。
  * 布局：顶部决策路由图（节点状态=真实 settings，链路与 shim route_resolve 决策流同序，
  * 点击节点=选中对应标签）→ master-detail（左阶段导航 + 右配置面板）；决策日志为标签项不再首页直出。
- * 总开关 enabled 在标题行即改即存（独占该键，先例：rules/panels/LayerSwitch）；
+ * 总开关 enabled 在标题行即改即存（独占该键；rules 页先例已演进为 layer-toggle.ts 纯函数，issue #133）；
  * 四配置面板各持自己负责的键（useRoutingDraft patch 语义，键集互不相交互不覆盖），
  * 保存整体 PUT 热生效；离开有未保存修改的面板时 confirm 提示（rules 页 dirty-registry 先例）。
  */

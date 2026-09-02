@@ -56,12 +56,9 @@ export function Ai4sInjectRulesPanel({ onDirtyChange }: { onDirtyChange?: (dirty
         <Ai4sSettingsQueryState isLoading={isLoading} error={error} rows={2}>
           {rules && (
             <div className='space-y-6'>
-              <div className='flex items-center justify-between gap-4'>
-                <div className='text-sm text-muted-foreground'>
-                  启用后每个请求过一遍 16 个注入模式组（µs 级，不影响员工正常使用）；命中只写日志
-                </div>
-                <Switch checked={rules.enabled} onCheckedChange={(c) => mutate({ ...rules, enabled: c })} />
-              </div>
+              <p className='text-sm text-muted-foreground'>
+                启用后每个请求过一遍 16 个注入模式组（µs 级，不影响员工正常使用），命中只写日志；本层总开关在顶部管线「注入规则」节点上
+              </p>
               <div className='flex items-center justify-between gap-4'>
                 <div className='text-sm text-muted-foreground'>
                   命中阻断：模式组命中即直接拒绝请求（451）并发飞书告警；规则层判定在应答前同步进行，

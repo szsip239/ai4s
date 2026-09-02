@@ -58,12 +58,9 @@ export function Ai4sPgPanel({ onDirtyChange }: { onDirtyChange?: (dirty: boolean
         <Ai4sSettingsQueryState isLoading={isLoading} error={error} rows={2}>
           {pg && (
             <div className='space-y-6'>
-              <div className='flex items-center justify-between gap-4'>
-                <div className='text-sm text-muted-foreground'>
-                  启用后每个请求过一遍 PromptGuard 2 打分；分数 ≥ 阈值只写日志，不影响员工正常使用
-                </div>
-                <Switch checked={pg.enabled} onCheckedChange={(c) => mutate({ ...pg, enabled: c })} />
-              </div>
+              <p className='text-sm text-muted-foreground'>
+                启用后每个请求过一遍 PromptGuard 2 打分；分数 ≥ 阈值只写日志，不影响员工正常使用；本层总开关在顶部管线「注入 PG」节点上
+              </p>
               <div className='flex items-center gap-3'>
                 <Label className='shrink-0'>threshold（0~1）</Label>
                 <Input

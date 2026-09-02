@@ -66,10 +66,9 @@ export function Ai4sJudgePanel({ onDirtyChange }: { onDirtyChange?: (dirty: bool
         <Ai4sSettingsQueryState isLoading={isLoading} error={error}>
           {judge && (
             <div className='space-y-6'>
-              <div className='flex items-center justify-between gap-4'>
-                <div className='text-sm text-muted-foreground'>启用后每个请求都会异步送 judge 判定，不阻塞正常应答</div>
-                <Switch checked={judge.enabled} onCheckedChange={(c) => mutate({ ...judge, enabled: c })} />
-              </div>
+              <p className='text-sm text-muted-foreground'>
+                启用后每个请求都会异步送 judge 判定，不阻塞正常应答；本层总开关在顶部管线「语义 judge」节点上
+              </p>
               <Alert className='border-amber-500/60 bg-amber-50 text-amber-900 dark:border-amber-400/40 dark:bg-amber-950/40 dark:text-amber-100'>
                 <IconAlertTriangle className='size-4' />
                 <AlertTitle>外发警示</AlertTitle>

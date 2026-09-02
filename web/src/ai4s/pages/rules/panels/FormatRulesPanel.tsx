@@ -36,7 +36,6 @@ import { Switch } from '@/components/ui/switch';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
 import { useFormatRules, usePutFormatRules, type FormatRule } from '../api';
-import { Ai4sLayerSwitch } from './LayerSwitch';
 import { Ai4sQueryState } from './QueryState';
 
 /** patterns 数组 ↔ 逐行文本 */
@@ -206,12 +205,12 @@ export function Ai4sFormatRulesPanel({ onDirtyChange }: { onDirtyChange?: (dirty
           <div>
             <CardTitle>格式规则</CardTitle>
             <CardDescription>
-              API 密钥、私钥等格式特征规则命中即在网关拦截（reject），手机号、身份证等 PII 格式规则命中即打码放行（mask）；头部为本层总开关（关闭则整层撤防，密钥拦截全敞口，网关规则同步撤下）；<span className='font-medium text-foreground'>保存会重写网关配置并热重载</span>。改坏可用
+              API 密钥、私钥等格式特征规则命中即在网关拦截（reject），手机号、身份证等 PII 格式规则命中即打码放行（mask）；本层总开关在顶部管线「L1
+              格式规则」节点上（关闭则整层撤防，密钥拦截全敞口，网关规则同步撤下）；<span className='font-medium text-foreground'>保存会重写网关配置并热重载</span>。改坏可用
               render 端点重渲染或 .bak 回滚
             </CardDescription>
           </div>
           <div className='flex items-center gap-3'>
-            <Ai4sLayerSwitch section='l1' />
             <Button variant='outline' onClick={() => setDialogOpen('new')}>
               <IconPlus />
               新增规则
