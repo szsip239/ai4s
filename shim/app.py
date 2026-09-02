@@ -1748,8 +1748,10 @@ class Handler(BaseHTTPRequestHandler):
                 shadow_log.record("rules", error="unavailable", latency_ms=_r_ms)
             elif _r_hit and setting_value(settings, "rules", "block", "RULES_BLOCK", False):
                 # 阻断条先于应答落盘（告警巡检消费即见）；record 永不抛（shadow_log 纪律）
+                # issue #131：key_hash（Bearer SHA-256 指纹）随阻断条落盘——告警卡身份反查来源
                 shadow_log.record("rules", hit=True, groups=_r_groups, latency_ms=_r_ms,
-                                  blocked=True, model=self._req_model(payload))
+                                  blocked=True, model=self._req_model(payload),
+                                  key_hash=key_hash_from_headers(self.headers))
                 print(f"[injection.rules] 451 groups={','.join(_r_groups)}", flush=True)
                 body = json.dumps(
                     {
@@ -1800,9 +1802,11 @@ class Handler(BaseHTTPRequestHandler):
                 shadow_log.record("pg", error="unavailable", latency_ms=pg_ms)
             elif pg_score >= pg_block_threshold:
                 # 阻断条先于应答落盘（告警巡检消费即见）；record 永不抛（shadow_log 纪律）
+                # issue #131：key_hash（Bearer SHA-256 指纹）随阻断条落盘——告警卡身份反查来源
                 shadow_log.record("pg", hit=True, score=pg_score, latency_ms=pg_ms,
                                   blocked=True, block_threshold=pg_block_threshold,
-                                  model=self._req_model(payload))
+                                  model=self._req_model(payload),
+                                  key_hash=key_hash_from_headers(self.headers))
                 print(f"[injection.block] 451 score={pg_score:.3f} >= {pg_block_threshold}", flush=True)
                 body = json.dumps(
                     {

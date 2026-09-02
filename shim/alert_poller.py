@@ -901,7 +901,37 @@ def shadow_avail_findings(layer_stats: dict) -> dict:
     return findings
 
 
-def pg_block_pending(recs: list, cursor: float) -> list:
+def _alert_keymap(ax: Axonhub, recs: list):
+    """阻断条身份反查映射（issue #131）：待发阻断条含 key_hash 时，拉全量 key 清单现算
+    SHA-256 比对构造 key_hash → {key_name, user_email}（复用 admin_api._block_key_map
+    60s 缓存）；无 key_hash / 反查失败 → None（卡片无身份行，fail-open 不臆造）。
+    admin_api 函数级懒 import——其顶层经 key_requests→alert_poller 回指本模块，顶层互导成环。"""
+    if not any(r.get("key_hash") for r in recs if r.get("blocked")):
+        return None
+    try:
+        from admin_api import _APIKEYS_FOR_ENRICH_QUERY, _block_key_map
+        return _block_key_map(lambda: [
+            e["node"]
+            for e in (ax.gql(_APIKEYS_FOR_ENRICH_QUERY, {"first": 200}).get("apiKeys") or {}).get("edges") or []
+        ])
+    except Exception as e:
+        print(f"[alert] 阻断身份反查失败（卡片无身份行）: {type(e).__name__}", flush=True)
+        return None
+
+
+def _block_identity_lines(r: dict, keymap) -> str:
+    """阻断卡身份行（issue #131）：条带 key_hash 且在 keymap（key_hash → key_name/user_email，
+    复用 admin_api._block_key_map 形状）命中时返回「用户/Key」两行，否则空串——
+    无 key_hash / 哈希对不上 / 反查失败（keymap=None）都不标注不臆造（与读侧回填同纪律）。"""
+    if not keymap:
+        return ""
+    ident = keymap.get(r.get("key_hash") or "")
+    if not ident:
+        return ""
+    return f"\n用户: {ident.get('user_email') or '-'}\nKey: {ident.get('key_name') or '-'}"
+
+
+def pg_block_pending(recs: list, cursor: float, keymap=None) -> list:
     """注入阻断事件待发卡列表（issue #103 PG；issue #104 起 rules 层阻断条复用本通道，纯函数）：
     tail 记录（新到旧形状）+ 游标（上次已告警条 ts）→ [(ts, 告警文本)]（旧到新——先发生先告警）。
     只取 blocked=True 且 ts > cursor 的条目（== 不重发）；单轮封顶 PG_BLOCK_ALERT_BATCH
@@ -912,13 +942,16 @@ def pg_block_pending(recs: list, cursor: float) -> list:
     issue #130：block 层（词表/归一化 secrets/EDM 内容阻断）条再并入本通道——卡片带
     命中规则族标识（rule_ids，规则标识非原文）；三层同 jsonl 同时间轴共用游标不变。
     卡片脱敏纪律：只带层名/score/阻断阈值/模式组名/规则族标识/请求模型名/时间——记录
-    本身不落原文（shadow_log #103/#104/#130 字段设计），此处亦不引入任何文本字段。"""
+    本身不落原文（shadow_log #103/#104/#130 字段设计），此处亦不引入任何文本字段。
+    issue #131：keymap 非空时按条上 key_hash 回填「用户/Key」身份行（key_hash 为
+    SHA-256 指纹非明文，身份来自 admin GraphQL 反查，见调用点 _alert_keymap）。"""
     out = []
     for r in sorted((r for r in recs if r.get("blocked") and (r.get("ts") or 0) > cursor),
                     key=lambda r: r["ts"]):
+        ident = _block_identity_lines(r, keymap)
         if r.get("layer") == "rules":
             text = (
-                f"[ai4s 告警] 提示词注入已阻断（451）\n"
+                f"[ai4s 告警] 提示词注入已阻断（451）{ident}\n"
                 f"层: 注入规则\n"
                 f"命中模式组: {','.join(r.get('groups') or ['-'])}\n"
                 f"请求模型: {r.get('model') or '-'}\n"
@@ -926,7 +959,7 @@ def pg_block_pending(recs: list, cursor: float) -> list:
             )
         elif r.get("layer") == "block":
             text = (
-                f"[ai4s 告警] DLP 内容已阻断（451）\n"
+                f"[ai4s 告警] DLP 内容已阻断（451）{ident}\n"
                 f"命中规则: {','.join(r.get('rule_ids') or ['-'])}\n"
                 f"请求模型: {r.get('model') or '-'}\n"
                 f"时间: {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(r['ts']))}"
@@ -935,7 +968,7 @@ def pg_block_pending(recs: list, cursor: float) -> list:
             score = r.get("score")
             score_txt = f"{score:.3f}" if isinstance(score, (int, float)) else "-"
             text = (
-                f"[ai4s 告警] 提示词注入已阻断（451）\n"
+                f"[ai4s 告警] 提示词注入已阻断（451）{ident}\n"
                 f"层: 注入 PG\n"
                 f"score: {score_txt} ≥ 阻断阈值 {r.get('block_threshold')}\n"
                 f"请求模型: {r.get('model') or '-'}\n"
@@ -1336,9 +1369,11 @@ def check_cycle(ax: Axonhub, state: dict) -> dict:
     # 状态翻转模型——阻断无「恢复」语义），游标独立防抖：发送成功才把游标推进到该条 ts，
     # 失败即止下轮重试（与翻转项同款纪律）；tail/发送异常只记日志，不阻塞巡检主流程。
     # tail 不按层过滤（pg/rules/block 阻断条同 jsonl 同时间轴，共用 pg_block_cursor 游标）
+    # issue #131：阻断条带 key_hash（SHA-256 指纹）时反查 key 名/用户邮箱，卡片加身份行
     try:
-        pending = pg_block_pending(shadow_log.tail(PG_BLOCK_ALERT_TAIL),
-                                   state.get("pg_block_cursor") or 0.0)
+        _block_recs = shadow_log.tail(PG_BLOCK_ALERT_TAIL)
+        pending = pg_block_pending(_block_recs, state.get("pg_block_cursor") or 0.0,
+                                   keymap=_alert_keymap(ax, _block_recs))
         for ts, text in pending:
             if not send_feishu(text):
                 break

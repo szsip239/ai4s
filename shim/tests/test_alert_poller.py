@@ -1285,6 +1285,71 @@ class TestPgBlockPending(unittest.TestCase):
         out = ap.pg_block_pending([self._rec(300.0), block_rec], 150.0)
         self.assertEqual([ts for ts, _ in out], [300.0])  # == 游标不重发
 
+    def test_identity_lines_on_keymap_hit(self):
+        """issue #131：keymap 命中 key_hash 时三层卡片均带「用户/Key」身份行。"""
+        km = {"ab12": {"key_name": "employee-self-key", "user_email": "emp@ai4s.local"}}
+        pg_rec = {**self._rec(100.0), "key_hash": "ab12"}
+        rules_rec = {"ts": 200.0, "layer": "rules", "hit": True, "blocked": True,
+                     "groups": ["extract-zh"], "model": "m", "key_hash": "ab12"}
+        block_rec = {"ts": 300.0, "layer": "block", "hit": True, "blocked": True,
+                     "rule_ids": ["secrets.openai_sk"], "model": "m", "key_hash": "ab12"}
+        out = ap.pg_block_pending([block_rec, rules_rec, pg_rec], 0.0, keymap=km)
+        self.assertEqual(len(out), 3)
+        for _, text in out:
+            self.assertIn("用户: emp@ai4s.local", text)
+            self.assertIn("Key: employee-self-key", text)
+
+    def test_no_identity_lines_when_unmatched(self):
+        """issue #131：哈希对不上 / 条无 key_hash / keymap=None（反查失败或未启用）→
+        无身份行不臆造；keymap 缺省调用向后兼容（既有两参调用形状不变）。"""
+        km = {"ab12": {"key_name": "k", "user_email": "u@x"}}
+        unmatched = {**self._rec(100.0), "key_hash": "ffff"}
+        no_hash = self._rec(200.0)
+        out = ap.pg_block_pending([no_hash, unmatched], 0.0, keymap=km)
+        for _, text in out:
+            self.assertNotIn("用户:", text)
+            self.assertNotIn("Key:", text)
+        out = ap.pg_block_pending([{**self._rec(100.0), "key_hash": "ab12"}], 0.0)  # 缺省 keymap
+        self.assertNotIn("用户:", out[0][1])
+
+
+class TestAlertKeymap(unittest.TestCase):
+    """issue #131：_alert_keymap——待发阻断条无 key_hash 不拉取（零开销）；
+    反查异常 fail-open 返回 None（卡片无身份行，不影响阻断告警主链路）。"""
+
+    def setUp(self):
+        import admin_api
+        self._saved_cache = dict(admin_api._keymap_cache)  # 全局 60s 缓存快照，防跨文件泄漏
+
+    def tearDown(self):
+        import admin_api
+        admin_api._keymap_cache.update(self._saved_cache)
+
+    def test_no_keyhash_no_fetch(self):
+        ax = mock.Mock()
+        recs = [{"ts": 1.0, "layer": "pg", "blocked": True}]
+        self.assertIsNone(ap._alert_keymap(ax, recs))
+        ax.gql.assert_not_called()
+
+    def test_fetch_failure_returns_none(self):
+        ax = mock.Mock()
+        ax.gql.side_effect = RuntimeError("gql down")
+        recs = [{"ts": 1.0, "layer": "pg", "blocked": True, "key_hash": "ab12"}]
+        self.assertIsNone(ap._alert_keymap(ax, recs))
+
+    def test_builds_map_via_admin_api(self):
+        import hashlib as _hl
+        raw = "ah-" + "0" * 64
+        kh = _hl.sha256(raw.encode()).hexdigest()
+        ax = mock.Mock()
+        ax.gql.return_value = {"apiKeys": {"edges": [
+            {"node": {"key": raw, "name": "k1", "user": {"email": "u@ai4s.local"}}}]}}
+        recs = [{"ts": 1.0, "layer": "pg", "blocked": True, "key_hash": kh}]
+        import admin_api
+        admin_api._keymap_cache["ts"] = 0.0  # 失效 60s 缓存，强制本例重新拉取
+        km = ap._alert_keymap(ax, recs)
+        self.assertEqual(km[kh], {"key_name": "k1", "user_email": "u@ai4s.local"})
+
 
 class TestCheckCyclePgBlockCursor(unittest.TestCase):
     """issue #103：check_cycle 接入阻断事件巡检——发送成功才推进游标；失败不推进、下轮重试。"""
