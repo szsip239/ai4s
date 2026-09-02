@@ -261,6 +261,7 @@ def _wordlist_put(handler, _me):
         return
     data["terms"] = payload["terms"]
     write_json_atomic(WORDLIST_PATH, data)
+    _audit(_me, "put_wordlist", [f"terms({len(payload['terms'])})"])  # 词值不落盘（机密词本体）
     _respond(handler, 200, data)
 
 
@@ -526,6 +527,35 @@ def _layer_enabled(section: str) -> bool:
     return True
 
 
+def _audit(me, op, changed=None):
+    """配置面写操作审计（layer=admin，shadow_log 同槽）：actor=email（缺省 id，再缺 unknown），
+    changed=变更键路径注解列表。配置值不落盘（settings 含 prompt 半敏感文本、词表值即机密词），
+    只记「谁、何时、改了哪些键」。跟随 shadow_log 永不抛纪律——审计失败不影响配置写本身。"""
+    actor = (me or {}).get("email") or (me or {}).get("id") or "unknown"
+    shadow_log.record("admin", op=op, actor=actor, changed=changed or [])
+
+
+def _diff_settings(old, new) -> list:
+    """settings 两层键路径 diff（段.键，值不落盘）；version/_comment 噪音不计；
+    旧文件缺失/损坏按全量新建（返回 ["*"]）；无实质变更返回 []。"""
+    if not isinstance(old, dict):
+        return ["*"]
+    out = []
+    for k in sorted(set(old) | set(new)):
+        if k == "version" or k.startswith("_"):
+            continue
+        ov, nv = old.get(k), new.get(k)
+        if ov == nv:
+            continue
+        if isinstance(ov, dict) and isinstance(nv, dict):
+            for sk in sorted(set(ov) | set(nv)):
+                if ov.get(sk) != nv.get(sk):
+                    out.append(f"{k}.{sk}")
+        else:
+            out.append(k)
+    return out
+
+
 def _settings_put(handler, _me):
     """PUT 整体替换 settings（issue #35）：校验 → write_json_atomic。
     shim 检测路径每请求重读 settings.json，写入即热生效，无需重启。
@@ -541,6 +571,7 @@ def _settings_put(handler, _me):
         _respond(handler, 400, {"error": err})
         return
     old_l1 = _layer_enabled("l1")  # 写前读旧状态（文件缺失/env 兜底均按默认 True 语义）
+    old_settings = _load_json_file(SETTINGS_PATH)  # 审计 diff 基准（缺失 → None 记全量新建）
     try:
         write_json_atomic(SETTINGS_PATH, payload)
     except OSError as e:
@@ -558,6 +589,7 @@ def _settings_put(handler, _me):
             _rollback_settings_json()
             _respond(handler, 500, {"error": f"{rerr}（settings 已回滚）"})
             return
+    _audit(_me, "put_settings", _diff_settings(old_settings, payload))  # 回滚路径不落条（操作整体失败）
     _respond(handler, 200, payload)
 
 
@@ -665,6 +697,7 @@ def _format_rules_put(handler, _me):
         _rollback_format_rules_json()
         _respond(handler, 500, {"error": f"{rerr}（JSON 已回滚）"})
         return
+    _audit(_me, "put_format_rules", [f"rules({len(payload['rules'])})"])
     _respond(handler, 200, payload)
 
 
@@ -801,6 +834,7 @@ def _format_rules_render_post(handler, _me):
         _respond(handler, 500, {"error": rerr})
         return
     rendered = sum(1 for r in rules if include_l1 and r.get("enabled") and r.get("gateway_patterns"))
+    _audit(_me, "render_format_rules", [f"rendered={rendered}", f"include_l1={include_l1}"])
     _respond(handler, 200, {"rendered": rendered})
 
 
@@ -835,7 +869,7 @@ def _edm_now() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
 
 
-def _edm_ingest_text(handler, name: str, text: str):
+def _edm_ingest_text(handler, name: str, text: str, me=None):
     """EDM 语料入库共用段（粘贴 JSON 与文件直传两条上传路径汇入，issue #48）：
     text 校验 → corpus 原文原子写 → 该文档指纹全量重算并入 fingerprints.json（不动其他文档）
     → 原子写。指纹写失败时回滚删 corpus 文件，两侧不留半更新。"""
@@ -873,6 +907,8 @@ def _edm_ingest_text(handler, name: str, text: str):
             pass
         _respond(handler, 500, {"error": f"fingerprints 写入失败（corpus 已回滚）: {e}"})
         return
+    _audit(me, "edm_ingest", [f"name={name}", f"shingles({len(fps['shingles'])})",
+                              f"lines({len(fps['lines'])})"])
     _respond(handler, 200, {"name": name, "shingle_count": len(fps["shingles"]),
                             "line_count": len(fps["lines"]), "added_at": now})
 
@@ -890,7 +926,7 @@ def _edm_corpus_post(handler, _me):
     if not isinstance(text, str) or not text.strip():
         _respond(handler, 400, {"error": "text 必须是非空字符串"})
         return
-    _edm_ingest_text(handler, name, text)
+    _edm_ingest_text(handler, name, text, me=_me)
 
 
 def _edm_corpus_upload_post(handler, _me):
@@ -918,7 +954,7 @@ def _edm_corpus_upload_post(handler, _me):
     except doc_extract.DocumentExtractionError as e:
         _respond(handler, 400, {"error": str(e)})
         return
-    _edm_ingest_text(handler, name, text)
+    _edm_ingest_text(handler, name, text, me=_me)
 
 
 def _edm_corpus_delete_item(handler, _me, name):
@@ -950,6 +986,7 @@ def _edm_corpus_delete_item(handler, _me, name):
     except OSError as e:
         _respond(handler, 500, {"error": f"指纹已删除但 corpus 文件删除失败（残留孤儿）: {e}"})
         return
+    _audit(_me, "edm_delete", [f"name={name}"])
     _respond(handler, 200, {"deleted": name})
 
 
@@ -1221,14 +1258,14 @@ def _shadow_verdicts(handler, _me):
         n = 50
     n = max(1, min(500, n))
     layer = (q.get("layer") or [""])[0] or None
-    if layer not in (None, "judge", "pg", "rules", "judge_inject", "router", "bypass", "block"):
-        _respond(handler, 400, {"error": "layer 必须是 judge、pg、rules、judge_inject、router、bypass 或 block"})
+    if layer not in (None, "judge", "pg", "rules", "judge_inject", "router", "bypass", "block", "admin"):
+        _respond(handler, 400, {"error": "layer 必须是 judge、pg、rules、judge_inject、router、bypass、block 或 admin"})
         return
     records = shadow_log.tail(n, layer=layer)
     if layer in (None, "block"):
         records = _enrich_block_records(records)
     _respond(handler, 200, {
-        "stats": {l: shadow_log.stats(l) for l in ("judge", "pg", "rules", "judge_inject", "router", "bypass", "block")},
+        "stats": {l: shadow_log.stats(l) for l in ("judge", "pg", "rules", "judge_inject", "router", "bypass", "block", "admin")},
         "records": records,
     })
 
@@ -1257,6 +1294,8 @@ def _bypass_keys_post(handler, me):
     except ValueError as e:
         _respond(handler, 400, {"error": str(e)})
         return
+    _audit(me, "bypass_add", [f"label={entry['label']}", f"scope={entry['scope']}",
+                              f"layers={','.join(entry['layers'])}", f"id={entry['id'][:8]}"])
     _respond(handler, 201, {"entry": entry})
 
 
@@ -1270,16 +1309,20 @@ def _bypass_keys_put_item(handler, _me, kid):
         return
     try:
         entry = bypass_keys.update(kid, payload)
-        _respond(handler, 200, {"entry": entry})
     except KeyError:
         _respond(handler, 404, {"error": "绕行条目不存在"})
+        return
     except ValueError as e:
         _respond(handler, 400, {"error": str(e)})
+        return
+    _audit(_me, "bypass_update", [f"id={kid[:8]}"] + [f"{k}=" for k in sorted(payload)])
+    _respond(handler, 200, {"entry": entry})
 
 
 def _bypass_keys_delete_item(handler, _me, kid):
     """DELETE 移除指定条（未知 id 幂等 200，对齐删空数组允许纪律）。"""
     bypass_keys.remove(kid)
+    _audit(_me, "bypass_remove", [f"id={kid[:8]}"])
     _respond(handler, 200, {"ok": True})
 
 

@@ -3165,7 +3165,7 @@ class TestShadowVerdictsApi(unittest.TestCase):
         shadow_log.record("pg", hit=False, score=0.2, latency_ms=40, path=self.log_path)
         status, body = _get("/dlp-admin/shadow-verdicts", token="reader-token")
         self.assertEqual(status, 200)
-        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject", "router", "bypass", "block"})  # #104 rules / #105 judge_inject / #117 router 层 stats 同槽透出
+        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject", "router", "bypass", "block", "admin"})  # #104 rules / #105 judge_inject / #117 router / admin 配置审计层 stats 同槽透出
         self.assertEqual(body["stats"]["judge"]["total"], 2)
         self.assertEqual(body["stats"]["judge"]["errors"], 1)
         self.assertEqual(body["stats"]["judge"]["hits"], 1)
@@ -3240,7 +3240,7 @@ class TestShadowVerdictsApi(unittest.TestCase):
         self.assertEqual(body["stats"]["judge"]["hits"], 1)  # 商密层独立聚合不串档
         status, body = _get("/dlp-admin/shadow-verdicts", token="reader-token")
         self.assertEqual(status, 200)
-        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject", "router", "bypass", "block"})
+        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject", "router", "bypass", "block", "admin"})
 
     def test_empty_store_200_zeros(self):
         status, body = _get("/dlp-admin/shadow-verdicts", token="reader-token")
@@ -3441,7 +3441,7 @@ class TestShadowVerdictsRouterApi(unittest.TestCase):
         self.assertEqual(body["stats"]["router"]["errors"], 1)
         status, body = _get("/dlp-admin/shadow-verdicts", token="reader-token")
         self.assertEqual(status, 200)
-        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject", "router", "bypass", "block"})
+        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject", "router", "bypass", "block", "admin"})
 
 
 # ---------------------------------------------------------------------------
@@ -3897,6 +3897,120 @@ class AdminBypassKeysTest(unittest.TestCase):
         self.assertEqual(status, 200)
         status, body = _get("/dlp-admin/bypass-keys", token="reader-token")
         self.assertEqual(body["keys"], [])
+
+
+class AdminAuditLogTest(unittest.TestCase):
+    """admin 配置面写操作审计：写端点成功后落 layer=admin 条（actor/op/changed），
+    配置值不落盘（settings 可含 prompt 等半敏感文本，只记键路径）；GET 读端点不落条。
+    出口：GET /dlp-admin/shadow-verdicts?layer=admin 透出。
+    fixture：临时 settings/wordlist/bypass-keys 路径 + SHADOW_LOG_PATH env（shadow_log 现读 env）。"""
+
+    def setUp(self):
+        _FAKE_STATE["mode"] = "ok"
+        _FAKE_STATE["tokens"] = {
+            "aud-writer": {"id": "7", "email": "ops@example.com", "isOwner": False,
+                           "scopes": ["read_channels", "write_channels"]},
+            "aud-reader": {"id": "42", "email": "view@example.com", "isOwner": False,
+                           "scopes": ["read_channels"]},
+        }
+        self._tmp = tempfile.TemporaryDirectory()
+        self.log_path = os.path.join(self._tmp.name, "audit.jsonl")
+        self.settings_path = os.path.join(self._tmp.name, "settings.json")
+        with open(self.settings_path, "w", encoding="utf-8") as f:
+            json.dump(_SETTINGS_FIXTURE, f, ensure_ascii=False)
+        self.wordlist_path = os.path.join(self._tmp.name, "confidential-terms.json")
+        with open(self.wordlist_path, "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "terms": []}, f)
+        self.bypass_path = os.path.join(self._tmp.name, "bypass-keys.json")
+        self._saved = (admin_api.SETTINGS_PATH, admin_api.WORDLIST_PATH)
+        admin_api.SETTINGS_PATH = self.settings_path
+        admin_api.WORDLIST_PATH = self.wordlist_path
+        self._saved_env = {k: os.environ.get(k) for k in ("SHADOW_LOG_PATH", "BYPASS_KEYS_PATH")}
+        os.environ["SHADOW_LOG_PATH"] = self.log_path
+        os.environ["BYPASS_KEYS_PATH"] = self.bypass_path
+
+    def tearDown(self):
+        admin_api.SETTINGS_PATH, admin_api.WORDLIST_PATH = self._saved
+        for k, v in self._saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        self._tmp.cleanup()
+
+    def _audit(self):
+        import shadow_log
+        return shadow_log.tail(50, layer="admin", path=self.log_path)
+
+    def test_put_settings_audit_diff_keys(self):
+        """PUT settings 改两处 → 审计条 op=put_settings、actor=email、changed 含两层键路径；
+        值不落盘（"0.99"/"false" 字样不出现）；未变的 prompt 长字段不产生噪音。"""
+        new = json.loads(json.dumps(_SETTINGS_FIXTURE))
+        new["judge"]["enabled"] = False
+        new["pg"]["threshold"] = 0.99
+        status, _ = _request("PUT", "/dlp-admin/settings", token="aud-writer", payload=new)
+        self.assertEqual(status, 200)
+        recs = [r for r in self._audit() if r.get("op") == "put_settings"]
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(recs[0]["actor"], "ops@example.com")
+        self.assertIn("judge.enabled", recs[0]["changed"])
+        self.assertIn("pg.threshold", recs[0]["changed"])
+        joined = json.dumps(recs[0]["changed"], ensure_ascii=False)
+        self.assertNotIn("0.99", joined)
+        self.assertNotIn("prompt_system", joined)
+
+    def test_put_settings_noop_still_audited(self):
+        """原样 PUT（无实质变更）也落条——审计记操作行为本身，changed 为空列表。"""
+        status, _ = _request("PUT", "/dlp-admin/settings", token="aud-writer",
+                             payload=json.loads(json.dumps(_SETTINGS_FIXTURE)))
+        self.assertEqual(status, 200)
+        recs = [r for r in self._audit() if r.get("op") == "put_settings"]
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(recs[0]["changed"], [])
+
+    def test_get_read_ops_no_audit(self):
+        """GET 读端点不落审计条。"""
+        self.assertEqual(_get("/dlp-admin/settings", token="aud-reader")[0], 200)
+        self.assertEqual(_get("/dlp-admin/bypass-keys", token="aud-reader")[0], 200)
+        self.assertEqual(self._audit(), [])
+
+    def test_put_wordlist_audit(self):
+        """PUT 词表 → op=put_wordlist，changed 带条数注解（词值不落盘）。"""
+        terms = [{"value": f"机密词{i}", "rule_id": f"confidential.t{i}"} for i in range(3)]
+        status, _ = _request("PUT", "/dlp-admin/wordlist", token="aud-writer",
+                             payload={"terms": terms})
+        self.assertEqual(status, 200)
+        recs = [r for r in self._audit() if r.get("op") == "put_wordlist"]
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(recs[0]["changed"], ["terms(3)"])
+        self.assertNotIn("机密词", json.dumps(recs[0], ensure_ascii=False))
+
+    def test_bypass_add_update_remove_audit(self):
+        """bypass-keys 增改删各落一条；token 明文绝不出现。"""
+        status, body = _request("POST", "/dlp-admin/bypass-keys", token="aud-writer",
+                                payload={"token": "sk-secret-token", "label": "ci-bot",
+                                         "scope": "layers", "layers": ["l2", "pg"]})
+        self.assertEqual(status, 201)
+        kid = body["entry"]["id"]
+        self.assertEqual(_request("PUT", f"/dlp-admin/bypass-keys/{kid}", token="aud-writer",
+                                  payload={"enabled": False})[0], 200)
+        self.assertEqual(_request("DELETE", f"/dlp-admin/bypass-keys/{kid}",
+                                  token="aud-writer")[0], 200)
+        recs = self._audit()
+        ops = [r["op"] for r in recs]  # tail 新到旧
+        self.assertEqual(ops, ["bypass_remove", "bypass_update", "bypass_add"])
+        self.assertIn("ci-bot", recs[-1]["changed"][0])
+        for r in recs:
+            self.assertNotIn("sk-secret-token", json.dumps(r, ensure_ascii=False))
+
+    def test_audit_queryable_via_layer_param(self):
+        """出口：GET /dlp-admin/shadow-verdicts?layer=admin 透出审计条。"""
+        _request("PUT", "/dlp-admin/wordlist", token="aud-writer", payload={"terms": []})
+        status, body = _get("/dlp-admin/shadow-verdicts?layer=admin", token="aud-reader")
+        self.assertEqual(status, 200)
+        ops = [r.get("op") for r in body["records"]]
+        self.assertIn("put_wordlist", ops)
+        self.assertIn("admin", body["stats"])
 
 
 if __name__ == "__main__":
