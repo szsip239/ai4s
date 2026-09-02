@@ -5,3 +5,6 @@ axonhub/config.yml
 casdoor/app.conf
 edm/fingerprints.json
 edm/corpus/
+
+# Key 级 DLP 绕行名单（issue #129）：运行时数据，admin API 增删；shim 缺文件自举空名单
+dlp/bypass-keys.json
