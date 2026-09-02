@@ -28,7 +28,7 @@
       "id": "edgeNginx",
       "type": "external",
       "label": "local-edge-nginx",
-      "sublabel": "公网入口 ai4s.example.com:8445",
+      "sublabel": "公网入口（自有域名 HTTPS）",
       "pos": [
         80,
         60
@@ -41,8 +41,8 @@
     {
       "id": "agentgateway",
       "type": "security",
-      "label": "agentgateway v1.5.0",
-      "sublabel": "入口网关 · DLP 执行点（:3000 / mTLS :3443）",
+      "label": "入口网关 · DLP 执行点",
+      "sublabel": "OpenAI 兼容 :3000 · 设备 mTLS :3443",
       "pos": [
         280,
         208
@@ -69,8 +69,8 @@
     {
       "id": "axonhub",
       "type": "backend",
-      "label": "axonhub v1.0.0-beta6",
-      "sublabel": "控制面：渠道/Key/额度/追踪（内网 :8090）",
+      "label": "控制面",
+      "sublabel": "渠道 / Key / 额度 / 追踪（内网 :8090）",
       "pos": [
         600,
         208
@@ -84,7 +84,7 @@
       "id": "postgres",
       "type": "database",
       "label": "PostgreSQL 16",
-      "sublabel": "axonhub / casdoor 数据",
+      "sublabel": "控制面 / SSO 数据",
       "pos": [
         760,
         380
@@ -98,7 +98,7 @@
       "id": "shim",
       "type": "security",
       "label": "shim（DLP 适配服务）",
-      "sublabel": "webhook 检测 + admin/self 平面 + 巡检线程",
+      "sublabel": "webhook 检测 + admin/self + 巡检",
       "pos": [
         440,
         380
@@ -339,9 +339,9 @@
       "dot": "cyan",
       "title": "主请求路径",
       "items": [
-        "员工 → agentgateway：L1 Secrets regex 网关原生拦截密钥",
+        "员工 → 入口网关：L1 Secrets regex 网关原生拦截密钥",
         "extAuthz 调 shim /classify 判档改写 auto 模型；promptGuard webhook 送 shim 检测（L2 词表/PII、EDM 指纹、注入规则/PG）",
-        "放行/脱敏/451 之后，axonhub 按成本/额度/健康度选渠道 → OAuth 订阅上游"
+        "放行/脱敏/451 之后，控制面按成本/额度/健康度选渠道 → OAuth 订阅上游"
       ]
     },
     {
@@ -357,9 +357,9 @@
       "dot": "amber",
       "title": "治理面与信任边界",
       "items": [
-        "/dlp-admin/* 为 DLP 配置唯一写入口（Bearer 经 axonhub 内省鉴权）；/self/* 员工自助按本人身份过滤",
+        "/dlp-admin/* 为 DLP 配置唯一写入口（Bearer 经控制面内省鉴权）；/self/* 员工自助按本人身份过滤",
         "shim 巡检线程 30s：fail-open 探活、额度轮询、审批同步、新员工自动入项",
-        "axonhub 宿主口已收（仅容器内网 :8090）；公网仅经 local-edge-nginx 8444/8445"
+        "控制面宿主口已收（仅容器内网 :8090）；公网仅经 local-edge-nginx 8444/8445"
       ]
     }
   ]
