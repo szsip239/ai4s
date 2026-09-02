@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { formatNumber } from '@/utils/format-number';
 import { Badge } from '@/components/ui/badge';
 import { JsonViewer } from '@/components/json-tree-view';
-import type { Segment, Span } from '../data/schema';
+import type { Segment, Span } from '../data/trace-schema';
 import { getSpanDisplayLabels, getLocalizedSpanType } from '../utils/span-display';
 
 interface SpanSectionProps {

@@ -5,7 +5,7 @@ import { ArrowUpRight, User, Bot, Clock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import type { Trace } from '@/features/traces/data/schema';
+import type { Trace } from '../data/trace-schema';
 
 interface TraceCardProps {
   trace: Trace;

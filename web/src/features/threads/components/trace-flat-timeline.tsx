@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { formatDuration } from '../../../utils/format-duration';
-import type { Segment, RequestMetadata, Span } from '../data/schema';
+import type { Segment, RequestMetadata, Span } from '../data/trace-schema';
 import { getSpanDisplayLabels, getSpanTypeTranslationKey, normalizeSpanType } from '../utils/span-display';
 import { getSpanIcon } from './constant';
 

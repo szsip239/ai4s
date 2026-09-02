@@ -177,6 +177,12 @@ export function DataTableToolbar<TData>({
           onChange={(event) => table.getColumn('modelID')?.setFilterValue(event.target.value)}
           className='h-8 w-[150px] lg:w-[250px]'
         />
+        <Input
+          placeholder={t('requests.filters.filterThreadId')}
+          value={(table.getColumn('thread')?.getFilterValue() as string) ?? ''}
+          onChange={(event) => table.getColumn('thread')?.setFilterValue(event.target.value)}
+          className='h-8 w-[150px] lg:w-[200px]'
+        />
         {table.getColumn('status') && (
           <DataTableFacetedFilter column={table.getColumn('status')} title={t('requests.filters.status')} options={requestStatuses} />
         )}

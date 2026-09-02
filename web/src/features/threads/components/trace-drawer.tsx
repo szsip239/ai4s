@@ -5,12 +5,12 @@ import { cn } from '@/lib/utils';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Button } from '@/components/ui/button';
 import { Separator } from '@/components/ui/separator';
-import { SpanSection } from '@/features/traces/components/span-section';
-import { TraceFlatTimeline } from '@/features/traces/components/trace-flat-timeline';
-import { TraceFlowTimeline } from '@/features/traces/components/trace-flow-timeline';
-import { TraceTreeTimeline } from '@/features/traces/components/trace-tree-view';
-import { useTraceWithSegments } from '@/features/traces/data';
-import { Segment, Span, parseRawRootSegment } from '@/features/traces/data/schema';
+import { SpanSection } from './span-section';
+import { TraceFlatTimeline } from './trace-flat-timeline';
+import { TraceFlowTimeline } from './trace-flow-timeline';
+import { TraceTreeTimeline } from './trace-tree-view';
+import { useTraceWithSegments } from '../data/use-trace-with-segments';
+import { Segment, Span, parseRawRootSegment } from '../data/trace-schema';
 
 interface TraceDrawerProps {
   open: boolean;

@@ -91,6 +91,35 @@ export function useRequestsColumns(options?: UseRequestsColumnsOptions): ColumnD
     },
 
     {
+      id: 'thread',
+      accessorFn: (row) => row.trace?.thread?.threadID ?? '',
+      header: ({ column }) => <DataTableColumnHeader column={column} title={t('requests.columns.thread')} />,
+      enableSorting: false,
+      enableHiding: true,
+      cell: ({ row }) => {
+        const thread = row.original.trace?.thread;
+        if (!thread) {
+          return <div className='text-muted-foreground text-xs'>-</div>;
+        }
+        return (
+          <button
+            type='button'
+            onClick={(e) => {
+              e.stopPropagation();
+              navigateWithSearch({
+                to: '/project/threads/$threadId',
+                params: { threadId: thread.id },
+              });
+            }}
+            className='text-primary cursor-pointer font-mono text-xs hover:underline'
+          >
+            {thread.threadID}
+          </button>
+        );
+      },
+    },
+
+    {
       id: 'modelID',
       header: ({ column }) => <DataTableColumnHeader column={column} title={t('requests.columns.modelId')} />,
       enableSorting: false,

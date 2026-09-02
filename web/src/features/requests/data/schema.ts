@@ -79,6 +79,20 @@ export const requestSchema = z.object({
       totalCount: z.number(),
     })
     .optional(),
+  // 列表页线程列/线程搜索用：Request→trace→thread 取业务线程号（threadID）
+  trace: z
+    .object({
+      id: z.string(),
+      thread: z
+        .object({
+          id: z.string(),
+          threadID: z.string(),
+        })
+        .nullable()
+        .optional(),
+    })
+    .nullable()
+    .optional(),
   usageLogs: z
     .object({
       edges: z

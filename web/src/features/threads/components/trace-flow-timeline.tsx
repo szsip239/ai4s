@@ -20,7 +20,7 @@ import { buildGUID, cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { formatDuration } from '../../../utils/format-duration';
-import type { Segment, Span } from '../data/schema';
+import type { Segment, Span } from '../data/trace-schema';
 import { getSpanDisplayLabels, normalizeSpanType } from '../utils/span-display';
 import { getSpanIcon } from './constant';
 

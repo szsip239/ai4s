@@ -27,6 +27,7 @@ const REQUEST_FILTER_SEARCH_KEYS = {
   channel: 'channel',
   apiKey: 'apiKey',
   modelID: 'modelID',
+  threadID: 'threadID',
   createdAtFrom: 'createdAtFrom',
   createdAtTo: 'createdAtTo',
   createdAtStartTime: 'createdAtStartTime',
@@ -151,6 +152,7 @@ function parseRequestSearchFilters(search: Record<string, unknown>): RequestSear
     channelFilter: getSearchStringArray(search[REQUEST_FILTER_SEARCH_KEYS.channel]),
     apiKeyFilter: getSearchStringArray(search[REQUEST_FILTER_SEARCH_KEYS.apiKey]),
     modelIDFilter: getSearchString(search[REQUEST_FILTER_SEARCH_KEYS.modelID]),
+    threadIDFilter: getSearchString(search[REQUEST_FILTER_SEARCH_KEYS.threadID]),
     dateRange: hasDateRange
       ? normalizeDateTimeRangeValue({
           from,
@@ -183,11 +185,12 @@ function RequestsContent() {
     defaultPageSize: 20,
     pageSizeStorageKey: 'requests-table-page-size',
   });
-  const { statusFilter, sourceFilter, channelFilter, apiKeyFilter, modelIDFilter, dateRange } = useMemo(
+  const { statusFilter, sourceFilter, channelFilter, apiKeyFilter, modelIDFilter, threadIDFilter, dateRange } = useMemo(
     () => parseRequestSearchFilters(currentSearch),
     [currentSearch]
   );
   const debouncedModelIDFilter = useDebounce(modelIDFilter, 300);
+  const debouncedThreadIDFilter = useDebounce(threadIDFilter, 300);
   const [autoRefresh, setAutoRefresh] = useState(false);
 
   // Build where clause with filters
@@ -209,6 +212,11 @@ function RequestsContent() {
     }
     if (debouncedModelIDFilter) {
       where.modelIDContainsFold = debouncedModelIDFilter;
+    }
+    // 线程搜索：Request 无 thread 字段，链路 Request→trace→thread；
+    // TraceWhereInput.threadID 是节点全局 ID，业务线程号须再下一层 hasThreadWith.threadID（活栈内层验证）
+    if (debouncedThreadIDFilter) {
+      where.hasTraceWith = { hasThreadWith: { threadID: debouncedThreadIDFilter } };
     }
     return Object.keys(where).length > 0 ? where : undefined;
   })();
@@ -274,6 +282,7 @@ function RequestsContent() {
         setSearchStringArray(draft, REQUEST_FILTER_SEARCH_KEYS.channel, filters.channelFilter);
         setSearchStringArray(draft, REQUEST_FILTER_SEARCH_KEYS.apiKey, filters.apiKeyFilter);
         setSearchString(draft, REQUEST_FILTER_SEARCH_KEYS.modelID, filters.modelIDFilter);
+        setSearchString(draft, REQUEST_FILTER_SEARCH_KEYS.threadID, filters.threadIDFilter);
       });
     },
     [updateRequestSearch]
@@ -348,6 +357,7 @@ function RequestsContent() {
         channelFilter={channelFilter}
         apiKeyFilter={apiKeyFilter}
         modelIDFilter={modelIDFilter}
+        threadIDFilter={threadIDFilter}
         dateRange={dateRange}
         queryWhere={whereClause}
         onNextPage={handleNextPage}

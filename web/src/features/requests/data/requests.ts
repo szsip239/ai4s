@@ -64,6 +64,13 @@ function buildRequestsQuery(permissions: { canViewApiKeys: boolean; canViewChann
             metricsLatencyMs
             metricsFirstTokenLatencyMs
             metricsReasoningDurationMs
+            trace {
+              id
+              thread {
+                id
+                threadID
+              }
+            }
             executions(first: 10, orderBy: { field: CREATED_AT, direction: DESC }) {
               edges {
                 node {

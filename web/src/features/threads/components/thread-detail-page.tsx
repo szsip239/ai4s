@@ -24,7 +24,7 @@ import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
 import { ServerSidePagination } from '@/components/server-side-pagination';
 import { Badge } from '@/components/ui/badge';
-import type { Trace } from '@/features/traces/data/schema';
+import type { Trace } from '../data/trace-schema';
 import { useGeneralSettings } from '@/features/system/data/system';
 import { useThreadDetail, useArchiveThread, useUnarchiveThread, useRetainThread, useUnretainThread } from '../data/threads';
 import { TraceCard } from './trace-card';
