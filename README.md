@@ -36,6 +36,14 @@
 - **可观测与告警**：axonhub 请求追踪；judge/PG/rules/router 判定持久化观测出口；shim 巡检线程 30s（探活、额度、审批同步）+ 飞书群机器人告警与审批卡片。
 - **控制台**（`web/`，React + Vite + TanStack + Tailwind）：仪表盘、Key 管理、脱敏规则配置中心（管线图 + 分层导航）、智能路由管理、日志；PWA 支持 Android 安装与移动端布局。
 
+## 控制台预览
+
+![Ai-4S-infra 控制台](docs/showcase/console-hero.webp)
+
+| 脱敏规则配置中心 | Key 管理 |
+|---|---|
+| ![脱敏规则配置中心](docs/showcase/console-rules.webp) | ![Key 管理](docs/showcase/console-keys.webp) |
+
 ## 组件与版本（pin 定，升级走评审）
 
 | 组件 | 版本 | 角色 |
