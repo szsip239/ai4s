@@ -1,5 +1,5 @@
 # yaml-language-server: $schema=https://agentgateway.dev/schema/config
-# agentgateway v1.4.1 standalone 配置（schema: https://raw.githubusercontent.com/agentgateway/agentgateway/v1.4.1/schema/config.json）
+# agentgateway v1.5.0 standalone 配置（schema: https://raw.githubusercontent.com/agentgateway/agentgateway/v1.5.0/schema/config.json）
 #
 # ai4s DLP 分层职责（唯一事实来源：契约 docs/contracts/dlp-webhook-shim.md）：
 #   L1/L1.5 本地 regex——规则源 deploy/dlp/format-rules.json（issue #33，经 admin API 渲染进下方标记区块，勿手改）；
@@ -9,6 +9,11 @@
 config:
   # readiness 探针服务，健康判定：GET /healthz/ready
   readinessAddr: 0.0.0.0:15001
+# 正文缓冲上限 20 MiB（默认 2 MiB，超限 413）——支撑长文档/大输入场景；
+# 注意 DLP shim 仍只读前 64 KB（下方 extAuthz includeRequestBody），超长部分审查覆盖有缺口
+frontendPolicies:
+  http:
+    maxBufferSize: 20971520
 routes:
   # /v1：LLM 流量。ai policy 将该路由标记为 LLM 处理域，挂 Secrets promptGuard。
   # 阻断语义：reject 返回 451 + 规则 ID，且不触发渠道切换（agentgateway 层直接终答，请求不进入 axonhub）。
