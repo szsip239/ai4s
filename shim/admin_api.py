@@ -73,6 +73,22 @@ import bypass_keys  # Key 级 DLP 绕行名单（issue #129）：stdlib-only 无
 AXONHUB_ADMIN_URL = os.environ.get("AXONHUB_ADMIN_URL", "http://axonhub:8090/admin/graphql")
 INTROSPECT_TIMEOUT = 3  # 秒；超时按内省失败处理（fail-closed）
 _ME_QUERY = "query Me { me { id email isOwner scopes } }"  # issue #79 加 email：控制台 Key 申请通道登记申请人身份用
+# issue #128：playground 闸门内省——补项目成员 scopes（beta6 me.projects{projectID scopes} 实证可用）
+_ME_PROJECTS_QUERY = "query Me { me { id email isOwner scopes projects { projectID scopes } } }"
+
+
+def playground_allowed(me: dict, project_gid: str) -> bool:
+    """playground 闸门纯函数（issue #128）：owner / 系统档 write_requests / 指定项目成员
+    scopes 含 write_requests 放行，其余拒。刻意不做 "*" 通配——与 _authorize 同款精确匹配
+    纪律（非 owner 管理账号须持显式 scope）。"""
+    if me.get("isOwner"):
+        return True
+    if "write_requests" in set(me.get("scopes") or []):
+        return True
+    for p in me.get("projects") or []:
+        if p.get("projectID") == project_gid and "write_requests" in set(p.get("scopes") or []):
+            return True
+    return False
 
 # 配置文件路径（与 app.py 相同 env/默认值；测试用临时文件覆写模块属性）
 WORDLIST_PATH = os.environ.get("WORDLIST_PATH", "/dlp/confidential-terms.json")
@@ -99,11 +115,12 @@ def _respond(handler, code: int, obj) -> None:
     handler.wfile.write(body)
 
 
-def _introspect(token: str):
+def _introspect(token: str, query: str = _ME_QUERY):
     """caller Bearer token 透传 axonhub 内省（无缓存，每请求一次——admin 调用低频，KISS）。
+    query 可换形（issue #128 /playground-authz 用 _ME_PROJECTS_QUERY 带项目成员 scopes）。
     返回 (me, None) 或 (None, 错误码)：非 200 或 me 为空 → 401；
     网络错误/超时 → 503（admin 平面 fail-closed，不适用检测链 fail-open）。"""
-    body = json.dumps({"query": _ME_QUERY}).encode()
+    body = json.dumps({"query": query}).encode()
     req = urllib.request.Request(
         AXONHUB_ADMIN_URL,
         data=body,

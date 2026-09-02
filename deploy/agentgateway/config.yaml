@@ -229,6 +229,28 @@ routes:
     policies:
       directResponse:
         status: 403
+  # playground 模型调用闸门（issue #128）：beta6 上游 /admin/playground/chat 零 scope 校验
+  # （2026-09-02 实证：空 scopes 的邀请注册用户 200 直通渠道出真实应答，含带零渠道项目头），
+  # 网关侧补 extAuthz 门（同 #68 P2-D 的「上游未修网关先行」先例）——shim /playground-authz
+  # 内省 JWT，owner/系统 write_requests/请求项目成员 write_requests 放行，其余 403。
+  # failureMode=deny（fail-closed，同 /bv1 纪律）：shim 宕机时 playground 拒绝服务——
+  # 控制台测试工具不适用检测链 fail-open。exact 精确匹配优先于下方 /admin 前缀。
+  # 仅 default 网关（控制台浏览器流量；mtls 设备口无 playground 场景）。
+  - gateways: [default]
+    matches:
+      - path:
+          exact: /admin/playground/chat
+    policies:
+      extAuthz:
+        host: shim:8080
+        failureMode: deny
+        # 实证（2026-09-02）：extAuthz 子请求默认不带原请求头，须显式 includeRequestHeaders
+        includeRequestHeaders: [authorization, x-project-id]
+        protocol:
+          http:
+            path: '"/playground-authz"'
+    backends:
+      - host: axonhub:8090
   - gateways: [default, mtls]
     matches:
       - path:

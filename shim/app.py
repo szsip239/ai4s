@@ -1380,6 +1380,30 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._json(403, {"error": "key not authorized for bypass entry"})
 
+    def _playground_authz(self):
+        """playground 模型调用闸门（issue #128）：beta6 上游 /admin/playground/chat 零 scope
+        校验（2026-09-02 实证：空 scopes 的邀请注册用户 200 直通渠道出真实应答），网关侧补
+        extAuthz 门——Bearer JWT 内省后 owner/系统 write_requests/请求 X-Project-ID 项目成员
+        scopes 含 write_requests 放行，其余一律 403；token/项目头缺失 403。
+        fail-closed：网关 failureMode=deny + 内省失败非 2xx（同 /bv1 纪律，shim 宕机时
+        playground 拒绝服务——playground 是控制台测试工具，不适用检测链 fail-open）。"""
+        auth = self.headers.get("Authorization") or ""
+        parts = auth.split(None, 1)
+        token = parts[1].strip() if len(parts) == 2 and parts[0].lower() == "bearer" else ""
+        pid = (self.headers.get("X-Project-ID") or "").strip()
+        if not token or not pid:
+            self._json(403, {"error": "playground requires bearer token and X-Project-ID"})
+            return
+        me, err = admin_api._introspect(token, admin_api._ME_PROJECTS_QUERY)
+        if err is not None:
+            self._json(err, {"error": "introspection unavailable" if err == 503 else "unauthorized"})
+            return
+        if admin_api.playground_allowed(me, pid):
+            self._json(200, {"ok": True})
+        else:
+            print(f"[dlp.playground] 403 deny user={me.get('email')} project={pid}", flush=True)
+            self._json(403, {"error": "playground requires write_requests in the selected project"})
+
     def do_GET(self):
         if admin_api.handle(self, "GET"):  # admin 平面（issue #31）：/dlp-admin/* 优先分流
             return
@@ -1410,6 +1434,10 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 payload = {}
             self._bv1_authz(payload)
+            return
+        if self.path == "/playground-authz":
+            # playground extAuthz 门（issue #128）：只读头鉴权不读 body（网关不开 includeRequestBody）
+            self._playground_authz()
             return
         if self.path == "/classify":
             # auto 智能路由（issue #117 真实分类器；#115 spike 桩已退役）：
