@@ -54,7 +54,7 @@ def record(layer: str, hit=None, score=None, confidence=None, latency_ms=None,
            error=None, entities=None, path=None, blocked=None, block_threshold=None, model=None,
            warned=None, groups=None, attack_type=None,
            resolved_model=None, tier=None, p_complex=None, reason=None, session=None,
-           rule_ids=None):
+           rule_ids=None, side=None, key_hash=None, excerpts=None):
     """追加一条 shadow 判定。entities 只存命中数（不存字符串——不落原文）；
     error 非 None 表示该次判定不可用（hit/score/confidence 应为 None）。永不抛。
     issue #103：blocked=True 表示该次判定触发了 451 阻断（PG 高分试点；语义层永不阻断），
@@ -74,7 +74,12 @@ def record(layer: str, hit=None, score=None, confidence=None, latency_ms=None,
     session（会话命中布尔位；会话 key 本体不落条）；全部只在非 None 时写入。
     issue #130：rule_ids 存 block 层（词表/归一化 secrets/EDM 内容阻断）命中规则族标识
     列表（如 ["confidential.codename","secrets.openai_sk"]——规则标识非原文，同 groups
-    脱敏先例）；只在非 None 时写入。"""
+    脱敏先例）；只在非 None 时写入。
+    issue #134：block 层增强三键——side（request/response 侧）、key_hash（请求 Bearer
+    token 的 SHA-256，与 bypass_keys 同纪律：不明文落盘，身份反查在读侧经 admin
+    GraphQL 哈希比对完成）、excerpts（命中摘录 [{rule,text}]：词表命中原样——词表
+    为管理员自配非用户敏感数据；secrets 命中掩码留头尾；绝无完整原文/上下文）。
+    三键同「非 None 才写」纪律。"""
     rec = {
         "ts": time.time(),
         "layer": layer,
@@ -91,7 +96,9 @@ def record(layer: str, hit=None, score=None, confidence=None, latency_ms=None,
                  ("attack_type", attack_type),  # attack_type：issue #105 judge 注入判定类型标签
                  ("resolved_model", resolved_model), ("tier", tier),  # issue #117：router 决策条
                  ("p_complex", p_complex), ("reason", reason), ("session", session),
-                 ("rule_ids", rule_ids)):  # rule_ids：issue #130 block 层命中规则族
+                 ("rule_ids", rule_ids),  # rule_ids：issue #130 block 层命中规则族
+                 ("side", side), ("key_hash", key_hash),  # issue #134：block 层侧别/密钥哈希
+                 ("excerpts", excerpts)):  # excerpts：issue #134 命中摘录（掩码）
         if v is not None:
             rec[k] = v
     p = path or _default_path()

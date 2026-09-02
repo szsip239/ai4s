@@ -16,19 +16,38 @@ import { Main } from '@/components/layout/main';
 import { Ai4sPageTabs } from '@/ai4s/components/Ai4sPageTabs';
 import { pageTabGroups } from '@/ai4s/components/page-tab-groups';
 
-/** 内容阻断审计行（block 层：规则族标识/模型名，不落原文） */
+/** 内容阻断审计行（issue #132；#134 增列：侧别/用户/Key/命中摘录） */
 function BlockRow({ r }: { r: BlockVerdict }) {
+  const { t } = useTranslation();
   const rules = r.rule_ids ?? [];
   return (
     <TableRow>
       <TableCell className='text-muted-foreground whitespace-nowrap'>
         {typeof r.ts === 'number' ? format(new Date(r.ts * 1000), 'MM-dd HH:mm:ss') : '—'}
       </TableCell>
-      <TableCell className='max-w-56 truncate font-mono text-xs' title={r.model ?? undefined}>
+      <TableCell>
+        {r.side ? <Badge variant='outline'>{t(`ai4s.blocks.side.${r.side}`)}</Badge> : '—'}
+      </TableCell>
+      <TableCell className='max-w-40 truncate' title={r.user_email ?? undefined}>
+        {r.user_email ?? '—'}
+      </TableCell>
+      <TableCell className='max-w-40 truncate' title={r.key_name ?? undefined}>
+        {r.key_name ?? '—'}
+      </TableCell>
+      <TableCell className='max-w-40 truncate font-mono text-xs' title={r.model ?? undefined}>
         {r.model ?? '—'}
       </TableCell>
       <TableCell className='font-mono text-xs'>
         {rules.length > 0 ? rules.map((id) => <Badge key={id} variant='destructive' className='mr-1'>{id}</Badge>) : '—'}
+      </TableCell>
+      <TableCell className='max-w-56 font-mono text-xs'>
+        {(r.excerpts ?? []).length > 0
+          ? r.excerpts!.map((e, i) => (
+              <span key={`${e.rule}-${i}`} className='mr-2 inline-block max-w-52 truncate align-bottom' title={`${e.rule}: ${e.text}`}>
+                {e.text}
+              </span>
+            ))
+          : '—'}
       </TableCell>
     </TableRow>
   );
@@ -70,8 +89,12 @@ export default function BlocksPage() {
             <TableHeader>
               <TableRow>
                 <TableHead>{t('ai4s.blocks.columns.time')}</TableHead>
+                <TableHead>{t('ai4s.blocks.columns.side')}</TableHead>
+                <TableHead>{t('ai4s.blocks.columns.user')}</TableHead>
+                <TableHead>{t('ai4s.blocks.columns.key')}</TableHead>
                 <TableHead>{t('ai4s.blocks.columns.model')}</TableHead>
                 <TableHead>{t('ai4s.blocks.columns.rules')}</TableHead>
+                <TableHead>{t('ai4s.blocks.columns.excerpt')}</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>

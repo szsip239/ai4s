@@ -57,6 +57,7 @@ issue #130：shadow-verdicts 出口 layer 过滤接受 block、stats 加 block �
 python-pptx/pytesseract/Pillow，全 manylinux wheel），仅 upload 端点函数级引用，
 检测路径 app.py 不受影响（仍纯 stdlib）。
 """
+import hashlib
 import json
 import os
 import re
@@ -1136,6 +1137,66 @@ def _kr_reject_item(handler, me, rid):
 # ---- shadow 判定查询出口（issue #92，读级）：观测闭环数据的管理面出口 ----
 
 
+# ---- block 层身份反查（issue #134）：key_hash → key 名/用户邮箱 ----
+# 落条侧只存 SHA-256 指纹（app.py key_hash_from_headers，与 bypass_keys 同纪律不明文落盘）；
+# 读侧（本出口）用 admin token 查 apiKeys 现算哈希比对回填 key_name/user_email。
+# 读路径低频，60s 缓存 key 清单；反查失败 fail-open 原样透出（不臆造身份）。
+
+_APIKEYS_FOR_ENRICH_QUERY = """
+  query BlockEnrichKeys($first: Int) {
+    apiKeys(first: $first) {
+      edges { node { key name user { email } } }
+    }
+  }
+"""
+
+_keymap_cache = {"ts": 0.0, "map": {}}
+
+
+def _fetch_all_apikeys() -> list:
+    """admin token 拉全量 key（含明文，仅内存比对不落盘）。懒 import 防环（self_api→admin_api）。"""
+    import self_api
+    data = self_api._get_ax().gql(_APIKEYS_FOR_ENRICH_QUERY, {"first": 200})
+    return [e["node"] for e in (data.get("apiKeys") or {}).get("edges") or []]
+
+
+def _block_key_map(fetch_keys) -> dict:
+    """key_hash → {key_name, user_email}；60s 缓存。fetch_keys 注入便于测试。"""
+    now = time.time()
+    if now - _keymap_cache["ts"] < 60:
+        return _keymap_cache["map"]
+    m = {}
+    for k in fetch_keys() or []:
+        raw = k.get("key") or ""
+        if raw:
+            m[hashlib.sha256(raw.encode()).hexdigest()] = {
+                "key_name": k.get("name") or "",
+                "user_email": (k.get("user") or {}).get("email") or "",
+            }
+    _keymap_cache["ts"], _keymap_cache["map"] = now, m
+    return m
+
+
+def _enrich_block_records(records: list, fetch_keys=None) -> list:
+    """block 条回填 key_name/user_email（返回副本不改原记录）；
+    无 key_hash / 哈希对不上 / 反查失败 → 不标注不臆造。"""
+    fetch_keys = fetch_keys or _fetch_all_apikeys
+    if not any(r.get("key_hash") for r in records):
+        return records
+    try:
+        km = _block_key_map(fetch_keys)
+    except Exception as e:
+        print(f"[admin] block 身份反查失败（原样透出）: {type(e).__name__}", flush=True)
+        return records
+    out = []
+    for r in records:
+        kh = r.get("key_hash")
+        if kh and kh in km:
+            r = {**r, **km[kh]}
+        out.append(r)
+    return out
+
+
 def _shadow_verdicts(handler, _me):
     """GET /dlp-admin/shadow-verdicts：各层 stats + 近期判定记录（新到旧，不落原文）。
     query 参数：n（默认 50，1..500 截断）、layer（judge/pg/rules/judge_inject/router/bypass/block 过滤，非法值 400）。
@@ -1148,7 +1209,11 @@ def _shadow_verdicts(handler, _me):
     tier/p_complex/reason/session 字段（决策日志供阈值校准回放）。
     issue #129：bypass 层（Key 绕行审计）条同槽透出，records 带 reason 范围说明。
     issue #130：block 层（词表/归一化 secrets/EDM 内容阻断）条同槽透出，records 带
-    rule_ids 命中规则族标识。"""
+    rule_ids 命中规则族标识。
+    issue #134：block 层增强——records 另带 side（request/response）、key_hash
+    （SHA-256 指纹）与读侧回填的 key_name/user_email（身份反查：admin GraphQL 拉
+    key 清单现算哈希比对，60s 缓存，失败 fail-open 不标注）、excerpts（命中摘录：
+    词表原样/secrets 掩码）。"""
     q = urllib.parse.parse_qs(urllib.parse.urlsplit(handler.path).query)
     try:
         n = int((q.get("n") or ["50"])[0])
@@ -1159,9 +1224,12 @@ def _shadow_verdicts(handler, _me):
     if layer not in (None, "judge", "pg", "rules", "judge_inject", "router", "bypass", "block"):
         _respond(handler, 400, {"error": "layer 必须是 judge、pg、rules、judge_inject、router、bypass 或 block"})
         return
+    records = shadow_log.tail(n, layer=layer)
+    if layer in (None, "block"):
+        records = _enrich_block_records(records)
     _respond(handler, 200, {
         "stats": {l: shadow_log.stats(l) for l in ("judge", "pg", "rules", "judge_inject", "router", "bypass", "block")},
-        "records": shadow_log.tail(n, layer=layer),
+        "records": records,
     })
 
 

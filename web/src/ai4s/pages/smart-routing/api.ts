@@ -140,13 +140,18 @@ export function useBypassVerdicts() {
   });
 }
 
-// ---- 内容阻断审计（issue #130，shim shadow_log block 层：rule_ids 命中规则族标识/model，不落原文）----
+// ---- 内容阻断审计（issue #130，shim shadow_log block 层：rule_ids 命中规则族标识/model，不落原文；
+// issue #134 增强：side 侧别 + key_hash 读侧回填 key_name/user_email + excerpts 命中摘录（词表原样/secrets 掩码））----
 
 export interface BlockVerdict {
   ts: number; // epoch 秒
   layer: string;
   model?: string; // 请求模型名（x-model 头，issue #116）
   rule_ids?: string[]; // 命中规则族标识（confidential.*/secrets.*/edm.doc_match——非原文）
+  side?: 'request' | 'response'; // issue #134：请求侧/响应侧阻断
+  key_name?: string; // issue #134：读侧按 key_hash 回填的 key 名（对不上不标注）
+  user_email?: string; // issue #134：读侧回填的 key 属主邮箱
+  excerpts?: Array<{ rule: string; text: string }>; // issue #134：命中摘录（词表原样/secrets 掩码）
 }
 
 export interface BlockVerdictsResp {

@@ -3,7 +3,9 @@
 须 shadow_log 落条（layer=block, blocked=True, rule_ids 脱敏字段, model）+ 控制台出口可查。
 
 seam 纪律同 test_bypass：活 shim Handler 起本地端口，词表/format-rules/settings/shadow_log
-全部指向 tmp；断言只盯 webhook 协议应答形状与 shadow_log 条（不落原文、不记 token）。
+全部指向 tmp；断言只盯 webhook 协议应答形状与 shadow_log 条。
+issue #134 起落条纪律更新：带 side/key_hash（SHA-256 指纹不明文）/excerpts
+（词表命中原样=管理员自配清单；secrets 掩码；绝无完整原文上下文）。
 """
 import json
 import os
@@ -95,7 +97,12 @@ class BlockObserveTest(unittest.TestCase):
         self.assertTrue(rec["blocked"])
         self.assertIn("confidential.codename", rec["rule_ids"])
         self.assertEqual(rec.get("model"), "echo-test")  # x-model 头 → 审计带模型名
-        self.assertNotIn("凤凰计划", json.dumps(rec, ensure_ascii=False))  # 不落原文
+        # issue #134：词表命中值原样落摘录（词表为管理员自配清单，非用户敏感数据）；
+        # 不落用户原文上下文（整句不得出现），无 Authorization 头则 key_hash 键级省略
+        self.assertEqual(rec.get("side"), "request")
+        self.assertIn({"rule": "confidential.codename", "text": "凤凰计划"}, rec.get("excerpts") or [])
+        self.assertNotIn("凤凰计划进展如何", json.dumps(rec, ensure_ascii=False))
+        self.assertNotIn("key_hash", rec)
 
     def test_normalized_secret_451_records_block(self):
         # 归一化 secrets（L1 shim 侧）：全角/分隔变体归一后命中 shim_patterns
@@ -105,6 +112,10 @@ class BlockObserveTest(unittest.TestCase):
         self.assertEqual(len(blocks), 1)
         self.assertIn("secrets.test_sk", blocks[0]["rule_ids"])
         self.assertNotIn("model", blocks[0])  # 无 x-model 头 → 键级省略纪律
+        # issue #134：secrets 命中串掩码落摘录（归一化后命中 skABCDEFGH12345 → 留头尾），不落完整密钥
+        ex = blocks[0].get("excerpts") or []
+        self.assertEqual(ex, [{"rule": "secrets.test_sk", "text": "sk***45"}])
+        self.assertNotIn("skABCDEFGH12345", json.dumps(blocks[0], ensure_ascii=False))
 
     def test_clean_request_no_block_record(self):
         _, body = _post("/request", self._payload("今天天气怎么样"))

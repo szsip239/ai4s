@@ -37,8 +37,10 @@
     统一经 setting_value，全覆盖；请求/响应两侧只对本侧生效层落「按层跳过」审计条，
     不记与本侧无关的层）。审计落 shadow_log layer=bypass（不落原文不记 token）
   - 内容阻断观测（issue #130）：/request 词表/归一化 secrets/EDM 451 分支落
-    shadow_log layer=block（blocked=True + rule_ids 规则族标识 + model，不落原文）+
-    日志行；alert_poller 巡检项 5 复用阻断游标通道发飞书卡
+    shadow_log layer=block（blocked=True + rule_ids 规则族标识 + model）+
+    日志行；alert_poller 巡检项 5 复用阻断游标通道发飞书卡；issue #134 起增强：
+    响应侧 451 同槽落条，block 条带 side/key_hash（SHA-256 指纹）/excerpts
+    （词表原样、secrets 掩码），读侧 shadow-verdicts 按 key_hash 回填 key 名/用户邮箱
 本模块（检测路径）依赖仅标准库；镜像 python:3.12-slim（issue #48 起含 doc_extract 文档解析依赖，
 检测路径不 import 第三方库，纪律不变）。
 """
@@ -1125,6 +1127,68 @@ def analyze(text: str, terms: list) -> list:
     return hits
 
 
+# ---- 阻断记录增强（issue #134）：身份指纹 + 命中摘录 ----
+
+def bearer_token(headers) -> str:
+    """从 Authorization 头取 Bearer token（webhook headers CEL 注入的客户端原始 API key）。
+    缺失/非 Bearer/空串 → ''（调用方按 fail-closed 处理）。"""
+    auth = headers.get("Authorization") or ""
+    parts = auth.split(None, 1)
+    return parts[1].strip() if len(parts) == 2 and parts[0].lower() == "bearer" else ""
+
+
+def key_hash_from_headers(headers):
+    """请求 key 的 SHA-256 指纹（与 bypass_keys 同纪律：不明文落盘；
+    身份反查在 shadow-verdicts 读侧经 admin GraphQL 哈希比对完成）。无 token → None。"""
+    tok = bearer_token(headers)
+    return hashlib.sha256(tok.encode()).hexdigest() if tok else None
+
+
+def _mask_excerpt(s: str) -> str:
+    """命中内容掩码摘录：≤4 字符全掩，更长留头尾各 2 字符；整体截 30 字符防超长。"""
+    s = (s or "").strip()
+    if not s:
+        return ""
+    if len(s) <= 4:
+        return "****"
+    masked = s[:2] + "***" + s[-2:]
+    return masked[:30]
+
+
+def block_excerpts(norm: str, term_hits: list, hits: list, secret_codes: list,
+                   rules: list = None, limit: int = 5) -> list:
+    """451 落条的命中摘录（issue #134）：[{rule, text}]。
+    词表命中（confidential.*）原样保留——词表为管理员自配清单，非用户敏感数据；
+    secrets 命中串掩码留头尾（不存完整密钥）；EDM/其他族无摘录（无可安全展示内容）。
+    不含原文上下文；去重后至多 limit 条。"""
+    out, seen = [], set()
+
+    def _push(rule_id, text):
+        key = (rule_id, text)
+        if text and key not in seen and len(out) < limit:
+            seen.add(key)
+            out.append({"rule": rule_id, "text": text})
+
+    for t in term_hits or []:  # 归一化词表命中（dict 带 value/rule_id）
+        _push(t.get("rule_id") or "", t.get("value") or "")
+    for h in hits or []:  # analyze() 词表命中（term 即命中片段/词值）
+        _push(h.get("rule_id") or "", h.get("term") or "")
+    if secret_codes:
+        rules = load_format_rules() if rules is None else rules
+        for code in secret_codes:
+            for rule in rules:
+                if rule.get("code") != code:
+                    continue
+                for rgx in _norm_compiled(rule):
+                    m = rgx.search(norm or "")
+                    if m:
+                        _push(code, _mask_excerpt(m.group(0)))
+                        break
+                break
+    return out
+
+
+
 # ---- privacy-filter（OPF）第二检测器（issue #127）----
 # L2 内嵌：l2 触发时 Presidio 之外追加 OPF 中文 NER，span 合并（重叠取长）后统一回替换。
 # 不进生产默认路径（#122 实测：质量 F1 0.92 但 torch CPU 延迟不可用）——开关缺省关，
@@ -1348,11 +1412,8 @@ class Handler(BaseHTTPRequestHandler):
     def _bypass_entry(self):
         """Key 级 DLP 绕行（issue #129）：webhook headers CEL 注入的 Authorization 头取 Bearer
         token → bypass_keys.lookup（SHA-256 比对，不明文落盘）。头缺失/未登记/已停用 → None
-        （fail-closed：任何不确定都不绕行）。"""
-        auth = self.headers.get("Authorization") or ""
-        parts = auth.split(None, 1)
-        token = parts[1].strip() if len(parts) == 2 and parts[0].lower() == "bearer" else ""
-        return bypass_keys.lookup(token)
+        （fail-closed：任何不确定都不绕行）。token 提取与 key_hash_from_headers 同一辅助件。"""
+        return bypass_keys.lookup(bearer_token(self.headers))
 
     @staticmethod
     def _bypass_overlay(settings, entry):
@@ -1558,6 +1619,12 @@ class Handler(BaseHTTPRequestHandler):
                     setting_value(settings, "l2", "enabled", "L2_ENABLED", True),
                 )
                 if entities:
+                    # issue #134：响应侧 451 同槽落 block 条（此前只请求侧落——响应侧拦截曾无留痕）；
+                    # 响应侧无摘录（mask_response_body 只回规则族，values withheld 纪律不变）
+                    shadow_log.record("block", hit=True, blocked=True, rule_ids=entities,
+                                      side="response", model=self._req_model(payload),
+                                      key_hash=key_hash_from_headers(self.headers))
+                    print(f"[dlp.block] 451 side=response rules={','.join(entities)}", flush=True)
                     err = json.dumps(
                         {"error": {"message": "Blocked by ai4s DLP: response contained sensitive content",
                                    "type": "content_policy_violation",
@@ -1603,11 +1670,15 @@ class Handler(BaseHTTPRequestHandler):
             # 归一化预检（issue #22）：全角/繁简/分隔归一后查 secrets + 词表
             norm, _ = normalize_hard(text)
             pre_rules = []
+            _term_hits = []  # issue #134：451 落条摘录取词表命中值（管理员自配词表可原样展示）
+            _secret_codes = []
             if text:
                 if l1_on:
-                    pre_rules += norm_secret_hits(norm)
+                    _secret_codes = norm_secret_hits(norm)
+                    pre_rules += _secret_codes
                 if l2_on:
-                    pre_rules += [t["rule_id"] for t in norm_term_hits(norm.lower(), terms)]
+                    _term_hits = norm_term_hits(norm.lower(), terms)
+                    pre_rules += [t["rule_id"] for t in _term_hits]
             # EDM 文档指纹（issue #29，L3）：整段粘贴商密文档 → 命中阈值即拦
             edm_enabled = setting_value(settings, "edm", "enabled", "EDM_ENABLED", False)
             edm_min_hits = setting_value(settings, "edm", "min_hits", "EDM_MIN_HITS", 2)
@@ -1621,11 +1692,16 @@ class Handler(BaseHTTPRequestHandler):
         if pre_rules or hits:
             rule_ids = sorted(set(pre_rules) | {h["rule_id"] for h in hits})
             # 观测闭环（issue #130）：内容阻断条先于应答落盘——alert_poller 巡检项 5
-            # 复用阻断通道消费发飞书；脱敏字段只带规则族标识/模型名，不落原文不记 token
-            # （rule_ids 如 confidential.codename/secrets.*/edm.doc_match——规则标识非敏感值）。
-            # record 永不抛（shadow_log 纪律），日志行同样只带规则标识。
+            # 复用阻断通道消费发飞书；rule_ids 为规则族标识（confidential.*/secrets.*/
+            # edm.doc_match——规则标识非敏感值）。
+            # issue #134 增强：side=request + key_hash（Bearer SHA-256 指纹，不明文落盘，
+            # 读侧哈希比对反查 key 名/用户）+ excerpts（词表命中原样、secrets 掩码，
+            # 绝无完整原文上下文）。record 永不抛（shadow_log 纪律）。
             shadow_log.record("block", hit=True, blocked=True, rule_ids=rule_ids,
-                              model=self._req_model(payload))
+                              model=self._req_model(payload), side="request",
+                              key_hash=key_hash_from_headers(self.headers),
+                              excerpts=block_excerpts(norm, _term_hits, hits,
+                                                      [c for c in rule_ids if c.startswith("secrets.")]) or None)
             print(f"[dlp.block] 451 rules={','.join(rule_ids)}", flush=True)
             body = json.dumps(
                 {
