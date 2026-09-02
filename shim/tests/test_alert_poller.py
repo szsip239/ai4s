@@ -841,7 +841,7 @@ class TestPendingDefaultProjectUsers(unittest.TestCase):
               oidc=("id1",)):
         return {"node": {"id": f"gid://axonhub/User/{uid}", "email": email, "isOwner": owner,
                          "status": status,
-                         "oidcIdentities": [{"id": o} for o in oidc],
+                         "oidcIdentities": {"totalCount": len(oidc)},
                          "projects": {"edges": [{"node": {"id": p}} for p in projects]}}}
 
     def test_filters(self):
@@ -860,7 +860,7 @@ class TestPendingDefaultProjectUsers(unittest.TestCase):
     def test_empty_and_no_projects_edge(self):
         self.assertEqual(ap.pending_default_project_users([], self.PID), [])
         n = {"node": {"id": "u1", "email": "a@x", "isOwner": False, "status": "activated",
-                      "oidcIdentities": [{"id": "id1"}], "projects": None}}
+                      "oidcIdentities": {"totalCount": 1}, "projects": None}}
         self.assertEqual([x["email"] for x in ap.pending_default_project_users([n], self.PID)], ["a@x"])
         # projects 为 None 且无 OIDC 身份 → 跳过（None 容差不放水）
         n2 = {"node": {"id": "u2", "email": "b@x", "isOwner": False, "status": "activated", "projects": None}}
@@ -896,7 +896,7 @@ class TestAutoAssignProject(unittest.TestCase):
     def _user(self, uid, email, projects=(), oidc=("id1",)):
         return {"node": {"id": f"gid://axonhub/User/{uid}", "email": email, "isOwner": False,
                          "status": "activated",
-                         "oidcIdentities": [{"id": o} for o in oidc],
+                         "oidcIdentities": {"totalCount": len(oidc)},
                          "projects": {"edges": [{"node": {"id": p}} for p in projects]}}}
 
     def test_pending_assigned_and_notified(self):
@@ -1261,6 +1261,29 @@ class TestPgBlockPending(unittest.TestCase):
         """issue #104：rules 层 shadow 命中条（无 blocked 键）不发卡——与 pg shadow 同语义。"""
         rec = {"ts": 100.0, "layer": "rules", "hit": True, "groups": ["extract-zh"], "latency_ms": 0}
         self.assertEqual(ap.pg_block_pending([rec], 0.0), [])
+
+    def test_block_layer_card(self):
+        """issue #130：block 层（词表/归一化 secrets/EDM 内容阻断）走同一阻断巡检通道——
+        卡片带命中规则族 id（脱敏：规则标识/模型/时间，无原文无敏感值）。"""
+        rec = {"ts": 1787184000.0, "layer": "block", "hit": True, "blocked": True,
+               "rule_ids": ["confidential.codename", "secrets.openai_sk"], "model": "gpt-x"}
+        out = ap.pg_block_pending([rec], 0.0)
+        self.assertEqual(len(out), 1)
+        text = out[0][1]
+        self.assertIn("DLP 内容已阻断（451）", text)
+        self.assertIn("confidential.codename,secrets.openai_sk", text)
+        self.assertIn("gpt-x", text)
+        self.assertNotIn("score", text)  # 内容阻断无 score 语义
+        self.assertNotIn("凤凰", text)  # 无原文
+
+    def test_block_layer_mixed_order_and_cursor(self):
+        """issue #130：block 与 pg/rules 同游标混排旧到新；游标过滤语义不变。"""
+        block_rec = {"ts": 150.0, "layer": "block", "hit": True, "blocked": True,
+                     "rule_ids": ["edm.doc_match"], "model": "m"}
+        out = ap.pg_block_pending([self._rec(300.0), block_rec, self._rec(100.0)], 0.0)
+        self.assertEqual([ts for ts, _ in out], [100.0, 150.0, 300.0])
+        out = ap.pg_block_pending([self._rec(300.0), block_rec], 150.0)
+        self.assertEqual([ts for ts, _ in out], [300.0])  # == 游标不重发
 
 
 class TestCheckCyclePgBlockCursor(unittest.TestCase):
