@@ -51,9 +51,14 @@ messages（tool_calls/tool role/system prompt 形态），纯向量段无 settin
 
 公共部分（常量/登录/渠道/send/classify/admin API）在 dlp_testkit.py（issue #42 提取）。
 自动准备（幂等）：起 mock-upstream（profile mock）+ 建 dlp-echo 渠道（model=echo-test）。
-用法：cd deploy && python3 scripts/dlp-regression.py [--json out.json]
+中断保护（issue #20 运维加固）：main 开始回归前把当时 settings 快照落盘
+.local/dlp-settings-backup.json，正常结束自动删除；脚本被 kill（如 shim OOM 连坐
+SIGKILL，进程内 finally/atexit 均不可达）残留该文件时，下次运行先自动还原上次基线
+再开始；也可手动 `python3 scripts/dlp-regression.py --restore` 仅还原后退出。
+用法：cd deploy && python3 scripts/dlp-regression.py [--json out.json] [--restore]
 退出码：有"应拦未拦/应脱敏未脱敏/负例误伤"或注入/语义水位门禁不达标即 1；文档化 gap 不 fail。
 """
+import atexit
 import json
 import os
 import subprocess
@@ -893,9 +898,63 @@ def run_semantic_gate():
     return r.returncode == 0
 
 
+BACKUP_PATH = os.path.join(DEPLOY_DIR, ".local", "dlp-settings-backup.json")
+
+
+def snapshot_settings(token):
+    """回归前把当前 settings 快照落盘（中断保护）。GET 响应即完整 settings 字典
+    （含 version/_comment 及各段原样），可直接作为 PUT 载荷。失败返回 None。"""
+    st, body = tk._admin_api("GET", "/dlp-admin/settings", token)
+    if st != 200 or not isinstance(body, dict):
+        return None
+    with open(BACKUP_PATH, "w", encoding="utf-8") as f:
+        json.dump(body, f, ensure_ascii=False)
+    return body
+
+
+def restore_settings_from_backup():
+    """从快照文件还原 settings 并删除快照。无快照/还原失败返回 False（失败时保留快照，
+    下次运行再试——覆盖 shim 也随之中断的场景）。"""
+    if not os.path.exists(BACKUP_PATH):
+        return False
+    token = tk.resolve_admin_token()
+    if token is None:
+        print("[中断保护] 存在 settings 快照但无 admin 凭据，无法还原（快照保留）")
+        return False
+    snap = json.load(open(BACKUP_PATH, encoding="utf-8"))
+    st, body = tk._admin_api("PUT", "/dlp-admin/settings", token, snap)
+    if st == 200:
+        os.remove(BACKUP_PATH)
+        print("[中断保护] settings 已从快照还原")
+        return True
+    print(f"[中断保护] settings 还原失败（http{st}: {body}），快照保留 {BACKUP_PATH}")
+    return False
+
+
+def _atexit_restore():
+    """退出兜底（正常结束与异常/SIGTERM 路径）：各专项段虽自还原，异常路径可能遗漏；
+    幂等 PUT 一次基线无害。SIGKILL（如 OOM 137）下 atexit 不可达——靠快照文件残留 +
+    下次运行开头的自动还原兜底。"""
+    restore_settings_from_backup()
+
+
 def main():
     out_json = "--json" in sys.argv
     out_path = sys.argv[sys.argv.index("--json") + 1] if out_json else None
+
+    if "--restore" in sys.argv:
+        if not os.path.exists(BACKUP_PATH):
+            print("[中断保护] 无快照文件，无需还原")
+            sys.exit(0)
+        sys.exit(0 if restore_settings_from_backup() else 1)
+
+    # 中断保护：上次被 kill 残留的快照先还原，再拍本次基线（门禁段起即可能改 settings）
+    if os.path.exists(BACKUP_PATH):
+        print("[中断保护] 检测到上次中断残留的 settings 快照，先还原…")
+        restore_settings_from_backup()  # 失败仅警告（shim 未起时本次回归自身也会暴露）
+    _baseline_token = tk.resolve_admin_token()
+    if _baseline_token is not None and snapshot_settings(_baseline_token) is not None:
+        atexit.register(_atexit_restore)
 
     # 注入水位门禁（issue #95）在最前：趁 shim 冷态跑（顺序原因见 run_injection_gate docstring）
     if not run_injection_gate():
