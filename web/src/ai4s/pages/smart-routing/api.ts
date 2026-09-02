@@ -83,6 +83,7 @@ export interface RouterVerdictsResp {
 const QK = {
   settings: ['dlp-admin', 'settings'],
   routerVerdicts: ['dlp-admin', 'shadow-verdicts', 'router'],
+  bypassVerdicts: ['dlp-admin', 'shadow-verdicts', 'bypass'],
 } as const;
 
 const BASE = '/dlp-admin';
@@ -113,5 +114,27 @@ export function useRouterVerdicts() {
     queryKey: QK.routerVerdicts,
     queryFn: () =>
       apiRequest<RouterVerdictsResp>(`${BASE}/shadow-verdicts?layer=router&n=50`, { requireAuth: true }),
+  });
+}
+
+// ---- Key 绕行审计（issue #129，shim shadow_log bypass 层：model/reason 非 None 才写，不落原文不记 token）----
+
+export interface BypassVerdict {
+  ts: number; // epoch 秒
+  layer: string;
+  model?: string; // 请求模型名（/bv1 入口读顶层 body.model，/v1 读 x-model 头）
+  reason?: string; // 绕行说明（入口/scope/跳过层）
+}
+
+export interface BypassVerdictsResp {
+  stats: Record<string, unknown>;
+  records: BypassVerdict[]; // 新到旧
+}
+
+export function useBypassVerdicts() {
+  return useQuery({
+    queryKey: QK.bypassVerdicts,
+    queryFn: () =>
+      apiRequest<BypassVerdictsResp>(`${BASE}/shadow-verdicts?layer=bypass&n=50`, { requireAuth: true }),
   });
 }

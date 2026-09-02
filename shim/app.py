@@ -30,6 +30,12 @@
     judge 通道 LLM pcomplex 分类 + routing.tiers 两档映射改写 model + 会话档位稳定
     （首轮定档/继承/强置信升档/tool-loop 锁/thinking 锁），fail-open 落旗舰；
     决策日志 layer="router" 落 shadow_log（详见下方「auto 智能路由」段头注）
+  - Key 级绕行（issue #129）：webhook headers CEL 注入的 Authorization 取 Bearer →
+    SHA-256 比对绕行名单（bypass_keys，不落明文）；scope=all → shim 侧全层跳过直放
+    （网关 L1 只能经 /bv1 专用入口绕，该入口挂 /bv1-authz extAuthz fail-closed 门）；
+    scope=layers → 生成所选层 enabled=False 的 settings 覆盖副本继续链路（下游门控
+    统一经 setting_value，全覆盖；请求/响应两侧只对本侧生效层落「按层跳过」审计条，
+    不记与本侧无关的层）。审计落 shadow_log layer=bypass（不落原文不记 token）
 本模块（检测路径）依赖仅标准库；镜像 python:3.12-slim（issue #48 起含 doc_extract 文档解析依赖，
 检测路径不 import 第三方库，纪律不变）。
 """
@@ -52,6 +58,7 @@ import edm_lib    # EDM 指纹算法共享库（issue #34）：入库/检测同�
 import feishu_lib  # 飞书签名共享实现（issue #70）：alert_poller 同一份
 import alert_poller  # 告警巡检+提额审批（issue #56 并入）：import 不起线程，仅 __main__ start_daemon
 import shadow_log  # shadow 判定观测闭环（issue #92）：stdlib-only；judge/PG 判定持久化供巡检/查询
+import bypass_keys  # Key 级 DLP 绕行（issue #129）：stdlib-only；/request //response //bv1-authz 消费
 import inject_rules  # 注入规则层匹配器（issue #104）：纯 stdlib 正则，import 免费（无第三方依赖）
 
 PRESIDIO_URL = os.environ.get("PRESIDIO_URL", "http://presidio:3000")
@@ -1329,14 +1336,57 @@ class Handler(BaseHTTPRequestHandler):
         """请求模型名（issue #116）：webhook 请求体协议不含 model 字段（MaskAction 只能
         替换 messages），生产链路的模型名靠 agentgateway webhook headers CEL 注入的
         x-model 头（llmRequest.model，上游 webhook.rs 测试实证形状）——头优先；
-        回退 body.model（/judge-test 直测与旧调用方形状）。两头都缺 → None，
-        shadow_log 键级省略纪律不变（非 None 才写入）。"""
-        return self.headers.get("x-model") or (payload.get("body") or {}).get("model")
+        回退 body.model（/judge-test 直测与旧调用方形状）；再回退 payload 顶层 model
+        （issue #129 /bv1-authz：extAuthz includeRequestBody 透传的是原始 OpenAI
+        请求体，model 在顶层）。三处都缺 → None，shadow_log 键级省略纪律不变
+        （非 None 才写入）。"""
+        return self.headers.get("x-model") or (payload.get("body") or {}).get("model") or payload.get("model")
+
+    def _bypass_entry(self):
+        """Key 级 DLP 绕行（issue #129）：webhook headers CEL 注入的 Authorization 头取 Bearer
+        token → bypass_keys.lookup（SHA-256 比对，不明文落盘）。头缺失/未登记/已停用 → None
+        （fail-closed：任何不确定都不绕行）。"""
+        auth = self.headers.get("Authorization") or ""
+        parts = auth.split(None, 1)
+        token = parts[1].strip() if len(parts) == 2 and parts[0].lower() == "bearer" else ""
+        return bypass_keys.lookup(token)
+
+    @staticmethod
+    def _bypass_overlay(settings, entry):
+        """按层绕行 = 把覆盖层的 enabled 强制 False 的 settings 副本（下游门控全部经
+        setting_value 读 settings，副本覆盖即整层跳过；不改盘、不影响其他请求）。"""
+        out = dict(settings)
+        for layer in entry.get("layers") or []:
+            sec = dict(out.get(layer) or {})
+            sec["enabled"] = False
+            out[layer] = sec
+        return out
+
+    def _bypass_audit(self, payload, detail):
+        """绕行审计（issue #129）：shadow_log 落条（layer=bypass，只带模型名与范围，不落原文
+        不记 token）+ stdout 一行。/bv1-authz 与 /request //response 同一通道。"""
+        model = self._req_model(payload) if isinstance(payload, dict) else None
+        shadow_log.record("bypass", model=model, reason=detail)
+        print(f"[dlp.bypass] {detail}", flush=True)
+
+    def _bv1_authz(self, payload):
+        """/bv1 全绕入口的 extAuthz 门（issue #129）：仅 scope=all 且启用中的名单 key 放行，
+        其余一律 403（非 2xx 由网关直回客户端）。fail-closed：网关侧 failureMode=deny，
+        shim 宕机时本入口拒绝服务——绕行特权不享受检测链 fail-open 待遇。"""
+        bp = self._bypass_entry()
+        if bp and bp.get("scope") == "all":
+            self._bypass_audit(payload or {}, "entry=/bv1 scope=all（全量绕行，含 L1 密钥红线）")
+            self._json(200, {"ok": True})
+        else:
+            self._json(403, {"error": "key not authorized for bypass entry"})
 
     def do_GET(self):
         if admin_api.handle(self, "GET"):  # admin 平面（issue #31）：/dlp-admin/* 优先分流
             return
         if self_api.handle(self, "GET"):  # 员工自助平面（issue #74）：/self/*
+            return
+        if self.path == "/bv1-authz":
+            self._bv1_authz(None)
             return
         if self.path == "/classify":
             # extAuthz 会对 /v1 路由的全部方法发起同方法授权调用（如 GET /v1/models →
@@ -1350,6 +1400,16 @@ class Handler(BaseHTTPRequestHandler):
         if admin_api.handle(self, "POST"):  # admin 平面（issue #31）：/dlp-admin/* 优先分流
             return
         if self_api.handle(self, "POST"):  # 员工自助平面（issue #74 评审 P2）：已鉴权 POST → 显式 404
+            return
+        if self.path == "/bv1-authz":
+            # /bv1 全绕入口鉴权（issue #129）；body 只为审计读模型名，解析失败不挡鉴权
+            payload = None
+            try:
+                length = min(int(self.headers.get("Content-Length") or 0), MAX_BODY)
+                payload = json.loads(self.rfile.read(length) or b"{}")
+            except Exception:
+                payload = {}
+            self._bv1_authz(payload)
             return
         if self.path == "/classify":
             # auto 智能路由（issue #117 真实分类器；#115 spike 桩已退役）：
@@ -1445,6 +1505,19 @@ class Handler(BaseHTTPRequestHandler):
                 resp_body = payload.get("body")
                 settings = load_settings()
                 _layer_switch_observe(settings)  # 开关状态变化 warn（issue #40 review）
+                # Key 绕行（issue #129）：scope=all 或覆盖 response 层 → 直接放行；覆盖 l1/l2
+                # 则响应侧对应检测族同步跳过（与请求侧「模块关=处处关」同语义）。layers 只含
+                # 请求侧层（pg/rules/judge/edm）时响应侧照常检测、不落「跳过」审计条——
+                # 审计只记本侧真实发生的跳过。
+                bp = self._bypass_entry()
+                if bp and (bp["scope"] == "all" or bypass_keys.covers(bp, "response")):
+                    self._bypass_audit(payload, "response 侧跳过（scope=%s）" % bp["scope"])
+                    self._json(200, {"action": {"reason": "pass"}})
+                    return
+                resp_layers = [l for l in (bp.get("layers") or []) if l in ("l1", "l2")] if bp else []
+                if resp_layers:
+                    settings = self._bypass_overlay(settings, bp)
+                    self._bypass_audit(payload, "response 侧按层跳过：layers=%s" % ",".join(resp_layers))
                 if not setting_value(settings, "response", "enabled", "RESPONSE_ENABLED", True):
                     self._json(200, {"action": {"reason": "pass"}})
                     return
@@ -1479,6 +1552,19 @@ class Handler(BaseHTTPRequestHandler):
             # 统一配置（issue #35）：settings.json > env > 内置默认，每请求重读热生效；本段一次读多键用
             settings = load_settings()
             _layer_switch_observe(settings)  # 开关状态变化 warn（issue #40 review）
+            # Key 绕行（issue #129）：scope=all → shim 侧全层跳过直接放行；scope=layers →
+            # 覆盖层 enabled 强制 False 的 settings 副本继续走链路（下游门控统一经
+            # setting_value 读 settings：l1/l2/edm/rules/pg/judge 全覆盖）。两路都落审计条；
+            # layers 只含 response 时本侧无可跳层，照常检测且不落「按层跳过」条。
+            bp = self._bypass_entry()
+            if bp and bp["scope"] == "all":
+                self._bypass_audit(payload, "request 侧全层跳过（scope=all）")
+                self._json(200, {"action": {"reason": "pass"}})
+                return
+            req_layers = [l for l in (bp.get("layers") or []) if l != "response"] if bp else []
+            if req_layers:
+                settings = self._bypass_overlay(settings, bp)
+                self._bypass_audit(payload, "request 侧按层跳过：layers=%s" % ",".join(req_layers))
             # 分层总开关（issue #40，默认 True 保现网行为）：l1 关 → 格式规则全族（secrets reject +
             # 归一化 PII mask）整层跳过；l2 关 → 词表/Presidio PII 阶段整体跳过
             l1_on = setting_value(settings, "l1", "enabled", "L1_ENABLED", True)

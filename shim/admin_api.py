@@ -44,6 +44,10 @@ issue #119：routing 节内再增五个**可选键**（缺席=运行侧内置默
 必填语义不变）——prompt=分类系统提示（非空字符串）/escalate_conf=升档强置信门槛
 （0~1 含边界）/session_ttl=会话存态 TTL 秒（>0）/tool_loop_lock/thinking_lock=两道
 锁开关（布尔）；未知键仍 400，非法值 400 不落盘。
+issue #129：Key 绕行名单 CRUD——GET/POST /dlp-admin/bypass-keys + PUT/DELETE
+/dlp-admin/bypass-keys/<id>（只存 SHA-256(token) 不落明文，id 即哈希；校验错误
+不回显 token）；shadow-verdicts 出口 layer 过滤接受 bypass、stats 加 bypass 层
+（绕行审计条只带模型名与范围，不落原文不记 token）。
 
 与检测路径（/request /response 调用链）完全隔离：admin 平面 fail-closed——
 内省不可达回 503，不适用检测链的 fail-open 分级（契约 docs/contracts/dlp-webhook-shim.md）。
@@ -63,6 +67,7 @@ import urllib.request
 
 import edm_lib  # EDM 指纹算法共享库（issue #34）：入库/检测同法（契约铁律）
 import shadow_log  # shadow 判定观测闭环（issue #92）：stdlib-only 无环；/dlp-admin/shadow-verdicts 消费
+import bypass_keys  # Key 级 DLP 绕行名单（issue #129）：stdlib-only 无环；/dlp-admin/bypass-keys 消费
 
 # axonhub 内省端点（容器内默认同栈服务名；测试经环境变量指向本地假服务）
 AXONHUB_ADMIN_URL = os.environ.get("AXONHUB_ADMIN_URL", "http://axonhub:8090/admin/graphql")
@@ -1071,10 +1076,13 @@ def _kr_list(handler, _me):
 
 def _kr_resolve(handler, _me, rid, action):
     """approve/reject 共用：状态门幂等（非 pending 返回现状）；approve 执行失败 502 保持 pending。
-    issue #81：approve 可带 body {"tier": "<档名>"} 覆盖执行档位（新建默认体验档、提额默认所求档）。"""
+    issue #81：approve 可带 body {"tier": "<档名>"} 覆盖执行档位（新建默认体验档、提额默认所求档）。
+    issue #128：approve 可带 body {"project_override": "<项目 gid>"} 指定正式项目（仅新建接受，
+    upgrade 带 → store 层 400；解析风格同 tier/reason——缺省/空值落空串走默认语义）。"""
     import key_requests
     reason = ""
     tier = ""
+    project_override = ""
     if action in ("approve", "reject"):
         payload = _read_body(handler)
         if payload is None:
@@ -1084,8 +1092,10 @@ def _kr_resolve(handler, _me, rid, action):
                 reason = payload.get("reason") or ""
             else:
                 tier = payload.get("tier") or ""
+                project_override = payload.get("project_override") or ""
     try:
-        req, err = key_requests.resolve_request(rid, action, reason, tier_override=tier)
+        req, err = key_requests.resolve_request(rid, action, reason, tier_override=tier,
+                                                project_override=project_override)
     except Exception as e:
         print(f"[admin] key 申请点批异常 {rid}: {type(e).__name__}: {e}", flush=True)
         _respond(handler, 503, {"error": "request store unavailable"})
@@ -1109,14 +1119,15 @@ def _kr_reject_item(handler, me, rid):
 
 def _shadow_verdicts(handler, _me):
     """GET /dlp-admin/shadow-verdicts：各层 stats + 近期判定记录（新到旧，不落原文）。
-    query 参数：n（默认 50，1..500 截断）、layer（judge/pg/rules/judge_inject/router 过滤，非法值 400）。
+    query 参数：n（默认 50，1..500 截断）、layer（judge/pg/rules/judge_inject/router/bypass 过滤，非法值 400）。
     issue #101：stats 透出 warned 聚合数（judge warn 试点观察期误报对账口径：
     warned/hits 同窗可比），records 逐条带 warned/model 脱敏字段供核对。
     issue #104：rules 层（注入规则层）判定条同槽透出，records 带 groups 命中模式组名。
     issue #105：judge_inject 层（judge 注入第二职责）判定条同槽透出，records 带
     attack_type 攻击类型标签；与商密 judge 层分层统计（独立层名，天然不串档）。
     issue #117：router 层（auto 智能路由）决策条同槽透出，records 带 resolved_model/
-    tier/p_complex/reason/session 字段（决策日志供阈值校准回放）。"""
+    tier/p_complex/reason/session 字段（决策日志供阈值校准回放）。
+    issue #129：bypass 层（Key 绕行审计）条同槽透出，records 带 reason 范围说明。"""
     q = urllib.parse.parse_qs(urllib.parse.urlsplit(handler.path).query)
     try:
         n = int((q.get("n") or ["50"])[0])
@@ -1124,13 +1135,63 @@ def _shadow_verdicts(handler, _me):
         n = 50
     n = max(1, min(500, n))
     layer = (q.get("layer") or [""])[0] or None
-    if layer not in (None, "judge", "pg", "rules", "judge_inject", "router"):
-        _respond(handler, 400, {"error": "layer 必须是 judge、pg、rules、judge_inject 或 router"})
+    if layer not in (None, "judge", "pg", "rules", "judge_inject", "router", "bypass"):
+        _respond(handler, 400, {"error": "layer 必须是 judge、pg、rules、judge_inject、router 或 bypass"})
         return
     _respond(handler, 200, {
-        "stats": {l: shadow_log.stats(l) for l in ("judge", "pg", "rules", "judge_inject", "router")},
+        "stats": {l: shadow_log.stats(l) for l in ("judge", "pg", "rules", "judge_inject", "router", "bypass")},
         "records": shadow_log.tail(n, layer=layer),
     })
+
+
+# ---- Key 级 DLP 绕行名单（issue #129）：只存哈希不落明文；名单增删改走写级鉴权 ----
+
+
+def _bypass_keys_get(handler, _me):
+    """GET /dlp-admin/bypass-keys（读级）：名单全量（条目无 token 明文，id 即 SHA-256）。"""
+    _respond(handler, 200, bypass_keys.load())
+
+
+def _bypass_keys_post(handler, me):
+    """POST 登记绕行 key：{token,label,scope,layers?} → 201 {entry}。
+    token 只用于算哈希，校验/应答/日志一律不回显明文（对齐词表 dup 不 echo 纪律）。"""
+    payload = _read_body(handler)
+    if payload is None:
+        return
+    if not isinstance(payload, dict):
+        _respond(handler, 400, {"error": "body 必须是 JSON 对象"})
+        return
+    try:
+        entry = bypass_keys.add(payload.get("token") or "", payload.get("label") or "",
+                                payload.get("scope") or "", payload.get("layers"),
+                                (me or {}).get("id") or "")
+    except ValueError as e:
+        _respond(handler, 400, {"error": str(e)})
+        return
+    _respond(handler, 201, {"entry": entry})
+
+
+def _bypass_keys_put_item(handler, _me, kid):
+    """PUT 改指定条：{label?,scope?,layers?,enabled?}（缺席键保持，{}=校验性 no-op 返回现状）；未知 id → 404。"""
+    payload = _read_body(handler)
+    if payload is None:
+        return
+    if not isinstance(payload, dict):
+        _respond(handler, 400, {"error": "body 必须是 JSON 对象"})
+        return
+    try:
+        entry = bypass_keys.update(kid, payload)
+        _respond(handler, 200, {"entry": entry})
+    except KeyError:
+        _respond(handler, 404, {"error": "绕行条目不存在"})
+    except ValueError as e:
+        _respond(handler, 400, {"error": str(e)})
+
+
+def _bypass_keys_delete_item(handler, _me, kid):
+    """DELETE 移除指定条（未知 id 幂等 200，对齐删空数组允许纪律）。"""
+    bypass_keys.remove(kid)
+    _respond(handler, 200, {"ok": True})
 
 
 # 路由表：(方法, 路径) -> (鉴权级别 | None, 端点)
@@ -1151,6 +1212,8 @@ _ROUTES = {
     ("PUT", "/dlp-admin/settings"): ("write", _settings_put),
     ("GET", "/dlp-admin/key-requests"): ("read", _kr_list),  # issue #79：控制台 Key 申请审批
     ("GET", "/dlp-admin/shadow-verdicts"): ("read", _shadow_verdicts),  # issue #92：shadow 观测出口
+    ("GET", "/dlp-admin/bypass-keys"): ("read", _bypass_keys_get),  # issue #129：Key 绕行名单
+    ("POST", "/dlp-admin/bypass-keys"): ("write", _bypass_keys_post),
 }
 
 
@@ -1161,6 +1224,8 @@ _ITEM_ROUTES = {
     ("DELETE", "/dlp-admin/edm/corpus/"): ("write", _edm_corpus_delete_item),
     ("POST", "/dlp-admin/key-requests/approve/"): ("write", _kr_approve_item),  # issue #79
     ("POST", "/dlp-admin/key-requests/reject/"): ("write", _kr_reject_item),  # issue #79
+    ("PUT", "/dlp-admin/bypass-keys/"): ("write", _bypass_keys_put_item),  # issue #129
+    ("DELETE", "/dlp-admin/bypass-keys/"): ("write", _bypass_keys_delete_item),  # issue #129
 }
 
 

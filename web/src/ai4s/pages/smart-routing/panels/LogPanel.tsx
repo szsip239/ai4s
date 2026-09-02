@@ -1,7 +1,9 @@
 /**
  * 决策日志面板（智能路由页标签项，不再首页直出）：GET /dlp-admin/shadow-verdicts?layer=router&n=50
  * 只读表格（时间/档位/p_complex/原因/改写目标/延迟/会话），手动刷新不轮询。
+ * issue #129：顶部视图切换加「Key 绕行」（layer=bypass 审计条：时间/模型/说明）。
  */
+import { useState } from 'react';
 import { format } from 'date-fns';
 import { IconRefresh } from '@tabler/icons-react';
 import { useTranslation } from 'react-i18next';
@@ -10,7 +12,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { useRouterVerdicts, type RouterVerdict } from '../api';
+import { useRouterVerdicts, useBypassVerdicts, type RouterVerdict, type BypassVerdict } from '../api';
 
 /** 决策行（router 层五决策字段非 None 才写，读侧全部可选；error 条=分类失败 fail-open） */
 function VerdictRow({ r }: { r: RouterVerdict }) {
@@ -38,10 +40,30 @@ function VerdictRow({ r }: { r: RouterVerdict }) {
   );
 }
 
+/** Key 绕行审计行（bypass 层只带模型名与说明，不落原文不记 token） */
+function BypassRow({ r }: { r: BypassVerdict }) {
+  return (
+    <TableRow>
+      <TableCell className='text-muted-foreground whitespace-nowrap'>
+        {typeof r.ts === 'number' ? format(new Date(r.ts * 1000), 'MM-dd HH:mm:ss') : '—'}
+      </TableCell>
+      <TableCell className='max-w-56 truncate font-mono text-xs' title={r.model ?? undefined}>
+        {r.model ?? '—'}
+      </TableCell>
+      <TableCell className='text-muted-foreground'>{r.reason ?? '—'}</TableCell>
+    </TableRow>
+  );
+}
+
+type LogView = 'router' | 'bypass';
+
 export function Ai4sRoutingLogPanel() {
   const { t } = useTranslation();
+  const [view, setView] = useState<LogView>('router');
   const verdicts = useRouterVerdicts();
-  const records = verdicts.data?.records ?? [];
+  const bypass = useBypassVerdicts();
+  const active = view === 'router' ? verdicts : bypass;
+  const records = active.data?.records ?? [];
 
   return (
     <Card>
@@ -51,23 +73,39 @@ export function Ai4sRoutingLogPanel() {
             <CardTitle>{t('ai4s.smartRouting.log.title')}</CardTitle>
             <CardDescription>{t('ai4s.smartRouting.log.description')}</CardDescription>
           </div>
-          <Button variant='outline' size='sm' disabled={verdicts.isFetching} onClick={() => verdicts.refetch()}>
-            <IconRefresh className={verdicts.isFetching ? 'animate-spin' : undefined} />
-            {t('ai4s.smartRouting.log.refresh')}
-          </Button>
+          <div className='flex items-center gap-2'>
+            <div className='flex gap-1'>
+              {(['router', 'bypass'] as const).map((v) => (
+                <Button
+                  key={v}
+                  variant={view === v ? 'default' : 'outline'}
+                  size='sm'
+                  onClick={() => setView(v)}
+                >
+                  {t(`ai4s.smartRouting.log.tabs.${v}`)}
+                </Button>
+              ))}
+            </div>
+            <Button variant='outline' size='sm' disabled={active.isFetching} onClick={() => active.refetch()}>
+              <IconRefresh className={active.isFetching ? 'animate-spin' : undefined} />
+              {t('ai4s.smartRouting.log.refresh')}
+            </Button>
+          </div>
         </div>
       </CardHeader>
       <CardContent>
-        {verdicts.isLoading ? (
+        {active.isLoading ? (
           <p className='text-muted-foreground py-6 text-center text-sm'>{t('common.loading')}</p>
-        ) : verdicts.isError ? (
+        ) : active.isError ? (
           <Alert variant='destructive'>
             <AlertTitle>{t('ai4s.smartRouting.log.loadError')}</AlertTitle>
-            <AlertDescription>{verdicts.error instanceof Error ? verdicts.error.message : String(verdicts.error)}</AlertDescription>
+            <AlertDescription>{active.error instanceof Error ? active.error.message : String(active.error)}</AlertDescription>
           </Alert>
         ) : records.length === 0 ? (
-          <p className='text-muted-foreground py-6 text-center text-sm'>{t('ai4s.smartRouting.log.empty')}</p>
-        ) : (
+          <p className='text-muted-foreground py-6 text-center text-sm'>
+            {t(view === 'router' ? 'ai4s.smartRouting.log.empty' : 'ai4s.smartRouting.log.bypassEmpty')}
+          </p>
+        ) : view === 'router' ? (
           <Table>
             <TableHeader>
               <TableRow>
@@ -81,8 +119,23 @@ export function Ai4sRoutingLogPanel() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {records.map((r, i) => (
+              {(records as RouterVerdict[]).map((r, i) => (
                 <VerdictRow key={`${r.ts}-${i}`} r={r} />
+              ))}
+            </TableBody>
+          </Table>
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>{t('ai4s.smartRouting.log.columns.time')}</TableHead>
+                <TableHead>{t('ai4s.smartRouting.log.columns.model')}</TableHead>
+                <TableHead>{t('ai4s.smartRouting.log.columns.detail')}</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {(records as BypassVerdict[]).map((r, i) => (
+                <BypassRow key={`${r.ts}-${i}`} r={r} />
               ))}
             </TableBody>
           </Table>

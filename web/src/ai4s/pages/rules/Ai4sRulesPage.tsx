@@ -24,6 +24,7 @@ import {
 import { EXTRA_NAV, LAYER_LABEL, PIPELINE_LAYERS, type PanelKey, type StatusBadge } from './layers';
 import { createDirtyRegistry } from './dirty-registry';
 import { Ai4sNodeBadges, Ai4sPipelineBar, type Ai4sPipelineNodeView } from './PipelineBar';
+import { Ai4sBypassPanel } from './panels/BypassPanel';
 import { Ai4sDeepLayerRules } from './panels/DeepLayerRules';
 import { Ai4sEdmCorpusPanel } from './panels/EdmCorpusPanel';
 import { Ai4sFormatRulesPanel } from './panels/FormatRulesPanel';
@@ -238,7 +239,12 @@ export default function Ai4sRulesPage() {
             {selected === 'judge' && <Ai4sJudgePanel onDirtyChange={dirtyRegistry.reporter('judge')} />}
             {selected === 'rules' && <Ai4sInjectRulesPanel onDirtyChange={dirtyRegistry.reporter('rules')} />}
             {selected === 'pg' && <Ai4sPgPanel onDirtyChange={dirtyRegistry.reporter('pg')} />}
-            {selected === 'toggles' && <Ai4sSettingsPanel onDirtyChange={dirtyRegistry.reporter('toggles')} />}
+            {selected === 'toggles' && (
+              <div className='space-y-6'>
+                <Ai4sSettingsPanel onDirtyChange={dirtyRegistry.reporter('toggles')} />
+                <Ai4sBypassPanel />
+              </div>
+            )}
             {selected === 'response' && <Ai4sResponseSideCard />}
             {selected === 'deep' && <Ai4sDeepLayerRules />}
           </div>

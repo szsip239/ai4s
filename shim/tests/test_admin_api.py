@@ -3036,7 +3036,8 @@ class LayerSwitchTest(unittest.TestCase):
 
 class KeyRequestResolveWiringTest(unittest.TestCase):
     """issue #81 P2：approve/reject body → key_requests.resolve_request 的 HTTP 层接线
-    （approve 带 tier 覆盖档位；空 body 安全；reject 带 reason）。store/执行细节见 test_key_requests。"""
+    （approve 带 tier 覆盖档位；空 body 安全；reject 带 reason）。
+    issue #128：approve 带 project_override 指定正式项目，原样透传。store/执行细节见 test_key_requests。"""
 
     def setUp(self):
         _FAKE_STATE["mode"] = "ok"
@@ -3053,7 +3054,18 @@ class KeyRequestResolveWiringTest(unittest.TestCase):
                                     token="writer-token", payload={"tier": "标准档"})
         self.assertEqual(status, 200)
         self.assertEqual(body["request"]["status"], "approved")
-        rr.assert_called_once_with("kr-1", "approve", "", tier_override="标准档")
+        rr.assert_called_once_with("kr-1", "approve", "", tier_override="标准档", project_override="")
+
+    def test_approve_body_project_override_forwarded(self):
+        """issue #128：approve body {"project_override": gid} → resolve_request(project_override=gid)。"""
+        with mock.patch("key_requests.resolve_request",
+                        return_value=({"id": "kr-6", "status": "approved"}, None)) as rr:
+            status, _ = _request("POST", "/dlp-admin/key-requests/approve/kr-6",
+                                 token="writer-token",
+                                 payload={"project_override": "gid://axonhub/Project/3"})
+        self.assertEqual(status, 200)
+        rr.assert_called_once_with("kr-6", "approve", "", tier_override="",
+                                   project_override="gid://axonhub/Project/3")
 
     def test_approve_empty_body_tier_default(self):
         """approve 空 body（无 Content-Length）安全：tier_override 落空串=shim 端默认档位。"""
@@ -3061,7 +3073,7 @@ class KeyRequestResolveWiringTest(unittest.TestCase):
                         return_value=({"id": "kr-2", "status": "approved"}, None)) as rr:
             status, _ = _request("POST", "/dlp-admin/key-requests/approve/kr-2", token="writer-token")
         self.assertEqual(status, 200)
-        rr.assert_called_once_with("kr-2", "approve", "", tier_override="")
+        rr.assert_called_once_with("kr-2", "approve", "", tier_override="", project_override="")
 
     def test_reject_body_reason_forwarded(self):
         """reject body {"reason": ...} → resolve_request(reason=...)；tier 不取（恒空串）。"""
@@ -3070,7 +3082,7 @@ class KeyRequestResolveWiringTest(unittest.TestCase):
             status, _ = _request("POST", "/dlp-admin/key-requests/reject/kr-3",
                                  token="writer-token", payload={"reason": "预算不足", "tier": "高档"})
         self.assertEqual(status, 200)
-        rr.assert_called_once_with("kr-3", "reject", "预算不足", tier_override="")
+        rr.assert_called_once_with("kr-3", "reject", "预算不足", tier_override="", project_override="")
 
     def test_resolve_error_passthrough(self):
         """store 层 (status, msg) 原样透传（如 tier 白名单 400）。"""
@@ -3153,7 +3165,7 @@ class TestShadowVerdictsApi(unittest.TestCase):
         shadow_log.record("pg", hit=False, score=0.2, latency_ms=40, path=self.log_path)
         status, body = _get("/dlp-admin/shadow-verdicts", token="reader-token")
         self.assertEqual(status, 200)
-        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject", "router"})  # #104 rules / #105 judge_inject / #117 router 层 stats 同槽透出
+        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject", "router", "bypass"})  # #104 rules / #105 judge_inject / #117 router 层 stats 同槽透出
         self.assertEqual(body["stats"]["judge"]["total"], 2)
         self.assertEqual(body["stats"]["judge"]["errors"], 1)
         self.assertEqual(body["stats"]["judge"]["hits"], 1)
@@ -3215,7 +3227,7 @@ class TestShadowVerdictsApi(unittest.TestCase):
         self.assertEqual(body["stats"]["judge"]["hits"], 1)  # 商密层独立聚合不串档
         status, body = _get("/dlp-admin/shadow-verdicts", token="reader-token")
         self.assertEqual(status, 200)
-        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject", "router"})
+        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject", "router", "bypass"})
 
     def test_empty_store_200_zeros(self):
         status, body = _get("/dlp-admin/shadow-verdicts", token="reader-token")
@@ -3416,7 +3428,7 @@ class TestShadowVerdictsRouterApi(unittest.TestCase):
         self.assertEqual(body["stats"]["router"]["errors"], 1)
         status, body = _get("/dlp-admin/shadow-verdicts", token="reader-token")
         self.assertEqual(status, 200)
-        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject", "router"})
+        self.assertEqual(set(body["stats"].keys()), {"judge", "pg", "rules", "judge_inject", "router", "bypass"})
 
 
 # ---------------------------------------------------------------------------
@@ -3751,6 +3763,127 @@ class AdminSettingsL2OpfTest(unittest.TestCase):
                 self.assertIn("error", body)
                 with open(self.settings_path, encoding="utf-8") as f:
                     self.assertEqual(json.load(f), _SETTINGS_FIXTURE)  # 落盘未被污染
+
+
+class AdminBypassKeysTest(unittest.TestCase):
+    """Key 级 DLP 绕行名单管理端点（issue #129）：只存哈希、不落明文，写级鉴权。"""
+
+    def setUp(self):
+        _FAKE_STATE["mode"] = "ok"
+        _FAKE_STATE["tokens"] = {
+            "reader-token": {"id": "42", "isOwner": False, "scopes": ["read_channels"]},
+            "writer-token": {"id": "7", "isOwner": False, "scopes": ["read_channels", "write_channels"]},
+        }
+        self._tmp = tempfile.TemporaryDirectory()
+        self._saved_env = os.environ.get("BYPASS_KEYS_PATH")
+        os.environ["BYPASS_KEYS_PATH"] = os.path.join(self._tmp.name, "bypass-keys.json")
+
+    def tearDown(self):
+        if self._saved_env is None:
+            os.environ.pop("BYPASS_KEYS_PATH", None)
+        else:
+            os.environ["BYPASS_KEYS_PATH"] = self._saved_env
+        self._tmp.cleanup()
+
+    def test_get_empty_list(self):
+        status, body = _get("/dlp-admin/bypass-keys", token="reader-token")
+        self.assertEqual(status, 200)
+        self.assertEqual(body["keys"], [])
+
+    def test_get_requires_auth(self):
+        status, _ = _get("/dlp-admin/bypass-keys")
+        self.assertEqual(status, 401)
+
+    def test_post_add_entry_201(self):
+        status, body = _request("POST", "/dlp-admin/bypass-keys", token="writer-token",
+                                payload={"token": "sk-ci-pipeline", "label": "CI 管道", "scope": "all"})
+        self.assertEqual(status, 201)
+        entry = body["entry"]
+        import hashlib
+        self.assertEqual(entry["id"], hashlib.sha256(b"sk-ci-pipeline").hexdigest())
+        self.assertEqual(entry["scope"], "all")
+        self.assertTrue(entry["enabled"])
+        self.assertNotIn("sk-ci-pipeline", json.dumps(body))  # 响应不回显明文 token
+        # 列表读回
+        status, body = _get("/dlp-admin/bypass-keys", token="reader-token")
+        self.assertEqual(status, 200)
+        self.assertEqual(len(body["keys"]), 1)
+        self.assertNotIn("sk-ci-pipeline", json.dumps(body))
+
+    def test_post_requires_write_scope(self):
+        status, _ = _request("POST", "/dlp-admin/bypass-keys", token="reader-token",
+                             payload={"token": "sk-x", "label": "n", "scope": "all"})
+        self.assertEqual(status, 403)
+
+    def test_post_validation_error_no_token_echo(self):
+        status, body = _request("POST", "/dlp-admin/bypass-keys", token="writer-token",
+                                payload={"token": "sk-sensitive-token-value", "label": "", "scope": "all"})
+        self.assertEqual(status, 400)
+        self.assertNotIn("sk-sensitive-token-value", json.dumps(body, ensure_ascii=False))
+
+    def test_post_duplicate_400(self):
+        _request("POST", "/dlp-admin/bypass-keys", token="writer-token",
+                 payload={"token": "sk-dup", "label": "a", "scope": "all"})
+        status, body = _request("POST", "/dlp-admin/bypass-keys", token="writer-token",
+                                payload={"token": "sk-dup", "label": "b", "scope": "all"})
+        self.assertEqual(status, 400)
+        self.assertNotIn("sk-dup", json.dumps(body, ensure_ascii=False))
+
+    def test_post_layers_scope(self):
+        status, body = _request("POST", "/dlp-admin/bypass-keys", token="writer-token",
+                                payload={"token": "sk-l", "label": "n", "scope": "layers",
+                                         "layers": ["l2", "edm"]})
+        self.assertEqual(status, 201)
+        self.assertEqual(body["entry"]["layers"], ["edm", "l2"])
+
+    def test_post_layers_unknown_layer_400(self):
+        status, _ = _request("POST", "/dlp-admin/bypass-keys", token="writer-token",
+                             payload={"token": "sk-l", "label": "n", "scope": "layers",
+                                      "layers": ["bogus"]})
+        self.assertEqual(status, 400)
+
+    def test_put_toggle_enabled(self):
+        _, body = _request("POST", "/dlp-admin/bypass-keys", token="writer-token",
+                           payload={"token": "sk-t", "label": "n", "scope": "all"})
+        kid = body["entry"]["id"]
+        status, body = _request("PUT", f"/dlp-admin/bypass-keys/{kid}", token="writer-token",
+                                payload={"enabled": False})
+        self.assertEqual(status, 200)
+        self.assertFalse(body["entry"]["enabled"])
+
+    def test_put_update_scope_layers(self):
+        _, body = _request("POST", "/dlp-admin/bypass-keys", token="writer-token",
+                           payload={"token": "sk-t", "label": "n", "scope": "layers", "layers": ["l2"]})
+        kid = body["entry"]["id"]
+        status, body = _request("PUT", f"/dlp-admin/bypass-keys/{kid}", token="writer-token",
+                                payload={"layers": ["pg"]})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["entry"]["layers"], ["pg"])
+
+    def test_put_empty_body_noop_200(self):
+        # {} 空 body = 校验性 no-op 返回现状（review 修复：旧实现 UnboundLocalError 500）
+        _, body = _request("POST", "/dlp-admin/bypass-keys", token="writer-token",
+                           payload={"token": "sk-t", "label": "n", "scope": "all"})
+        kid = body["entry"]["id"]
+        status, body = _request("PUT", f"/dlp-admin/bypass-keys/{kid}", token="writer-token",
+                                payload={})
+        self.assertEqual(status, 200)
+        self.assertEqual(body["entry"]["id"], kid)
+        self.assertTrue(body["entry"]["enabled"])
+
+    def test_put_unknown_id_404(self):
+        status, _ = _request("PUT", "/dlp-admin/bypass-keys/" + "0" * 64, token="writer-token",
+                             payload={"enabled": False})
+        self.assertEqual(status, 404)
+
+    def test_delete_entry(self):
+        _, body = _request("POST", "/dlp-admin/bypass-keys", token="writer-token",
+                           payload={"token": "sk-d", "label": "n", "scope": "all"})
+        kid = body["entry"]["id"]
+        status, body = _request("DELETE", f"/dlp-admin/bypass-keys/{kid}", token="writer-token")
+        self.assertEqual(status, 200)
+        status, body = _get("/dlp-admin/bypass-keys", token="reader-token")
+        self.assertEqual(body["keys"], [])
 
 
 if __name__ == "__main__":

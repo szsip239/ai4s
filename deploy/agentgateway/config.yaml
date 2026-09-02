@@ -161,8 +161,11 @@ routes:
                 # issue #116：把 llmRequest.model 注入 webhook 请求头（v1.4.1 headers CEL，
                 # 上游 webhook.rs 测试实证形状）——webhook body 协议不含 model 字段，
                 # shim 三处 shadow_log 模型名此前恒为 None；头是 shim 侧模型名权威来源
+                # issue #129：同法注入客户端 Authorization 头——shim 只对 SHA-256(token)
+                # 做绕行名单比对，不落盘不入日志；Key 级 DLP 绕行的唯一身份来源
                 headers:
                   x-model: llmRequest.model
+                  authorization: 'request.headers["authorization"]'
           # 响应侧（issue #23）：模型应答过 shim /response，命中即 mask（不 451，避免员工看到莫名错误）；
           # fail-open 同契约分级；流式应答覆盖见 streaming 段
           response:
@@ -170,9 +173,44 @@ routes:
                 target:
                   host: shim:8080
                 failureMode: failOpen
+                # issue #129：响应侧绕行同样按 key 识别，注入客户端 Authorization 头。
+                # （x-model 不可注入：上游 policy/mod.rs apply_webhook_response 的
+                # EvaluationContext 恒传 None 作 llm_request，llmRequest.* 在响应侧
+                # CEL 不可解析——响应侧绕行审计条 model 恒 None，属上游限制）
+                headers:
+                  authorization: 'request.headers["authorization"]'
           streaming: Enabled
     backends:
       # AI backend：把 axonhub 声明为 OpenAI 协议上游（hostOverride），LLM 处理域生效
+      - ai:
+          name: axonhub
+          provider:
+            openAI: {}
+          hostOverride: axonhub:8090
+
+  # /bv1：Key 全量绕行入口（issue #129）。零 DLP 策略（无 promptGuard/extProc），仅 extAuthz
+  # 调 shim /bv1-authz 校验 key 在全绕名单（scope=all 且启用）——fail-closed：failureMode=deny，
+  # shim 宕机时本入口拒绝服务（绕行特权不适用 fail-open）。urlRewrite 回 /v1 进 axonhub，
+  # key 鉴权/额度/追踪由 axonhub 照常执行。不支持 model=auto（无 classify 分类器）。
+  # 路径前缀长于 /v1，Gateway API 最长前缀优先，名单外 key 经此入口只得 403。
+  - gateways: [default, mtls]
+    matches:
+      - path:
+          pathPrefix: /bv1
+    policies:
+      urlRewrite:
+        path:
+          prefix: /v1
+      extAuthz:
+        host: shim:8080
+        failureMode: deny  # fail-closed：绕行门在 shim 故障时常闭
+        includeRequestBody:
+          maxRequestBytes: 65536  # 只为审计条带模型名；截断时 shim 侧容错不落模型键
+          allowPartialMessage: true
+        protocol:
+          http:
+            path: '"/bv1-authz"'
+    backends:
       - ai:
           name: axonhub
           provider:
@@ -212,6 +250,16 @@ routes:
     matches:
       - path:
           pathPrefix: /oauth
+    backends:
+      - host: axonhub:8090
+
+  # 邀请注册（issue #128）：外部人员邀请链接的查询/注册接口（axonhub publicGroup，beta6 仅
+  # /auth/invitations/* 两个端点，无鉴权为上游设计）；仅 default 网关（浏览器流量）。
+  # 注册页 UI 是 web SPA 路由（/sign-up?invite=<token>），不经本路由。
+  - gateways: [default]
+    matches:
+      - path:
+          pathPrefix: /auth
     backends:
       - host: axonhub:8090
 

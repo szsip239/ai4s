@@ -231,6 +231,7 @@ const QK = {
   formatRules: ['dlp-admin', 'format-rules'],
   edmCorpus: ['dlp-admin', 'edm-corpus'],
   settings: ['dlp-admin', 'settings'],
+  bypassKeys: ['dlp-admin', 'bypass-keys'],
 } as const;
 
 const BASE = '/dlp-admin';
@@ -430,5 +431,73 @@ export function usePutSettings() {
       toast.success('开关与阈值已保存，即时热生效');
     },
     onError: onMutError('设置保存'),
+  });
+}
+
+// ---- Key 绕行名单（issue #129）：只存哈希，服务端绝不回显明文 token ----
+
+export type BypassScope = 'all' | 'layers';
+
+/** 可被绕行的 shim 侧层（网关 L1 regex 仅 scope=all 经 /bv1 入口绕行） */
+export const BYPASSABLE_LAYERS = ['l1', 'l2', 'edm', 'rules', 'pg', 'judge', 'response'] as const;
+export type BypassLayer = (typeof BYPASSABLE_LAYERS)[number];
+
+export interface BypassKey {
+  id: string; // SHA-256(token)，不是明文
+  label: string;
+  scope: BypassScope;
+  layers: BypassLayer[];
+  enabled: boolean;
+  added_by: string;
+  added_at: number;
+}
+
+export interface BypassKeysDoc {
+  version: number;
+  keys: BypassKey[];
+}
+
+export function useBypassKeys() {
+  return useQuery({
+    queryKey: QK.bypassKeys,
+    queryFn: () => get<BypassKeysDoc>('/bypass-keys'),
+  });
+}
+
+export function useAddBypassKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { token: string; label: string; scope: BypassScope; layers?: BypassLayer[] }) =>
+      post<{ entry: BypassKey }>('/bypass-keys', input),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: QK.bypassKeys });
+      toast.success('绕行 Key 已登记（只存哈希，明文未落盘）');
+    },
+    onError: onMutError('绕行 Key 登记'),
+  });
+}
+
+export function useUpdateBypassKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...fields }: { id: string } & Partial<Omit<BypassKey, 'id'>>) =>
+      put<{ entry: BypassKey }>(`/bypass-keys/${encodeURIComponent(id)}`, fields),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: QK.bypassKeys });
+      toast.success('绕行条目已更新');
+    },
+    onError: onMutError('绕行条目更新'),
+  });
+}
+
+export function useDeleteBypassKey() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => del<{ ok: boolean }>(`/bypass-keys/${encodeURIComponent(id)}`),
+    onSuccess: async () => {
+      await qc.invalidateQueries({ queryKey: QK.bypassKeys });
+      toast.success('绕行条目已删除');
+    },
+    onError: onMutError('绕行条目删除'),
   });
 }
