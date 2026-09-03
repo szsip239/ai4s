@@ -503,6 +503,27 @@ def _deliver_new_key(req: dict, name: str, plain: str, owner_note: str, tier_nam
             f"{admin_note}——已通过，请在「我的 Key」页查看明文"), None
 
 
+def _exit_quarantine(ax, user: dict, req: dict, pid: str) -> str:
+    """批准迁入正式项目 = 转正：执行成功后将申请人迁出隔离区（External-Quarantine，按名解析
+    gid，与前端邀请对话同名契约）。仅当申请源项目=隔离区且落点≠隔离区时触发；best-effort——
+    Key 已建不回滚，迁出失败只记日志并在结果摘要注明可人工移除。返回结果摘要追加段（无操作为空串）。"""
+    src = _req_project_id(req)
+    if src == pid:
+        return ""  # 落点即源项目（无迁移语义）
+    projs = ax.gql(alert_poller.MY_PROJECTS_QUERY)["myProjects"] or []
+    quar = next((p["id"] for p in projs
+                 if p.get("name") == alert_poller.QUARANTINE_PROJECT_NAME), None)
+    if not quar or src != quar:
+        return ""
+    try:
+        ax.gql(alert_poller.REMOVE_USER_FROM_PROJECT_MUTATION,
+               {"input": {"projectId": quar, "userId": user["id"]}})
+        return "；已迁出隔离项目"
+    except Exception as e:
+        print(f"[keyreq] 迁出隔离项目失败 {req['id']}: {type(e).__name__}: {e}", flush=True)
+        return "；迁出隔离项目失败，可在项目页人工移除"
+
+
 def _execute(req: dict, tier_override: str = ""):
     """approve 执行体（复用 #72/#19 primitives）。返回 (result 摘要, key_name 或 None, applicant_dm_text)。
     tier_override=管理员批准时改定的档位（issue #81）：新建覆盖默认体验档、提额覆盖所求档；空串=原默认。
@@ -542,6 +563,8 @@ def _execute(req: dict, tier_override: str = ""):
         if req.get("projectOverride"):
             # issue #128：结果摘要体现落点项目（回执卡/申请列表可核对批到了哪个项目）
             result += f"，项目: {req.get('projectNameOverride') or pid}"
+            # 批准迁入正式项目 = 转正：源项目是隔离区则迁出（best-effort，详见 _exit_quarantine）
+            result += _exit_quarantine(_get_ax(), user, req, pid)
         return result, name, dm_text
     result = alert_poller.apply_tier_to_user(
         _get_ax(), user, tier_override or (req.get("tier") or ""),

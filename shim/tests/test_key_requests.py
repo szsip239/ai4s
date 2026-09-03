@@ -1106,5 +1106,88 @@ class TestProjectOverride(_Base):
         self.assertIsNone(out["projectOverride"])
 
 
+_QUAR = "gid://axonhub/Project/6"
+_QUAR_NAME = "External-Quarantine"
+
+
+class TestQuarantineExit(_Base):
+    """批准迁入正式项目 = 转正：执行成功后将申请人迁出隔离区（External-Quarantine，按名解析
+    gid，与前端邀请对话同名契约）。仅当申请源项目=隔离区且落点≠隔离区时触发；best-effort——
+    Key 已建不回滚，迁出失败只记日志并在结果摘要注明可人工移除。"""
+
+    def _ax_mock(self, events, remove_raises=None):
+        """假 Axonhub：myProjects 含隔离区+P-Formal；add/remove 记录事件；remove 可配抛错。"""
+        ax = mock.Mock()
+
+        def _gql(query, variables=None):
+            if "myProjects" in query:
+                return {"myProjects": [{"id": _QUAR, "name": _QUAR_NAME},
+                                       {"id": _P3, "name": "P-Formal"}]}
+            if "addUserToProject" in query:
+                events.append(("add", variables["input"]))
+                return {"addUserToProject": {"id": "m-1"}}
+            if "removeUserFromProject" in query:
+                if remove_raises:
+                    raise remove_raises
+                events.append(("remove", variables["input"]))
+                return {"removeUserFromProject": True}
+            raise AssertionError(f"unexpected gql: {query}")
+
+        ax.gql.side_effect = _gql
+        return ax
+
+    def _create_quar_req(self):
+        """源项目=隔离区的申请：创建时成员 mock 需含隔离区。"""
+        with mock.patch.object(kr.alert_poller, "query_user_projects",
+                               side_effect=lambda ax_, uid: [{"id": _QUAR, "name": _QUAR_NAME}]):
+            req, err = kr.create_request(_ME_LOCAL, "new", "政企平台搭建", "", project_id=_QUAR)
+        self.assertIsNone(err)
+        return req
+
+    def test_approve_from_quarantine_removes_membership(self):
+        # ①隔离区申请 override 到正式项目：入项→建 Key→迁出隔离区，顺序锁定，结果注明
+        req = self._create_quar_req()
+        events = []
+        ax = self._ax_mock(events)
+        with mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_LOCAL), \
+             mock.patch.object(kr.alert_poller, "ensure_emp_key",
+                               side_effect=lambda *_a, **kw: events.append(("key", kw.get("project_id"))) or ("emp-x", "ah-x", "")), \
+             mock.patch.object(kr, "_get_ax", return_value=ax):
+            out, err = kr.resolve_request(req["id"], "approve", project_override=_P3)
+        self.assertIsNone(err)
+        self.assertEqual(out["status"], "approved")
+        self.assertEqual([e[0] for e in events], ["add", "key", "remove"])
+        self.assertEqual(events[2][1], {"projectId": _QUAR, "userId": _USER_LOCAL["id"]})
+        self.assertIn("已迁出隔离项目", out["result"])
+
+    def test_non_quarantine_source_no_removal(self):
+        # ②源项目非隔离区（Default → P-Formal）：不触发迁出
+        req = self._create(_ME_LOCAL)
+        events = []
+        ax = self._ax_mock(events)
+        with mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_LOCAL), \
+             mock.patch.object(kr.alert_poller, "ensure_emp_key",
+                               side_effect=lambda *_a, **kw: events.append(("key", kw.get("project_id"))) or ("emp-x", "ah-x", "")), \
+             mock.patch.object(kr, "_get_ax", return_value=ax):
+            out, err = kr.resolve_request(req["id"], "approve", project_override=_P3)
+        self.assertIsNone(err)
+        self.assertEqual([e[0] for e in events], ["add", "key"])
+        self.assertNotIn("迁出", out["result"])
+
+    def test_remove_failure_keeps_approval(self):
+        # ③迁出 gql 失败：批准不回滚（Key 已建），结果注明可人工移除
+        req = self._create_quar_req()
+        events = []
+        ax = self._ax_mock(events, remove_raises=RuntimeError("gql down"))
+        with mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_LOCAL), \
+             mock.patch.object(kr.alert_poller, "ensure_emp_key",
+                               side_effect=lambda *_a, **kw: ("emp-x", "ah-x", "")), \
+             mock.patch.object(kr, "_get_ax", return_value=ax):
+            out, err = kr.resolve_request(req["id"], "approve", project_override=_P3)
+        self.assertIsNone(err)
+        self.assertEqual(out["status"], "approved")
+        self.assertIn("迁出隔离项目失败", out["result"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -705,6 +705,12 @@ MY_PROJECTS_QUERY = "query { myProjects { id name } }"
 ADD_USER_TO_PROJECT_MUTATION = (
     "mutation($input: AddUserToProjectInput!) { addUserToProject(input: $input) { id userID projectID } }"
 )
+REMOVE_USER_FROM_PROJECT_MUTATION = (
+    # 返回 Boolean（无子字段，内省实证 2026-09）
+    "mutation($input: RemoveUserFromProjectInput!) { removeUserFromProject(input: $input) }"
+)
+# 隔离项目名（issue #128 邀请注册落点；与前端 users-invite-dialog 同名契约，按名解析 gid）
+QUARANTINE_PROJECT_NAME = "External-Quarantine"
 # 项目级能力（issue #68 定案，与 assign-default-project.sh SCOPES 一致）：
 # read_api_keys/write_api_keys 刻意不发（项目级无属主过滤，下发即重开明文凭读与自助提额）
 PROJECT_MEMBER_SCOPES = ["read_requests", "write_requests"]
