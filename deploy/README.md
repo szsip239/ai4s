@@ -58,15 +58,13 @@ huggingface-cli download gravitee-io/Llama-Prompt-Guard-2-86M-onnx \
 - **运维纪律（issue #70 + ADR-0005）**：axonhub 每次新建项目都会种子 Admin/Developer/Viewer 三角色，其中 Developer 含 `read_api_keys`/`write_api_keys`（授予即绕开 #68 员工最小集，beta6 实证存在，beta7 起 UI/API 禁删）——**每次新建项目后必须重跑** `scripts/issue-70-narrow-seed-roles.sql` 核查收窄，并抽查项目角色列表。
 - SSO（issue #14 已上线）：员工在 http://localhost:3000/sign-in 点"Casdoor SSO（飞书）"登录，JIT 自动建号。axonhub 无 JIT 默认项目机制；**issue #73 起 shim 巡检线程 30s 级自动把新员工补进 Default 项目**（`auto_assign_project`，入项发飞书群通知），手工兜底 `./scripts/assign-default-project.sh`（幂等）。**issue #128 起收窄：只自动入项持 OIDC 身份（飞书 JIT）的用户，无 OIDC 身份的本地账号（邀请注册外部人员）跳过。**
 - **外部人员邀请注册（issue #128）**：非飞书组织的外部用户走邀请链接注册。操作纪律：① 邀请一律在**全局用户页（/users）的「邀请用户」按钮**发出，前端自动绑隔离项目 `External-Quarantine`（gid `gid://axonhub/Project/6`，无渠道/无额度档/成员空 scopes；项目不存在时按钮禁用），链接 7 天有效、单次使用；② 受邀者经 `控制台/sign-up?invite=<token>` 注册即激活登录，但落地零能力（playground 不可用、无任何模型调用路径）；③ 受邀者在控制台「我的 Key」自助提交新建 Key 申请，管理员在审批页**指定正式项目与额度档**后通过——执行侧自动把用户以空 scopes 移入正式项目并建 Key，同时**将用户迁出隔离项目**（批准即转正，迁出失败不回滚、结果摘要注明可人工移除），明文由申请人在「我的 Key」页自取。邀请接口路由：`/auth/invitations/*` 经 agentgateway → axonhub（publicGroup，无鉴权为上游设计）。
-- **公网访问（2026-08-22 起，替代 tailnet serve）**：宿主 `local-edge-nginx` 发布两条 example.com HTTPS 入口（模板 `sibling-project/.deploy/nginx-consolidation/local/templates/ai4s.conf.template`；iKuai dnat id=22/23 对齐 18999 模式）：
-  - console+API：`https://example.com:8445`（→ host.docker.internal:3000；本机 localhost:3000 入口不受影响）
-  - **子域规范入口（2026-08-31 起）**：`https://ai4s.example.com:8445`（同 upstream，SNI 分流，独立 DV 证书 2026-11-29 到期）。起因：与 sibling-project(:13100) 同 host 不同端口跑两个 PWA，Android intent-filter 按 host 匹配不认端口、WebAPK 互相抢链接；独立子域后隔离。DNS 为 CNAME→example.com（跟随主域 DDNS）。SSO 规范名已切子域：`axonhub/config.yml` public_url/redirect_url=ai4s.example.com:8445；casdoor `ai4s` 应用 redirect_uris 三轨（localhost/主域/子域）。主域入口保留兼容，新登录统一回子域。
-  - Casdoor：`https://example.com:8444`（→ host.docker.internal:8000）。**公网自助注册已封（2026-09-02）**：边缘模板对 `/signup`、`/api/signup` 返回 404（Casdoor 应用 `enable_sign_up` 保持 true——关掉会连带阻断新员工飞书 JIT，Casdoor `controllers/auth.go` 两处共用此开关）；飞书 SSO 走 `/api/login` 不受影响；管理员预建账号走内网直连 :8000。
-  - tailnet serve 8444/8445 已取消（8443/9443 属其他服务，保留）。
-  - SSO 规范名：`axonhub/config.yml` 的 public_url/redirect_url=ai4s.example.com:8445、issuer_url=example.com:8444，`casdoor/app.conf` origin=example.com:8444（issuer 与 origin 必须一致）。
-  - **前置依赖（飞书后台手工项）**：飞书开放平台应用（cli_xxxxxxxxxxxxxxxx）→ 安全设置 → 重定向 URL 须含 `https://example.com:8444/callback`，否则 SSO 最后一步报错误码 20029。
-  - Casdoor 应用的 `redirect_uris` 追加项（含 :8445 回调）是运行时 DB 配置，`casdoor_data` volume 重建后需经 `/api/update-application` 重设（同上方 display_name 的恢复套路）。
-  - **issuer 变更需迁移身份链接**（2026-08-22 已从 ts.net issuer 迁移到 example.com）：axonhub `oidc_identities` 按 (issuer, subject) 匹配既有用户；issuer 换名后旧链接失配，JIT 会撞邮箱唯一约束（`user_email_deleted_at` 23505）。恢复套路：`UPDATE oidc_identities SET issuer='<新 issuer>' WHERE subject='<sub>';`。
+- **公网访问（参考拓扑，2026-09-03 公开发布脱敏）**：推荐宿主 nginx 反代发布两条 HTTPS 入口（`<console-domain>`/`<sso-domain>` 为占位符，部署时替换为自己的域名并同步下文三处配置）：
+  - console+API：`https://<console-domain>`（→ host.docker.internal:3000；本机 localhost:3000 入口不受影响）
+  - Casdoor：`https://<sso-domain>`（→ host.docker.internal:8000）。**公网自助注册须在边缘封禁**：边缘对 `/signup`、`/api/signup` 返回 404（Casdoor 应用 `enable_sign_up` 保持 true——关掉会连带阻断新员工飞书 JIT，Casdoor `controllers/auth.go` 两处共用此开关）；飞书 SSO 走 `/api/login` 不受影响；管理员预建账号走本机 `localhost:8000`（2026-09-03 起 compose 绑定回环，内网直连取消）。
+  - 若 console 与其他 PWA 应用同 host 不同端口共存：Android intent-filter 按 host 匹配不认端口、WebAPK 会互相抢链接——建议 console 用独立（子）域名。SSO 规范名三处对齐：`axonhub/config.yml` 的 public_url/redirect_url、casdoor `ai4s` 应用 redirect_uris（localhost/正式域名多轨并存）、`casdoor/app.conf` origin（issuer 与 origin 必须一致）。
+  - **前置依赖（飞书后台手工项）**：飞书开放平台应用 → 安全设置 → 重定向 URL 须含 `https://<sso-domain>/callback`，否则 SSO 最后一步报错误码 20029。
+  - Casdoor 应用的 `redirect_uris` 追加项（含 console 域名回调）是运行时 DB 配置，`casdoor_data` volume 重建后需经 `/api/update-application` 重设（同下方 display_name 的恢复套路）。
+  - **issuer 变更需迁移身份链接**：axonhub `oidc_identities` 按 (issuer, subject) 匹配既有用户；issuer 换名后旧链接失配，JIT 会撞邮箱唯一约束（`user_email_deleted_at` 23505）。恢复套路：`UPDATE oidc_identities SET issuer='<新 issuer>' WHERE subject='<sub>';`。
 - **Casdoor 展示名（issue #58/#59）**：组织/应用的 `display_name`（当前均为 `Ai-4S-infra`）是运行时 DB 配置，`casdoor_data` volume 重建后会回退初始值，需手工重设：
 
   ```bash

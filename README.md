@@ -104,3 +104,7 @@ cd web && npx tsc --noEmit && npm run test:unit
 - 接口契约：[`docs/contracts/dlp-webhook-shim.md`](docs/contracts/dlp-webhook-shim.md)
 - 调研评测：[`docs/research/`](docs/research/)（网关脚手架全景、控制面对比、privacy-filter 对标评测等）
 - Issue 管理：GitHub Issues（五角色词表 `needs-triage`/`needs-info`/`ready-for-agent`/`ready-for-human`/`wontfix`），见 [`docs/agents/`](docs/agents/)
+
+## 许可证
+
+GPL-3.0，见 [LICENSE](LICENSE)。`web/` 内含 vendor 化的第三方代码（shadcn-admin 与 axonhub 控制台，MIT License），其归属声明保留于 `web/NOTICE`、`web/UPSTREAM`。

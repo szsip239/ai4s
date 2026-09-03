@@ -102,7 +102,7 @@ services:
       - ./casdoor/app.conf:/conf/app.conf:ro
       - casdoor_data:/data
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000" # 仅本机/同机 nginx 反代可达（2026-09-03 起取消内网直连，收敛至全栈统一回环纪律）
     networks:
       - ai4s
     restart: unless-stopped

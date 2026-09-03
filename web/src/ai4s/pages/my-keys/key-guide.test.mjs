@@ -15,7 +15,7 @@ const mod = await import(`data:text/javascript;base64,${Buffer.from(transpiled).
 
 const { KEY_PLACEHOLDER, GUIDE_MODELS, buildGuideSnippets } = mod;
 
-const ORIGIN = 'https://example-host.tail000000.ts.net:8445';
+const ORIGIN = 'https://example-host.tail000000.ts.net:8445'; // 虚构 tailnet 形主机名（公开发布脱敏，2026-09-03）
 
 test('buildGuideSnippets: curl 指向 origin/v1/chat/completions 且带 Bearer 占位符', () => {
   const { base, curl } = buildGuideSnippets(ORIGIN);

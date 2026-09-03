@@ -1,6 +1,6 @@
 .DS_Store
-prototype/console/node_modules/
-prototype/console/dist/
+# 一次性原型不保留不进库（2026-09-03 公开发布决策）
+prototype/
 
 # DLP admin 写入产物（issue #32+）
 *.bak
