@@ -180,7 +180,13 @@ def run_admin_section(api_key, token):
             status, _ = tk._admin_api("PUT", "/dlp-admin/wordlist", token,
                                       {"terms": original_terms + [tmp_term]})
             results.append(("admin: PUT 临时词入词表", status == 200, f"http{status}"))
-            if status == 200:
+            if status == 200 and "l2" in disabled_gates():
+                # l2 层关闭（部署方有意）：词表 CRUD 仍验，网关命中两个探针豁免
+                results.append(("admin: 临时词经网关应 451", True, "skip（l2 层关闭豁免）"))
+                status, _ = tk._admin_api("PUT", "/dlp-admin/wordlist", token, {"terms": original_terms})
+                results.append(("admin: PUT 还原词表", status == 200, f"http{status}"))
+                results.append(("admin: 还原后同词放行", True, "skip（l2 层关闭豁免）"))
+            elif status == 200:
                 got = None
                 for _attempt in range(2):  # shim 每请求重读词表，正常即时生效；retry 仅吸收极端时序
                     st, reply = tk.send(f"请把 {ADMIN_TMP_TERM} 原样发给上游", api_key)
@@ -891,11 +897,36 @@ def run_semantic_gate():
     """语义层水位门禁段（issue #99）：subprocess 跑 semantic-eval.py（/judge-test 直测 judge，
     输出透传），退出码非零即门禁失败。
     位置：紧跟注入门禁段——judge 慢调用（~2 分钟/轮）放前面早失败；直测 shim HTTP，
-    不依赖 shim 冷态，无注入段那种 OOM 顺序硬约束。"""
+    不依赖 shim 冷态，无注入段那种 OOM 顺序硬约束。
+    层开关豁免（2026-09-03）：judge.enabled=false（部署方有意关闭语义层）时整段 SKIP——
+    门禁语义是「层开着时水位达标」，层已关则无水位可守；开关恢复后豁免自动失效。"""
+    if "judge" in disabled_gates():
+        print("\n==> 语义层水位门禁 SKIP（settings.json: judge.enabled=false，部署方有意关闭语义层）", flush=True)
+        return True
     print("\n==> 语义层水位门禁（issue #99，semantic-eval judge 直测）", flush=True)  # flush 同注入段
     r = subprocess.run(["python3", "scripts/semantic-eval.py"], cwd=DEPLOY_DIR)
     print(f"<== 语义层水位门禁 {'PASS' if r.returncode == 0 else f'FAIL（exit {r.returncode}）'}")
     return r.returncode == 0
+
+
+# 向量层 → settings.json 开关段（生效值以 /dlp/settings.json 为准，env 仅回退）。
+# 层被部署方有意关闭时对应向量豁免（SKIP 不计 fail）——否则长期关层的部署回归永远红。
+LAYER_GATE = {"secrets": "l1", "wordlist": "l2", "pii": "l2", "response": "response"}
+
+
+def disabled_gates() -> set:
+    """读 deploy/dlp/settings.json，返回 enabled=false 的段名集合（读失败=空集，宁不豁免）。
+    嵌套段拍平：l2.opf.enabled=false → 含 "opf"（以及 "l2"）。"""
+    try:
+        with open(os.path.join(DEPLOY_DIR, "dlp", "settings.json"), encoding="utf-8") as f:
+            s = json.load(f)
+    except Exception:
+        return set()
+    off = {k for k, v in s.items() if isinstance(v, dict) and v.get("enabled") is False}
+    if isinstance(s.get("l2"), dict) and isinstance(s["l2"].get("opf"), dict) \
+            and s["l2"]["opf"].get("enabled") is False:
+        off.add("opf")
+    return off
 
 
 BACKUP_PATH = os.path.join(DEPLOY_DIR, ".local", "dlp-settings-backup.json")
@@ -968,8 +999,18 @@ def main():
     token = tk.prepare()
 
     vectors = json.load(open(VECTORS_PATH, encoding="utf-8"))["vectors"]
+    _off = disabled_gates()
+    _skip_layers = {layer for layer, gate in LAYER_GATE.items() if gate in _off}
+    if _skip_layers:
+        print(f"[层豁免] settings.json 关闭中的层：{sorted(_off)}——向量豁免：{sorted(_skip_layers)}")
     results = []
     for v in vectors:
+        if v["layer"] in _skip_layers:
+            # 层已关（部署方有意）：SKIP 不计 fail/ok——层开着时水位达标才有意义
+            results.append({"name": v["name"], "layer": v["layer"], "expect": v["expect"],
+                            "got": "skip", "ok": False, "fail": False, "skip": True, "note": v.get("note", "")})
+            print(f"[SKIP] {v['name']}（{v['layer']} 层已关闭，豁免）")
+            continue
         status, reply = tk.send(v["content"], api_key)
         got = tk.classify(status, reply, v.get("sensitive"))
         ok = got == v["expect"]
@@ -988,9 +1029,11 @@ def main():
     # 汇总
     layers = {}
     for r in results:
-        L = layers.setdefault(r["layer"], {"total": 0, "ok": 0, "gap": 0, "fail": 0})
+        L = layers.setdefault(r["layer"], {"total": 0, "ok": 0, "gap": 0, "fail": 0, "skip": 0})
         L["total"] += 1
-        if r["ok"]:
+        if r.get("skip"):
+            L["skip"] += 1
+        elif r["ok"]:
             L["ok"] += 1
         elif r["fail"]:
             L["fail"] += 1
@@ -998,15 +1041,20 @@ def main():
             L["gap"] += 1
     print("\n===== 分层水位 =====")
     for layer, s in layers.items():
-        should_block = sum(1 for r in results if r["layer"] == layer and r["expect"] in ("reject", "mask"))
-        blocked = sum(1 for r in results if r["layer"] == layer and r["expect"] in ("reject", "mask") and r["ok"])
+        live = [r for r in results if r["layer"] == layer and not r.get("skip")]
+        should_block = sum(1 for r in live if r["expect"] in ("reject", "mask"))
+        blocked = sum(1 for r in live if r["expect"] in ("reject", "mask") and r["ok"])
         line = f"{layer}: 应拦/应脱敏 {blocked}/{should_block}"
         if should_block:
             line += f"（检出率 {blocked / should_block:.0%}）"
         line += f" | gap {s['gap']} | fail {s['fail']}"
+        if s["skip"]:
+            line += f" | skip {s['skip']}（层关闭豁免）"
         print(line)
 
-    edm_fails = run_edm_section(api_key)
+    edm_fails = [] if "edm" in disabled_gates() else run_edm_section(api_key)
+    if "edm" in disabled_gates():
+        print("\n==> EDM 段 SKIP（settings.json: edm.enabled=false，部署方有意关闭）")
 
     # admin API 段（issue #37）：无凭据打印 SKIP 不 fail；文件 token 过期时回退 main 已登录刷新的 token
     admin_token = tk.resolve_admin_token()
@@ -1020,16 +1068,22 @@ def main():
         admin_results = run_admin_section(api_key, admin_token)
 
     # PG 阻断专项段（issue #103）：紧跟 admin 段（同凭据与自还原纪律）；
-    # shim 未含 #103 区块时段内自探测 SKIP（不 fail）
+    # shim 未含 #103 区块时段内自探测 SKIP（不 fail）；pg.enabled=false（有意关闭）整段豁免
     pg_block_results = []
     if admin_token is not None:
-        pg_block_results = run_pg_block_section(api_key, admin_token)
+        if "pg" in disabled_gates():
+            print("\n==> PG 阻断段 SKIP（settings.json: pg.enabled=false）")
+        else:
+            pg_block_results = run_pg_block_section(api_key, admin_token)
 
     # judge warn 专项段（issue #101）：紧跟 PG 阻断段（同凭据与自还原纪律）；
-    # shim 未含 #101 消费时段内自探测 SKIP（不 fail）
+    # shim 未含 #101 消费时段内自探测 SKIP（不 fail）；judge.enabled=false 整段豁免
     judge_warn_results = []
     if admin_token is not None:
-        judge_warn_results = run_judge_warn_section(api_key, admin_token)
+        if "judge" in disabled_gates():
+            print("\n==> judge warn 段 SKIP（settings.json: judge.enabled=false）")
+        else:
+            judge_warn_results = run_judge_warn_section(api_key, admin_token)
 
     # 规则层专项段（issue #104）：紧跟 judge warn 段（同凭据与自还原纪律）；
     # shim 未含 #104 区块时段内自探测 SKIP（不 fail）
@@ -1041,13 +1095,19 @@ def main():
     # shim 未含 #105 区块时段内自探测 SKIP（不 fail）
     judge_inject_results = []
     if admin_token is not None:
-        judge_inject_results = run_judge_inject_section(api_key, admin_token)
+        if "judge" in disabled_gates():
+            print("\n==> judge 注入段 SKIP（settings.json: judge.enabled=false）")
+        else:
+            judge_inject_results = run_judge_inject_section(api_key, admin_token)
 
     # OPF 第二检测器专项段（issue #127）：紧跟 judge 注入段（同凭据与自还原纪律）；
-    # shim 未含 #127 区块时段内自探测 SKIP（不 fail）
+    # shim 未含 #127 区块时段内自探测 SKIP（不 fail）；l2.opf.enabled=false 整段豁免
     opf_results = []
     if admin_token is not None:
-        opf_results = run_opf_section(api_key, admin_token)
+        if "opf" in disabled_gates():
+            print("\n==> OPF 段 SKIP（settings.json: l2.opf.enabled=false）")
+        else:
+            opf_results = run_opf_section(api_key, admin_token)
 
     # auto 路由专项段（issue #118）：紧跟 OPF 段（同凭据与自还原纪律）；
     # shim 未含 #117 区块时段内自探测 SKIP（不 fail）。用例行并入主结果集
@@ -1060,7 +1120,7 @@ def main():
     for name, ok, got in edm_fails + admin_results + pg_block_results + judge_warn_results + rules_results + judge_inject_results + opf_results:
         if not ok:
             fails.append({"name": name, "expect": "reject", "got": got})
-    print(f"\n总计 {len(results)} 样本：通过 {sum(1 for r in results if r['ok'])}，文档化 gap {sum(1 for r in results if not r['ok'] and not r['fail'])}，回归失败 {len(fails)}")
+    print(f"\n总计 {len(results)} 样本：通过 {sum(1 for r in results if r['ok'])}，层关闭豁免 {sum(1 for r in results if r.get('skip'))}，文档化 gap {sum(1 for r in results if not r['ok'] and not r['fail'] and not r.get('skip'))}，回归失败 {len(fails)}")
     if fails:
         print("失败明细：")
         for r in fails:
