@@ -29,6 +29,19 @@ python3 scripts/edm-add.py <文件>    # EDM 商密文档指纹入库（issue #3
 cd ../shim && python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt && .venv/bin/python -m unittest discover -s tests    # shim 单测（本机 venv 隔离装 EDM 解析库，issue #49）；OCR 用例另需系统 tesseract 二进制（无则对应用例自动 skip，见 requirements-dev.txt 注释，issue #50）
 ```
 
+## PromptGuard 2 模型（不入库，启用 PG 前需自行下载）
+
+shim 进程内 PG 注入检测引擎（issue #67）从 `PG_MODEL_DIR`（默认 `/models/promptguard`，compose 挂 `./.local/promptguard-model:ro` + `HF_HUB_OFFLINE=1`）离线加载；模型 ~284MB 不入库。缺模型时 PG 检测静默缺席（fail-open，记日志），其余 DLP 层不受影响。
+
+```bash
+pip install -U "huggingface_hub[cli]"      # 或 brew install huggingface-cli
+huggingface-cli download gravitee-io/Llama-Prompt-Guard-2-86M-onnx \
+  config.json model.quant.onnx special_tokens_map.json tokenizer.json tokenizer_config.json \
+  --local-dir .local/promptguard-model     # 在 deploy/ 下执行；五个文件缺一不可
+```
+
+启用：`PUT /dlp-admin/settings` 置 `pg.enabled=true`（阈值/归一化/阻断试点等键见契约 [`../docs/contracts/dlp-webhook-shim.md`](../docs/contracts/dlp-webhook-shim.md)）；验证跑 `python3 scripts/dlp-regression.py` 注入段。
+
 ## DLP 统一配置（issue #31–#36）
 
 - **管线全景图**：请求链路分层检测与处置（评估顺序/短路/故障语义）见 [`../docs/architecture/ai4s-dlp-pipeline.png`](../docs/architecture/ai4s-dlp-pipeline.png)（交互版 `ai4s-dlp-pipeline.html` 同目录，clone 后浏览器打开）。

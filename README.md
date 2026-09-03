@@ -60,6 +60,14 @@ docker compose up -d
 
 完整组件表、公网发布、DLP 配置面、OPF 启用步骤见 [`deploy/README.md`](deploy/README.md)。
 
+## 本地模型与可选组件（需自行配置）
+
+以下组件有意不入库、默认不启动，按需自行配置——缺省时对应检测能力静默缺席（fail-open，不影响主链路与其余 DLP 层）：
+
+- **PromptGuard 2 注入检测模型**（~284MB）：shim 进程内推理的注入打分引擎（shadow 观测 + 可选 451 阻断试点）。模型文件需自行从 HuggingFace 下载到 `deploy/.local/promptguard-model/`（gitignored），再开 `pg.enabled`。下载命令见 [`deploy/README.md`](deploy/README.md)「PromptGuard 2 模型」节。
+- **opf privacy-filter 中文 NER sidecar**（~1.5GB，profile 默认不启动）：L2 内嵌第二检测器，仅适合有 GPU 的机型（CPU 延迟实测不可用，issue #122）。启用步骤见 [`deploy/README.md`](deploy/README.md)「OPF 第二检测器」节。
+- **Presidio PII 识别开箱即用**：镜像内置 NLP 模型，中文 ad-hoc 识别器 `recognizers/pii-zh.json` 已入库，无需额外配置。
+
 ## 架构
 
 ![ai4s 运行时架构](docs/architecture/ai4s-runtime.png)
