@@ -7,7 +7,7 @@
 | 组件 | 镜像 | 说明 |
 |---|---|---|
 | agentgateway | `cr.agentgateway.dev/agentgateway:v1.5.0`（digest `sha256:bf2f339e…`） | 稳定版升级（issue #125，2026-09-01；v1.4.1→v1.5.0 评审与回归存档见 issue） |
-| axonhub | `looplj/axonhub:v1.0.0-beta6`（digest `sha256:d41f3ca1…`） | 只升稳定版（ADR-0005，2026-08-24 拍板）：beta 一律不追；重评审触发条件与 beta7 评审存档见 ADR 与 `docs/research/2026-08-24-axonhub-beta7-review.md` |
+| axonhub | `looplj/axonhub:v1.0.0-beta6`（digest `sha256:d41f3ca1…`） | 只升稳定版（ADR-0005，2026-08-24 拍板）：beta 一律不追；重评审触发条件与 beta7 评审存档见维护者本地 ADR 与调研文档（未随仓库发布） |
 | PostgreSQL | `postgres:16-alpine`（digest `sha256:57c72fd2…`，实为 16.14） | axonhub 官方 compose 同款主版本 |
 | casdoor | `casbin/casdoor:3.133.0` | SSO 枢纽（issue #14）：飞书 OAuth → 标准 OIDC |
 | shim | 本地构建 `../shim`（python:3.12-slim + apt tesseract-ocr/chi-sim/eng（issue #50 OCR，apt 层 +109MB）；pip pin PyMuPDF/python-docx/openpyxl/python-pptx/pytesseract/Pillow + onnxruntime/transformers/numpy（issue #67 PG 进程内推理，版本 pin 自原 promptguard 容器实测；镜像总 900MB，2026-08-19 实测）+ psycopg（issue #72 key 归属 SQL 直改，函数级懒加载）） | DLP 词表/PII 适配 + 注入规则层 `inject_rules`（issue #104：16 模式组正则 µs 级，纯 stdlib；`rules.enabled`/`rules.block` 双开关默认关，shadow 层名 `rules`，block 开=命中即 451）+ PromptGuard 2 注入检测引擎 `pg_engine`（issue #67 并入进程内，原 promptguard 容器退役；函数级懒加载，pg.enabled=false 时零加载零开销；模型卷 `./.local/promptguard-model:/models/promptguard:ro` + `HF_HUB_OFFLINE=1`）+ 飞书告警适配 `/feishu-alert`（issue #17）+ 统一配置 admin 平面 `/dlp-admin/*`（issue #31–#36）+ 告警巡检 daemon 线程（issue #56 并入原 alert-poller：fail-open 探活/渠道与 key 额度轮询/shadow 层可用率（issue #92）/审批同步 30s，与检测路径隔离；issue #19 提额 + issue #72 新建 Key 审批并存，新建通过→自动建 key 归申请人→挂体验档→私信交付明文）+ shadow 判定观测出口 `/dlp-admin/shadow-verdicts`（issue #92，judge/PG/rules/judge_inject（issue #105 judge 注入第二职责：专用注入 prompt + `judge.inject_enabled` 默认关，永不阻断不告警）判定持久化于 `alert-state/shadow-verdicts.jsonl`） |
@@ -40,7 +40,7 @@ huggingface-cli download gravitee-io/Llama-Prompt-Guard-2-86M-onnx \
   --local-dir .local/promptguard-model     # 在 deploy/ 下执行；五个文件缺一不可
 ```
 
-启用：`PUT /dlp-admin/settings` 置 `pg.enabled=true`（阈值/归一化/阻断试点等键见契约 [`../docs/contracts/dlp-webhook-shim.md`](../docs/contracts/dlp-webhook-shim.md)）；验证跑 `python3 scripts/dlp-regression.py` 注入段。
+启用：`PUT /dlp-admin/settings` 置 `pg.enabled=true`（阈值/归一化/阻断试点等键见契约文档 `docs/contracts/dlp-webhook-shim.md`，开发过程文档未随仓库发布）；验证跑 `python3 scripts/dlp-regression.py` 注入段。
 
 ## DLP 统一配置（issue #31–#36）
 

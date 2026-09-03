@@ -98,12 +98,9 @@ cd web && npx tsc --noEmit && npm run test:unit
 
 纪律：DLP 所有配置（词表/识别器/格式规则/EDM 语料/开关阈值）唯一写入口 = shim admin API `/dlp-admin/*`，控制台「脱敏规则」页是其前端；不直改挂载目录下的 JSON。
 
-## 文档地图
+## 文档
 
-- 架构决策：[`docs/adr/`](docs/adr/)（0001 控制面选型 / 0002 阶段 1 架构 / 0003 代码复用 / 0004 审计路线 / 0005 升级评审纪律 / 0006 语义层外部 API 路线 / 0007 auto 智能路由）
-- 接口契约：[`docs/contracts/dlp-webhook-shim.md`](docs/contracts/dlp-webhook-shim.md)
-- 调研评测：[`docs/research/`](docs/research/)（网关脚手架全景、控制面对比、privacy-filter 对标评测等）
-- Issue 管理：GitHub Issues（五角色词表 `needs-triage`/`needs-info`/`ready-for-agent`/`ready-for-human`/`wontfix`），见 [`docs/agents/`](docs/agents/)
+开发过程文档（ADR、接口契约、调研评测、agents 协作约定等）不随仓库发布，仅保留在维护者本地。仓库内保留 `docs/architecture/`（运行时架构图）与 `docs/showcase/`（控制台预览图）供本 README 引用。
 
 ## 许可证
 

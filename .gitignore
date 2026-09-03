@@ -2,6 +2,15 @@
 # 一次性原型不保留不进库（2026-09-03 公开发布决策）
 prototype/
 
+# 开发过程文档不随仓库发布（2026-09-03 公开发布决策）；保留 docs/architecture 与 docs/showcase（README 引用）
+docs/adr/
+docs/agents/
+docs/contracts/
+docs/guides/
+docs/plans/
+docs/research/
+docs/tests/
+
 # DLP admin 写入产物（issue #32+）
 *.bak
 __pycache__/

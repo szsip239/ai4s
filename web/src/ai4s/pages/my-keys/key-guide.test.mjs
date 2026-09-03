@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import test from 'node:test';
 import ts from 'typescript';
@@ -92,8 +92,14 @@ function contractRow(contract, tierName) {
   return { cost, tokens };
 }
 
-test('指南档位数字 = 契约矩阵（zh/en 双侧，issue #84 守卫）', () => {
-  const contract = readFileSync(join(repoRoot, 'docs', 'contracts', 'quota-tiers.md'), 'utf8');
+test('指南档位数字 = 契约矩阵（zh/en 双侧，issue #84 守卫）', (t) => {
+  const contractPath = join(repoRoot, 'docs', 'contracts', 'quota-tiers.md');
+  // 契约 2026-09-03 起转为 dev-local 未追踪（开发过程文档不随仓库发布），公开克隆下守卫跳过
+  if (!existsSync(contractPath)) {
+    t.skip('docs/contracts/quota-tiers.md 未随仓库发布（dev-local），跳过契约守卫');
+    return;
+  }
+  const contract = readFileSync(contractPath, 'utf8');
   const zh = JSON.parse(readFileSync(join(srcRoot, 'ai4s', 'locales', 'zh-CN', 'ai4s-patch.json'), 'utf8'));
   const en = JSON.parse(readFileSync(join(srcRoot, 'ai4s', 'locales', 'en', 'ai4s-patch.json'), 'utf8'));
   for (const [key, tierName] of [
