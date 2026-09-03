@@ -129,7 +129,10 @@ export function RequestsTable({
         return {};
       }
     }
-    return {};
+    // 2026-09-03 owner 反馈：推理强度（仅客户端显式发 reasoning_effort 才有值，97.8% 请求为空）、
+    // 读/写缓存（依渠道 usage 回传；写缓存仅 Anthropic cache_control 语义回传，现网无此渠道恒为 0）
+    // 三列大面积空态，默认隐藏——用户可在列显隐菜单手动开启；已有 localStorage 偏好不受影响
+    return { reasoningEffort: false, readCache: false, writeCache: false };
   });
 
   const [rowSelection, setRowSelection] = useState({});
