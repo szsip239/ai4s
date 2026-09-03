@@ -198,7 +198,7 @@
   "ai4s.myKeys.usage.window.cached": "缓存",
   "ai4s.myKeys.usage.window.noData": "该时间窗暂无用量",
   "ai4s.myKeys.usage.noQuotaEntries": "无配额条目——不设限，实际用量看上方时间窗标签",
-  "ai4s.myKeys.empty": "还没有 Key。点「申请新 Key」发起申请，批准后即可查看明文。",
+  "ai4s.myKeys.empty": "当前项目下还没有 Key。Key 按项目隔离——先确认顶部项目切换器选对了项目；确需新建再点「申请新 Key」。",
   "ai4s.myKeys.noProject": "请先在顶部选择项目",
   "ai4s.myKeys.loadError": "加载失败，请稍后重试；持续失败请联系管理员。",
   "ai4s.myKeys.applyNew": "申请新 Key",

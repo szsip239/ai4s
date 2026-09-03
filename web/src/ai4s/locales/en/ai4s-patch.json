@@ -196,7 +196,7 @@
   "ai4s.myKeys.usage.window.cached": "Cached",
   "ai4s.myKeys.usage.window.noData": "No usage in this window",
   "ai4s.myKeys.usage.noQuotaEntries": "No quota entries — unlimited. See the time-window tabs above for actual usage.",
-  "ai4s.myKeys.empty": "No keys yet. Click \"Request New Key\" — once approved, the plaintext is available here.",
+  "ai4s.myKeys.empty": "No keys under the current project. Keys are project-scoped — check the project switcher at the top first; click \"Request New Key\" only if you really need a new one.",
   "ai4s.myKeys.noProject": "Select a project from the top switcher first.",
   "ai4s.myKeys.loadError": "Failed to load. Please retry later; contact an administrator if it persists.",
   "ai4s.myKeys.applyNew": "Request New Key",
