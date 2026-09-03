@@ -160,5 +160,58 @@ class TestUpdateRemove(unittest.TestCase):
         self.assertEqual(data["keys"], [])
 
 
+class TestConcurrency(unittest.TestCase):
+    """审计B 中3 回归（2026-09-03）：读改写并发互斥——修复前固定 tmp 名裸跑会交错写/
+    丢更新/os.replace 抛 FileNotFoundError；上锁后并发 add/update/remove 结果确定。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.tmp.name, "bypass-keys.json")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_concurrent_add_update_remove(self):
+        import threading
+        errors = []
+
+        def add_one(i):
+            try:
+                bypass_keys.add(f"sk-concurrent-{i}", f"k{i}", "all", None, "t", path=self.path)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=add_one, args=(i,)) for i in range(24)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+        data = bypass_keys.load(path=self.path)
+        self.assertEqual(len(data["keys"]), 24)  # 无丢更新
+        self.assertEqual(len({k["id"] for k in data["keys"]}), 24)
+
+        ids = [k["id"] for k in data["keys"]]
+
+        def toggle(i):
+            try:
+                if i % 2:
+                    bypass_keys.remove(ids[i], path=self.path)
+                else:
+                    bypass_keys.update(ids[i], {"enabled": False}, path=self.path)
+            except Exception as e:
+                errors.append(e)
+
+        threads = [threading.Thread(target=toggle, args=(i,)) for i in range(24)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(errors, [])
+        data = bypass_keys.load(path=self.path)
+        self.assertEqual(len(data["keys"]), 12)
+        self.assertTrue(all(not k["enabled"] for k in data["keys"]))
+
+
 if __name__ == "__main__":
     unittest.main()

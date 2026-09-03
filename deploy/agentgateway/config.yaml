@@ -240,8 +240,10 @@ routes:
   # 内省 JWT，owner/系统 write_requests/请求项目成员 write_requests 放行，其余 403。
   # failureMode=deny（fail-closed，同 /bv1 纪律）：shim 宕机时 playground 拒绝服务——
   # 控制台测试工具不适用检测链 fail-open。exact 精确匹配优先于下方 /admin 前缀。
-  # 仅 default 网关（控制台浏览器流量；mtls 设备口无 playground 场景）。
-  - gateways: [default]
+  # 双网关挂载（审计B 严重2 修复，2026-09-03）：曾仅挂 default（假设「mtls 设备口无
+  # playground 场景」），但行为假设不是技术约束——mtls 口该路径会跌落到下方无策略的
+  # /admin 通配兜底，零 scope 用户经 :3443 复现 #128 同一绕过。
+  - gateways: [default, mtls]
     matches:
       - path:
           exact: /admin/playground/chat

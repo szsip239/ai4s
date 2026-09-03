@@ -112,10 +112,26 @@ _GRAPHQL_OP_SCOPES = {
     "channelProbeData": "read_channels",
     "checkProviderQuotas": "write_channels",
 }
-# gid 实参必须是字面 gid 字符串（axonhub node resolver 只认 gid:// 形，无编码绕行），
-# 无论内联在 query 还是放在 variables 都在请求体 JSON 原文里，正则扫描完备。
+# gid 实参必须是字面 gid 字符串（axonhub node resolver 只认 gid:// 形）。纪律（审计B
+# 严重1）：正则严禁直接扫请求体原始字节——JSON 字符串的 \u 加四位十六进制转义
+# 可让危险 gid/字段名在原文里隐身（斜杠等字符以转义形态出现），经 axonhub JSON
+# 解码后还原执行；调用方必须先 json.loads，再用 graphql_strings 递归取全部字符串
+# 值后扫描（app.py _graphql_authz 即如此；本函数只对喂入的文本负责）。
 _GRAPHQL_GID_RE = re.compile(r"gid://axonhub/(" + "|".join(_GRAPHQL_GID_TYPE_SCOPES) + r")/")
 _GRAPHQL_OP_RE = re.compile(r"\b(" + "|".join(_GRAPHQL_OP_SCOPES) + r")\b")
+
+
+def graphql_strings(payload):
+    """递归产出 GraphQL JSON 负载中的全部字符串值（query/operationName/variables 任意
+    嵌套；gqlgen 批量数组形态同覆盖）。"""
+    if isinstance(payload, str):
+        yield payload
+    elif isinstance(payload, dict):
+        for v in payload.values():
+            yield from graphql_strings(v)
+    elif isinstance(payload, list):
+        for v in payload:
+            yield from graphql_strings(v)
 
 
 def graphql_required_scopes(body: str) -> list:

@@ -231,5 +231,79 @@ class GraphqlAuthzEndpointTest(unittest.TestCase):
         self.assertEqual(status, 401)
 
 
+class GraphqlStringsPureTest(unittest.TestCase):
+    """graphql_strings：递归取 JSON 负载全部字符串值（审计B 严重1 修复的扫描基础）。"""
+
+    def test_flat_query(self):
+        self.assertEqual(list(admin_api.graphql_strings({"query": "q1"})), ["q1"])
+
+    def test_nested_variables_and_batch(self):
+        payload = [{"query": "a", "variables": {"id": "b", "n": 1, "x": None}},
+                   {"query": "c", "variables": {"deep": [{"d": "e"}]}}]
+        self.assertEqual(sorted(admin_api.graphql_strings(payload)), ["a", "b", "c", "e"])
+
+    def test_non_string_scalars_ignored(self):
+        self.assertEqual(list(admin_api.graphql_strings({"a": 1, "b": True, "c": None})), [])
+
+
+# JSON 转义形态的攻击载荷（审计B 严重1 回归）：\uXXXX 在源码层程序化构造，
+# 保证请求体原文里真的是 6 字符转义序列（服务端 json.loads 后才还原成危险字面量）
+_EU = chr(92) + "u002f"  # 斜杠的 JSON 转义形态
+_EQ = chr(92) + "u0051"  # 大写 Q 的 JSON 转义形态
+_ESC_GID_VARS = ('{"query":"query N($id: ID!) { node(id: $id) { ... on RequestExecution { requestBody } } }",'
+                 '"variables":{"id":"gid:' + _EU + _EU + "axonhub" + _EU + "RequestExecution" + _EU + '13939"}}')
+_ESC_OP = ('{"query":"mutation { checkProvider' + _EQ + 'uotas }"}')
+_ESC_SAFE_REQUEST_GID = ('{"query":"{ node(id: \\"gid:' + _EU + _EU + "axonhub" + _EU + "Request" + _EU + '1\\") { id } }"}')
+_BATCH = '[{"query":"query { me { id } }"},{"query":"mutation { checkProviderQuotas }"}]'
+
+
+class GraphqlAuthzEscapeRegressionTest(unittest.TestCase):
+    """审计B 严重1 回归：JSON \\u 转义绕过——修复前这些载荷原文不含字面模式会零内省放行。"""
+
+    def _with_me(self, me=None, err=None):
+        return mock.patch.object(admin_api, "_introspect",
+                                 return_value=(me, err) if err is None else (None, err))
+
+    def test_escaped_gid_zero_scope_denied(self):
+        with self._with_me(me=_me(projects=[("gid://axonhub/Project/1", ["read_requests"])])):
+            status, body = _post_authz(_ESC_GID_VARS)
+        self.assertEqual(status, 403)
+        self.assertIn("read_requests", body.get("error", ""))
+
+    def test_escaped_gid_owner_allowed(self):
+        with self._with_me(me=_me(owner=True)):
+            status, _ = _post_authz(_ESC_GID_VARS)
+        self.assertEqual(status, 200)
+
+    def test_escaped_op_detected(self):
+        with self._with_me(me=_me()):
+            status, _ = _post_authz(_ESC_OP)
+        self.assertEqual(status, 403)
+
+    def test_batch_array_second_op_detected(self):
+        with self._with_me(me=_me()):
+            status, _ = _post_authz(_BATCH)
+        self.assertEqual(status, 403)
+
+    def test_escaped_safe_gid_not_flagged(self):
+        # 转义形态的有 policy 类型（Request）解码后仍安全 → 零内省放行，无误报
+        with self._with_me(me=_me()) as m:
+            status, _ = _post_authz(_ESC_SAFE_REQUEST_GID)
+        self.assertEqual(status, 200)
+        m.assert_not_called()
+
+    def test_non_json_body_403(self):
+        with self._with_me(me=_me(owner=True)) as m:
+            req = urllib.request.Request(_BASE + "/graphql-authz", data=b"not json {", method="POST")
+            req.add_header("Authorization", "Bearer t")
+            try:
+                with urllib.request.urlopen(req, timeout=5) as r:
+                    status = r.status
+            except urllib.error.HTTPError as e:
+                status = e.code
+        self.assertEqual(status, 403)  # 无法检查即拒（fail-closed）
+        m.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

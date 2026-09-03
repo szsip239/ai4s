@@ -12,11 +12,17 @@
 
 仅标准库；不 import admin_api（其消费本模块，反向成环）——原子写 tmp+os.replace 与
 admin_api.write_json_atomic 同原理，目录约定与 settings.json 一致（/dlp）。
+并发纪律（审计B 中3 修复，2026-09-03）：add/update/remove 的「读-改-写」整体由模块级
+锁互斥（同 key_requests.py 模式）——ThreadingHTTPServer 下裸跑会撞固定 tmp 名
+（交错写/丢更新/os.replace 抛 FileNotFoundError）。
 """
 import hashlib
 import json
 import os
+import threading
 import time
+
+_RMW_LOCK = threading.Lock()  # add/update/remove 读改写互斥（lookup 只读不进锁）
 
 # 可被 shim 侧绕行的层词表（网关 L1 regex 不在内——只能经 /bv1 入口整体绕）
 BYPASSABLE_LAYERS = ("l1", "l2", "edm", "rules", "pg", "judge", "response")
@@ -78,22 +84,23 @@ def add(token: str, label: str, scope: str, layers, added_by: str, path: str | N
     err = _validate(label, scope, layers)
     if err:
         raise ValueError(err)
-    data = load(path)
-    kid = _hash(token)
-    if any(k.get("id") == kid for k in data["keys"]):
-        raise ValueError("该 Key 已在绕行名单中")
-    entry = {
-        "id": kid,
-        "label": label.strip(),
-        "scope": scope,
-        "layers": sorted(set(layers)) if scope == "layers" else [],
-        "enabled": True,
-        "added_by": added_by or "",
-        "added_at": time.time(),
-    }
-    data["keys"].append(entry)
-    _save(data, path)
-    return dict(entry)
+    with _RMW_LOCK:
+        data = load(path)
+        kid = _hash(token)
+        if any(k.get("id") == kid for k in data["keys"]):
+            raise ValueError("该 Key 已在绕行名单中")
+        entry = {
+            "id": kid,
+            "label": label.strip(),
+            "scope": scope,
+            "layers": sorted(set(layers)) if scope == "layers" else [],
+            "enabled": True,
+            "added_by": added_by or "",
+            "added_at": time.time(),
+        }
+        data["keys"].append(entry)
+        _save(data, path)
+        return dict(entry)
 
 
 def lookup(token: str, path: str | None = None) -> dict | None:
@@ -117,22 +124,23 @@ def covers(entry: dict, layer: str) -> bool:
 def update(kid: str, fields: dict, path: str | None = None) -> dict:
     """改 label/scope/layers/enabled（fields 只取这四键，缺席=保持；{}=校验性 no-op 返回现状，
     单次落盘）。未知 id 报 KeyError，非法字段报 ValueError。"""
-    data = load(path)
-    for k in data["keys"]:
-        if k.get("id") == kid:
-            label = fields.get("label", k["label"])
-            scope = fields.get("scope", k["scope"])
-            layers = fields.get("layers", k["layers"])
-            err = _validate(label, scope, layers)
-            if err:
-                raise ValueError(err)
-            k["label"] = label.strip()
-            k["scope"] = scope
-            k["layers"] = sorted(set(layers)) if scope == "layers" else []
-            if "enabled" in fields:
-                k["enabled"] = bool(fields["enabled"])
-            _save(data, path)
-            return dict(k)
+    with _RMW_LOCK:
+        data = load(path)
+        for k in data["keys"]:
+            if k.get("id") == kid:
+                label = fields.get("label", k["label"])
+                scope = fields.get("scope", k["scope"])
+                layers = fields.get("layers", k["layers"])
+                err = _validate(label, scope, layers)
+                if err:
+                    raise ValueError(err)
+                k["label"] = label.strip()
+                k["scope"] = scope
+                k["layers"] = sorted(set(layers)) if scope == "layers" else []
+                if "enabled" in fields:
+                    k["enabled"] = bool(fields["enabled"])
+                _save(data, path)
+                return dict(k)
     raise KeyError(kid)
 
 
@@ -141,6 +149,7 @@ def set_enabled(kid: str, enabled: bool, path: str | None = None) -> dict:
 
 
 def remove(kid: str, path: str | None = None) -> None:
-    data = load(path)
-    data["keys"] = [k for k in data["keys"] if k.get("id") != kid]
-    _save(data, path)
+    with _RMW_LOCK:
+        data = load(path)
+        data["keys"] = [k for k in data["keys"] if k.get("id") != kid]
+        _save(data, path)

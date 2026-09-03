@@ -1474,10 +1474,13 @@ class Handler(BaseHTTPRequestHandler):
     def _graphql_authz(self):
         """/admin/graphql extAuthz 门（2026-09-03，上游未修网关先行）：beta6 四实体无 ent
         policy + 两操作无 scope 校验（模式表与背景见 admin_api._GRAPHQL_* 注释）。正常查询
-        仅正则扫描零内省放行；命中受限模式才 Bearer 内省核系统 scope。fail-closed：body
-        缺失/超限/不可解码一律 403（超限网关侧 allowPartialMessage=false 已先拒，本端兜底
+        仅扫描零内省放行；命中受限模式才 Bearer 内省核系统 scope。fail-closed：body 缺失/
+        超限/非合法 JSON 一律 403（超限网关侧 allowPartialMessage=false 已先拒，本端兜底
         「危险字段推到截断点之后」的绕行）。GET 无法检查（extAuthz 子请求不带原始 query
-        string）且控制台 GraphQL 只走 POST，由 do_GET 分支直接 403。"""
+        string）且控制台 GraphQL 只走 POST，由 do_GET 分支直接 403。
+        扫描纪律（审计B 严重1）：先 json.loads 再用 graphql_strings 取解码后的字符串值
+        扫描——扫原始字节会被 JSON \\u 转义绕过（危险 gid 以转义形态隐身，axonhub 解码后
+        还原执行）。"""
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
@@ -1486,11 +1489,12 @@ class Handler(BaseHTTPRequestHandler):
             self._json(403, {"error": "graphql-authz requires a bounded request body"})
             return
         try:
-            text = self.rfile.read(length).decode("utf-8")
+            payload = json.loads(self.rfile.read(length))
         except Exception:
-            self._json(403, {"error": "graphql-authz body undecodable"})
+            self._json(403, {"error": "graphql-authz body not inspectable json"})
             return
-        required = admin_api.graphql_required_scopes(text)
+        required = sorted({scope for text in admin_api.graphql_strings(payload)
+                           for scope in admin_api.graphql_required_scopes(text)})
         if not required:
             self._json(200, {"ok": True})
             return
