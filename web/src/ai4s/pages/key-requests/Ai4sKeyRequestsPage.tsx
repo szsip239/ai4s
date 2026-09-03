@@ -11,9 +11,10 @@
  * 执行作用于申请人全部 enabled Key）。
  * 状态门幂等：仅 pending 行显示操作；已处理行的结果为终态（拒绝理由/执行摘要，绝无明文——
  * 非飞书申请人的明文只私信管理员本人，不落本页）。
- * issue #89：多项目隔离——列表跟随顶部项目切换器（X-Project-ID 头）按项目过滤，未选项目
- * 时空态引导；表格加「项目」列、同意弹窗摘要带项目名（存量申请无快照按 Default 显示）。
- * 点批不带项目头：执行落申请单记录的项目（与管理员当前项目解耦，切错项目不批错单）。
+ * issue #89：多项目隔离——表格带「项目」列、同意弹窗摘要带项目名（存量申请无快照按
+ * Default 显示）；点批不带项目头：执行落申请单记录的项目（切错项目不批错单）。
+ * 管理员聚合视图（#89 后续）：列表合并所有可见项目的申请，pending 置顶（新到旧）——
+ * 不再因停留在别的项目而漏看待审批；每项目一条 per-project 查询，shim 端零改动。
  * issue #91 P2-1：审批卡/降级群通知的链接带 ?project=<gid>，本页读 search 后在本人可见
  * 项目范围内切换 projectStore 选中项——管理员点开卡片即落在申请所属项目（不越权不报错）。
  * issue #128：新建申请的批准弹窗可改选目标项目（默认申请单项目快照），随 approve body 传
@@ -43,7 +44,7 @@ import { useMe } from '@/features/auth/data/auth';
 import { useMyProjects } from '@/features/projects/data/projects';
 import { useProjectStore, useSelectedProjectId } from '@/stores/projectStore';
 import { usePermissions } from '@/hooks/usePermissions';
-import { useAdminKeyRequests, useResolveKeyRequest, type AdminKeyRequest } from './api';
+import { useAllProjectKeyRequests, useResolveKeyRequest, type AdminKeyRequest } from './api';
 import { upgradeDetailLabel } from '../my-keys/api';
 
 /** 审批可选档位·新建申请（issue #81 全集）：与 shim key_requests.ALLOWED_TIERS 白名单双向同源，改动需两侧同步 */
@@ -65,8 +66,12 @@ function statusVariant(status: string): 'default' | 'secondary' | 'destructive' 
 
 export default function Ai4sKeyRequestsPage() {
   const { t } = useTranslation();
-  const projectId = useSelectedProjectId(); // issue #89：列表按管理员当前项目过滤
-  const query = useAdminKeyRequests(projectId);
+  const projectId = useSelectedProjectId(); // 点批弹窗默认项目回退用；列表本身不再跟随（见下）
+  // 管理员聚合视图：合并所有可见项目的申请（pending 置顶，带项目列），不再因停留在
+  // 别的项目而漏看待审批；每项目一条 per-project 查询，shim 端零改动
+  const { data: myProjects } = useMyProjects();
+  const projectIds = (myProjects ?? []).map((p) => p.id);
+  const query = useAllProjectKeyRequests(projectIds);
   const resolve = useResolveKeyRequest();
   // issue #91 P2-1：审批卡链接带 ?project=<gid>——gid 在本人可见项目列表内则切换选中项
   // （不越权、不报错），不在则忽略保持当前项目；只在 search 值/可见名单变化且与当前
@@ -90,10 +95,8 @@ export default function Ai4sKeyRequestsPage() {
   const [approveProjectId, setApproveProjectId] = useState('');
   const [rejectTarget, setRejectTarget] = useState<AdminKeyRequest | null>(null);
   const [reason, setReason] = useState('');
-  // issue #128：改选项目下拉数据源复用顶部项目切换器的 myProjects（本人可见项目）
-  const { data: myProjects } = useMyProjects();
 
-  const requests = query.data?.requests ?? [];
+  const requests = query.data ?? [];
 
   const doResolve = (id: string, action: 'approve' | 'reject', rejectReason = '', tier = '', projectOverride = '') => {
     resolve.mutate(
@@ -124,7 +127,9 @@ export default function Ai4sKeyRequestsPage() {
             <CardDescription>{t('ai4s.keyRequests.description')}</CardDescription>
           </CardHeader>
           <CardContent>
-            {!projectId ? (
+            {myProjects === undefined || query.isLoading ? (
+              <p className='py-10 text-center text-sm text-muted-foreground'>{t('common.loading', '加载中…')}</p>
+            ) : projectIds.length === 0 ? (
               <p className='py-10 text-center text-sm text-muted-foreground'>{t('ai4s.keyRequests.noProject')}</p>
             ) : query.isError ? (
               <Alert variant='destructive'>

@@ -8,7 +8,7 @@
  * issue #89：多项目隔离——列表带 X-Project-ID 头（管理员当前项目 gid），queryKey 以项目为维度；
  * projectId 为空时 enabled=false 不发请求；点批不带头（执行落申请单记录的项目）。
  */
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { apiRequest } from '@/lib/api-client';
 import type { KeyRequest } from '../my-keys/api';
 
@@ -33,6 +33,53 @@ export function useAdminKeyRequests(projectId: string | null) {
     retry: false,
     enabled: !!projectId,
     refetchInterval: 30_000, // 新申请异步到达（员工控制台提交），与巡检节奏一致
+  });
+}
+
+/**
+ * 管理员聚合视图：合并所有可见项目的申请（每项目一条 per-project 查询，复用上面的端点，
+ * shim 端零改动）。排序：pending 优先（新到旧），其余新到旧——管理员不再因停留在别的
+ * 项目而漏看待审批。id 去重（同一 gid 列表不会重复，防御性）。
+ */
+export function mergeAdminKeyRequests(lists: AdminKeyRequest[][]): AdminKeyRequest[] {
+  const seen = new Set<string>();
+  const merged: AdminKeyRequest[] = [];
+  for (const list of lists) {
+    for (const r of list) {
+      if (!seen.has(r.id)) {
+        seen.add(r.id);
+        merged.push(r);
+      }
+    }
+  }
+  const byTimeDesc = (a: AdminKeyRequest, b: AdminKeyRequest) =>
+    (b.createdAt || '').localeCompare(a.createdAt || '');
+  return [
+    ...merged.filter((r) => r.status === 'pending').sort(byTimeDesc),
+    ...merged.filter((r) => r.status !== 'pending').sort(byTimeDesc),
+  ];
+}
+
+export function useAllProjectKeyRequests(projectIds: string[]) {
+  return useQueries({
+    queries: projectIds.map((pid) => ({
+      queryKey: [...QK, pid],
+      queryFn: () =>
+        apiRequest<KeyRequestsResponse>('/dlp-admin/key-requests', {
+          requireAuth: true,
+          headers: { 'X-Project-ID': pid },
+        }),
+      retry: false,
+      refetchInterval: 30_000,
+    })),
+    combine: (results) => ({
+      // 部分项目失败不拖垮整页：全部失败才算 error，有数据的照常展示
+      data: mergeAdminKeyRequests(
+        results.filter((r) => r.isSuccess).map((r) => r.data?.requests ?? [])
+      ),
+      isLoading: results.some((r) => r.isLoading),
+      isError: results.length > 0 && results.every((r) => r.isError),
+    }),
   });
 }
 
