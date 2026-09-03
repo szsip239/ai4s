@@ -84,8 +84,8 @@
    "name": "secret-bypass: ghp_ 横线分隔(tamga)",
    "layer": "secrets",
    "content": "ghp_aaaa-bbbb-cccc-dddd-eeee-ffff-gggg-hhhh-iiii-jjjj-kkkk-llll",
-   "expect": "reject",
-   "note": "issue #22 归一化后已覆盖",
+   "expect": "pass",
+   "note": "issue #22 归一化曾覆盖；2026-09-03 secrets 族 shim_patterns 加数字断言后转为文档化绕过项（无数字长尾不再命中——换取 skills/ghost 等英文词误报消除；真 token 为长 base62，无数字概率约 0.2%）",
    "sensitive": "ghp_aaaa-bbbb-cccc-dddd-eeee"
   },
   {

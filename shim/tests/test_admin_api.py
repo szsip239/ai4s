@@ -1019,6 +1019,28 @@ class SecretBoundaryNormTest(unittest.TestCase):
             with self.subTest(text=text[:30]):
                 self.assertEqual(self._hits(text), [])
 
+    def test_sk_prefixed_english_words_pass(self):
+        """sk 开头英文词误报负例（2026-09-03 现网实证：用户 prompt 含 skills/workflows 等词，
+        归一化剔空格后 "skills and tools and workflows"→skillsandtoolsandworkflows 命中旧
+        openai_sk `sk(?:proj)?[A-Za-z0-9]{20,}`，同日误拦 60 次）。
+        修复：openai_sk/github_token/anthropic_sk 的 shim_patterns 尾部加数字断言
+        (?=[A-Za-z0-9]*\\d)——自然语言连写几乎不含数字；真 key 为长 base62，无数字概率
+        约 (52/62)^48 ≈ 0.02%（明示接受此收窄）。网关原文规则要字面 sk-/ghp_ 前缀，本无此洞。"""
+        mines = [
+            "skills and tools and workflows are useful for agents",
+            "tell me about skills required for this job and shared responsibilities across teams",
+            "ghost protocol overview and hidden sections reference guide",   # gho 前缀（github_token 同洞）
+            "the ghs abbreviation list and handbook sections for reference",  # ghs 前缀
+        ]
+        for text in mines:
+            with self.subTest(text=text[:30]):
+                self.assertEqual(self._hits(text), [])
+
+    def test_digitless_long_tail_no_longer_hits(self):
+        """收窄钉档：尾部 20+ 位纯字母无数字不再命中——含 24 个 x 的文档占位串同此豁免。"""
+        self.assertEqual(self._hits("sk-" + "x" * 24), [])
+        self.assertEqual(self._hits("sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), [])
+
     def test_clean_keys_still_hit(self):
         """干净形态真 key 检出不变：openai sk-/sk-proj、github ghp_/gho_/github_pat_、anthropic sk-ant 归一化命中。"""
         cases = [
