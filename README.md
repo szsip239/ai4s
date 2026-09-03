@@ -98,10 +98,6 @@ cd web && npx tsc --noEmit && npm run test:unit
 
 纪律：DLP 所有配置（词表/识别器/格式规则/EDM 语料/开关阈值）唯一写入口 = shim admin API `/dlp-admin/*`，控制台「脱敏规则」页是其前端；不直改挂载目录下的 JSON。
 
-## 文档
-
-开发过程文档（ADR、接口契约、调研评测、agents 协作约定等）不随仓库发布，仅保留在维护者本地。仓库内保留 `docs/architecture/`（运行时架构图）与 `docs/showcase/`（控制台预览图）供本 README 引用。
-
 ## 许可证
 
 GPL-3.0，见 [LICENSE](LICENSE)。`web/` 内含 vendor 化的第三方代码（shadcn-admin 与 axonhub 控制台，MIT License），其归属声明保留于 `web/NOTICE`、`web/UPSTREAM`。

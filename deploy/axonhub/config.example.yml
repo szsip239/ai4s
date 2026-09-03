@@ -8,9 +8,11 @@ oidc:
     - id: casdoor
       name: casdoor
       display_name: Casdoor SSO（飞书）
-      # Casdoor 全局 issuer（= casdoor app.conf 的 origin）。必须用 LAN IP，
-      # host.docker.internal 从浏览器/宿主机不通（仅容器内通）。
-      issuer_url: http://192.168.31.x:8000
+      # Casdoor 全局 issuer（= casdoor app.conf 的 origin），必须让「浏览器」与「axonhub 容器」
+      # 用同一个 URL 可达。casdoor 8000 仅绑 127.0.0.1（2026-09-03 起），纯 localhost 下
+      # 浏览器通、容器内不通——因此 SSO 需走域名 + 反代（或自行加 extra_hosts/hosts 映射）。
+      # 不用 SSO 时本地账号登录即可，无需 nginx/域名。
+      issuer_url: https://<sso-domain>
       client_id: REPLACE_WITH_CASDOOR_APP_CLIENT_ID
       client_secret: REPLACE_WITH_CASDOOR_APP_CLIENT_SECRET
       jit_enabled: true
