@@ -10,7 +10,6 @@ import {
   IconUsersGroup,
   IconDatabase,
   IconSettings,
-  IconClipboardCheck,
   IconArrowsShuffle,
 } from '@tabler/icons-react';
 
@@ -25,7 +24,6 @@ export const AI4S_NAV_ITEMS = [
   { labelKey: 'sidebar.items.myKeys', href: '/project/my-keys', match: ['/project/my-keys'], icon: IconId },
   { labelKey: 'sidebar.items.accessManagement', href: '/channels', match: ['/channels', '/models', '/project/playground'], icon: IconRoute },
   { labelKey: 'ai4s.topnav.promptProtectionRules', href: '/prompt-protection-rules', match: ['/prompt-protection-rules'], icon: IconShield },
-  { labelKey: 'sidebar.items.keyRequests', href: '/key-requests', match: ['/key-requests'], icon: IconClipboardCheck },
   { labelKey: 'sidebar.items.smartRouting', href: '/smart-routing', match: ['/smart-routing'], icon: IconArrowsShuffle },
   { labelKey: 'sidebar.items.observability', href: '/project/requests', match: ['/project/requests', '/project/usage-stats', '/project/threads'], icon: IconFileText },
   { labelKey: 'sidebar.items.projects', href: '/projects', match: ['/projects'], icon: IconFolders },

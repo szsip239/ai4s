@@ -10,7 +10,6 @@ import {
   IconDatabase,
   IconAi,
   IconNote,
-  IconClipboardCheck,
   IconArrowsShuffle,
 } from '@tabler/icons-react';
 import { Command } from 'lucide-react';
@@ -65,7 +64,8 @@ export function useSidebarData(): SidebarData {
   // 被合并路由（/models、/roles、/project/usage-stats、/project/threads、
   // /project/roles）保持可达，经各页 PageTabs 切换；
   // issue #65 人员域再归并：项目「成员」并入管理组「人员」（/users 入口）；
-  // 后续 /project/users 整页删除——项目成员管理（加入项目/角色/scopes）收归全局 /users 页内对话框）
+  // 后续 /project/users 整页删除——项目成员管理（加入项目/角色/scopes）收归全局 /users 页内对话框；
+  // issue #134：Key 审批并入 Key 管理页内 Tab，admin 组不再单设入口（/key-requests 路由保留可达））
   const rawNavGroups: NavGroup[] = [
     {
       title: t('sidebar.groups.admin'),
@@ -80,12 +80,6 @@ export function useSidebarData(): SidebarData {
           title: t('sidebar.items.promptProtectionRules'),
           url: '/prompt-protection-rules',
           icon: IconShield,
-        } as NavLink,
-        {
-          // Key 审批（issue #79）：管理员点批页（员工发起端在项目组「我的 Key」）
-          title: t('sidebar.items.keyRequests'),
-          url: '/key-requests',
-          icon: IconClipboardCheck,
         } as NavLink,
         {
           // 智能路由（issue #120）：管理员一级入口（routing 节配置 + 决策日志观测）

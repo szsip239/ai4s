@@ -14,6 +14,7 @@
   "apikeys.type.personal": "Personal",
   "apikeys.type.noauth": "No Auth",
   "apikeys.tabs.all": "All",
+  "apikeys.tabs.keyList": "Key List",
   "apikeys.status.enabled": "Enabled",
   "apikeys.status.disabled": "Disabled",
   "apikeys.status.archived": "Archived",

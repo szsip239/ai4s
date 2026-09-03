@@ -6,9 +6,13 @@ import { usePaginationSearch } from '@/hooks/use-pagination-search';
 import { usePermissions } from '@/hooks/usePermissions';
 import { type DateTimeRangeValue } from '@/utils/date-range';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Badge } from '@/components/ui/badge';
 import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
 import { Ai4sBatchTierDialog } from '@/ai4s/apikeys/Ai4sBatchTierDialog';
+import { Ai4sKeyRequestsPanel } from '@/ai4s/pages/key-requests/Ai4sKeyRequestsPage';
+import { usePendingKeyRequestCount } from '@/ai4s/pages/key-requests/api';
+import { useMyProjects } from '@/features/projects/data/projects';
 import { createColumns } from './components/apikeys-columns';
 import { ApiKeysDialogs } from './components/apikeys-dialogs';
 import { ApiKeysPrimaryButtons } from './components/apikeys-primary-buttons';
@@ -23,6 +27,35 @@ type ApiKeyTabKey = ApiKeyType | 'all';
 // 分类由表格「类型」列承载）。activeTab 状态与 whereClause 过滤逻辑保留、默认停 'all'；
 // 恢复 Tab 条时把开关改回 true 即可。
 const SHOW_TYPE_TABS = false;
+
+// issue #134 方案 A：Key 审批并入 Key 管理——单路由页内 Tab「Key 列表 | Key 审批」。
+// 待审批 tab 仅 read_channels（system 级，与 /key-requests 路由 RouteGuard 同门槛）可见；
+// tab 标签带 pending 计数 badge（共享审批聚合查询，30s 轮询，tab 未打开时数字也在）。
+type ApiKeysPageTab = 'list' | 'approvals';
+
+/** 页内 Tab 栏（issue #134）：label 复用 apikeys.tabs.keyList / sidebar.items.keyRequests 既有键；
+ * 有待审批单时数字 badge 在标签文字前（2026-09-03 owner 口径） */
+function ApiKeysPageTabs({ value, onChange }: { value: ApiKeysPageTab; onChange: (tab: ApiKeysPageTab) => void }) {
+  const { t } = useTranslation();
+  const { data: myProjects } = useMyProjects();
+  const pendingCount = usePendingKeyRequestCount((myProjects ?? []).map((p) => p.id));
+
+  return (
+    <Tabs value={value} onValueChange={(v) => onChange(v as ApiKeysPageTab)} className='mb-4 flex-shrink-0'>
+      <TabsList>
+        <TabsTrigger value='list'>{t('apikeys.tabs.keyList')}</TabsTrigger>
+        <TabsTrigger value='approvals'>
+          {pendingCount > 0 && (
+            <Badge variant='destructive' className='mr-1.5 rounded-full px-1.5 py-0 text-xs'>
+              {pendingCount}
+            </Badge>
+          )}
+          {t('sidebar.items.keyRequests')}
+        </TabsTrigger>
+      </TabsList>
+    </Tabs>
+  );
+}
 
 const DEFAULT_SORTING: SortingState = [{ id: 'createdAt', desc: true }];
 const SORTABLE_COLUMN_IDS = new Set(['name', 'createdAt', 'updatedAt']);
@@ -258,6 +291,11 @@ function ApiKeysContent() {
 
 export default function ApiKeysManagement() {
   const { t } = useTranslation();
+  const { hasSystemScope } = usePermissions();
+  const [pageTab, setPageTab] = useState<ApiKeysPageTab>('list');
+  // issue #134：待审批 tab 门槛与 /key-requests 路由一致（read_channels，system 级）；
+  // 无此 scope 的用户不渲染 Tab 栏，只见 Key 列表（不报错）
+  const canViewApprovals = hasSystemScope('read_channels');
 
   return (
     <ApiKeysProvider>
@@ -276,7 +314,15 @@ export default function ApiKeysManagement() {
       </Header>
 
       <Main fixed>
-        <ApiKeysContent />
+        {canViewApprovals && <ApiKeysPageTabs value={pageTab} onChange={setPageTab} />}
+        {canViewApprovals && pageTab === 'approvals' ? (
+          // issue #134：内嵌审批表格区（复用 /key-requests 页同一份 Panel，保留 30s 轮询与审批操作）
+          <div className='flex min-h-0 flex-1 flex-col overflow-auto'>
+            <Ai4sKeyRequestsPanel />
+          </div>
+        ) : (
+          <ApiKeysContent />
+        )}
       </Main>
       <ApiKeysDialogs />
     </ApiKeysProvider>

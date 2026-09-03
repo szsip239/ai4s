@@ -19,6 +19,8 @@
  * 项目范围内切换 projectStore 选中项——管理员点开卡片即落在申请所属项目（不越权不报错）。
  * issue #128：新建申请的批准弹窗可改选目标项目（默认申请单项目快照），随 approve body 传
  * project_override（gid；空串=按申请单项目原样执行）；记录带 projectNameOverride 时项目列优先展示。
+ * issue #134 方案 A：申请单表格区抽出为 Ai4sKeyRequestsPanel（无 Header/Main/Card 壳），
+ * 供本独立页与 Key 管理页「待审批」Tab 复用；?project= 深链切换逻辑留在独立页（嵌入态无此 search）。
  */
 import { useEffect, useState } from 'react';
 import { format } from 'date-fns';
@@ -64,7 +66,11 @@ function statusVariant(status: string): 'default' | 'secondary' | 'destructive' 
   return 'outline';
 }
 
-export default function Ai4sKeyRequestsPage() {
+/**
+ * 申请单表格区（issue #134 可嵌入形态）：聚合列表（pending 置顶）+ 同意/拒绝弹窗，
+ * 保留 30s 轮询与审批操作；不带独立页壳（Header/Main/Card），供 Key 管理页「待审批」Tab 内嵌复用。
+ */
+export function Ai4sKeyRequestsPanel() {
   const { t } = useTranslation();
   const projectId = useSelectedProjectId(); // 点批弹窗默认项目回退用；列表本身不再跟随（见下）
   // 管理员聚合视图：合并所有可见项目的申请（pending 置顶，带项目列），不再因停留在
@@ -73,19 +79,6 @@ export default function Ai4sKeyRequestsPage() {
   const projectIds = (myProjects ?? []).map((p) => p.id);
   const query = useAllProjectKeyRequests(projectIds);
   const resolve = useResolveKeyRequest();
-  // issue #91 P2-1：审批卡链接带 ?project=<gid>——gid 在本人可见项目列表内则切换选中项
-  // （不越权、不报错），不在则忽略保持当前项目；只在 search 值/可见名单变化且与当前
-  // 选中不同时才切（防循环）
-  const { project: searchProject } = useSearch({ from: '/_authenticated/key-requests/' });
-  const { data: me } = useMe();
-  const setSelectedProjectId = useProjectStore((s) => s.setSelectedProjectId);
-  useEffect(() => {
-    if (!searchProject) return;
-    const visible = me?.projects?.some((p) => p.projectID === searchProject);
-    if (visible && useProjectStore.getState().selectedProjectId !== searchProject) {
-      setSelectedProjectId(searchProject);
-    }
-  }, [searchProject, me?.projects, setSelectedProjectId]);
   // 点批是写操作（shim 端 write_channels 鉴权）：只读管理员可见列表但按钮禁用，对齐 channels 等 admin 页惯例
   const { channelPermissions } = usePermissions();
   const canResolve = channelPermissions.canWrite;
@@ -116,6 +109,199 @@ export default function Ai4sKeyRequestsPage() {
 
   return (
     <>
+      {myProjects === undefined || query.isLoading ? (
+        <p className='py-10 text-center text-sm text-muted-foreground'>{t('common.loading', '加载中…')}</p>
+      ) : projectIds.length === 0 ? (
+        <p className='py-10 text-center text-sm text-muted-foreground'>{t('ai4s.keyRequests.noProject')}</p>
+      ) : query.isError ? (
+        <Alert variant='destructive'>
+          <AlertDescription>{t('ai4s.keyRequests.loadError')}</AlertDescription>
+        </Alert>
+      ) : requests.length === 0 ? (
+        <p className='py-10 text-center text-sm text-muted-foreground'>{t('ai4s.keyRequests.empty')}</p>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>{t('ai4s.keyRequests.columns.applicant')}</TableHead>
+              <TableHead>{t('ai4s.keyRequests.columns.kind')}</TableHead>
+              <TableHead>{t('ai4s.keyRequests.columns.detail')}</TableHead>
+              <TableHead>{t('ai4s.keyRequests.columns.project')}</TableHead>
+              <TableHead>{t('ai4s.keyRequests.columns.createdAt')}</TableHead>
+              <TableHead>{t('ai4s.keyRequests.columns.status')}</TableHead>
+              <TableHead>{t('ai4s.keyRequests.columns.result')}</TableHead>
+              <TableHead>{t('ai4s.keyRequests.columns.actions')}</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {requests.map((r) => (
+              <TableRow key={r.id}>
+                <TableCell className='font-medium'>{r.applicant?.email || '—'}</TableCell>
+                <TableCell>{t(`ai4s.keyRequests.kind.${r.kind}`)}</TableCell>
+                <TableCell className='max-w-48 truncate text-muted-foreground'>
+                  {/* issue #86：提额申请显示所选 Key（名称快照优先，fail-open 回退 id）；存量申请回退只显示目标档 */}
+                  {r.kind === 'new' ? r.purpose : (upgradeDetailLabel(r) ?? r.tier)}
+                </TableCell>
+                {/* issue #89：项目名快照；存量申请无字段按 Default 显示（与 shim 过滤/执行同口径）。
+                    issue #128：批准改选过项目的记录优先显示 override 后的项目名 */}
+                <TableCell className='text-muted-foreground'>{r.projectNameOverride || r.projectName || 'Default'}</TableCell>
+                <TableCell className='text-muted-foreground'>
+                  {r.createdAt ? format(new Date(r.createdAt), 'yyyy-MM-dd HH:mm') : '—'}
+                </TableCell>
+                <TableCell>
+                  <Badge variant={statusVariant(r.status)}>
+                    {t(`ai4s.keyRequests.status.${r.status}`, r.status)}
+                  </Badge>
+                </TableCell>
+                <TableCell className='max-w-64 truncate text-muted-foreground' title={r.result || ''}>
+                  {r.result || '—'}
+                </TableCell>
+                <TableCell>
+                  {r.status === 'pending' && (
+                    <div className='flex gap-2'>
+                      <Button
+                        size='sm'
+                        disabled={!canResolve}
+                        onClick={() => {
+                          setApproveTarget(r);
+                          setApproveTier(defaultApproveTier(r));
+                          // issue #128：默认选中申请单项目快照；存量申请无快照回退当前选中项目
+                          setApproveProjectId(r.projectId || projectId || '');
+                        }}
+                      >
+                        {t('ai4s.keyRequests.approve')}
+                      </Button>
+                      <Button size='sm' variant='outline' disabled={!canResolve} onClick={() => setRejectTarget(r)}>
+                        {t('ai4s.keyRequests.reject')}
+                      </Button>
+                    </div>
+                  )}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
+
+      <AlertDialog open={approveTarget !== null} onOpenChange={(open) => !open && setApproveTarget(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{t('ai4s.keyRequests.approveConfirmTitle')}</AlertDialogTitle>
+            <AlertDialogDescription>
+              {t('ai4s.keyRequests.approveConfirmDesc')}
+              {approveTarget && (
+                <span className='mt-2 block'>
+                  {approveTarget.applicant?.email} · {t(`ai4s.keyRequests.kind.${approveTarget.kind}`)} ·{' '}
+                  {approveTarget.kind === 'new' ? approveTarget.purpose : (upgradeDetailLabel(approveTarget) ?? approveTarget.tier)} ·{' '}
+                  {approveTarget.projectName || 'Default'}
+                </span>
+              )}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {/* issue #81：批准时可选生效档位（默认新建=体验档/提额=所求档），随 approve body 传 shim */}
+          <div className='flex items-center gap-3'>
+            <span className='text-sm text-muted-foreground'>{t('ai4s.keyRequests.approveTierLabel')}</span>
+            <Select value={approveTier} onValueChange={setApproveTier}>
+              <SelectTrigger className='w-40'>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {/* issue #85：提额申请档位收窄为标准/高档（shim resolve 同收窄，双保险）；新建仍全集 */}
+                {(approveTarget?.kind === 'upgrade' ? UPGRADE_TIERS : APPROVE_TIERS).map((tier) => (
+                  <SelectItem key={tier} value={tier}>
+                    {tier}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          {/* issue #128：新建申请可改选目标项目（默认申请单项目快照），随 approve body 传 project_override */}
+          {approveTarget?.kind === 'new' && (
+            <div className='flex items-center gap-3'>
+              <span className='text-sm text-muted-foreground'>{t('ai4s.keyRequests.approveProjectLabel')}</span>
+              <Select value={approveProjectId} onValueChange={setApproveProjectId}>
+                <SelectTrigger className='w-40'>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {(myProjects ?? []).map((p) => (
+                    <SelectItem key={p.id} value={p.id}>
+                      {p.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
+          {approveTarget?.kind === 'upgrade' && (
+            <p className='text-sm text-muted-foreground'>{t('ai4s.keyRequests.approveUpgradeNote')}</p>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel>{t('common.cancel', '取消')}</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={resolve.isPending}
+              onClick={() =>
+                approveTarget &&
+                doResolve(approveTarget.id, 'approve', '', approveTier, approveTarget.kind === 'new' ? approveProjectId : '')
+              }
+            >
+              {t('ai4s.keyRequests.approve')}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <Dialog open={rejectTarget !== null} onOpenChange={(open) => !open && (setRejectTarget(null), setReason(''))}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t('ai4s.keyRequests.rejectTitle')}</DialogTitle>
+            <DialogDescription>
+              {rejectTarget?.applicant?.email} · {rejectTarget && t(`ai4s.keyRequests.kind.${rejectTarget.kind}`)}
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            placeholder={t('ai4s.keyRequests.rejectReasonPlaceholder')}
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            rows={3}
+            maxLength={200}
+          />
+          <DialogFooter>
+            <Button variant='outline' onClick={() => (setRejectTarget(null), setReason(''))}>
+              {t('common.cancel', '取消')}
+            </Button>
+            <Button
+              variant='destructive'
+              disabled={resolve.isPending}
+              onClick={() => rejectTarget && doResolve(rejectTarget.id, 'reject', reason)}
+            >
+              {t('ai4s.keyRequests.reject')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+export default function Ai4sKeyRequestsPage() {
+  const { t } = useTranslation();
+  // issue #91 P2-1：审批卡链接带 ?project=<gid>——gid 在本人可见项目列表内则切换选中项
+  // （不越权、不报错），不在则忽略保持当前项目；只在 search 值/可见名单变化且与当前
+  // 选中不同时才切（防循环）。仅独立页携带此 search，留在页壳层（嵌入态无此 search）
+  const { project: searchProject } = useSearch({ from: '/_authenticated/key-requests/' });
+  const { data: me } = useMe();
+  const setSelectedProjectId = useProjectStore((s) => s.setSelectedProjectId);
+  useEffect(() => {
+    if (!searchProject) return;
+    const visible = me?.projects?.some((p) => p.projectID === searchProject);
+    if (visible && useProjectStore.getState().selectedProjectId !== searchProject) {
+      setSelectedProjectId(searchProject);
+    }
+  }, [searchProject, me?.projects, setSelectedProjectId]);
+
+  return (
+    <>
       <Header />
       <Main>
         <Card>
@@ -127,179 +313,10 @@ export default function Ai4sKeyRequestsPage() {
             <CardDescription>{t('ai4s.keyRequests.description')}</CardDescription>
           </CardHeader>
           <CardContent>
-            {myProjects === undefined || query.isLoading ? (
-              <p className='py-10 text-center text-sm text-muted-foreground'>{t('common.loading', '加载中…')}</p>
-            ) : projectIds.length === 0 ? (
-              <p className='py-10 text-center text-sm text-muted-foreground'>{t('ai4s.keyRequests.noProject')}</p>
-            ) : query.isError ? (
-              <Alert variant='destructive'>
-                <AlertDescription>{t('ai4s.keyRequests.loadError')}</AlertDescription>
-              </Alert>
-            ) : requests.length === 0 ? (
-              <p className='py-10 text-center text-sm text-muted-foreground'>{t('ai4s.keyRequests.empty')}</p>
-            ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>{t('ai4s.keyRequests.columns.applicant')}</TableHead>
-                    <TableHead>{t('ai4s.keyRequests.columns.kind')}</TableHead>
-                    <TableHead>{t('ai4s.keyRequests.columns.detail')}</TableHead>
-                    <TableHead>{t('ai4s.keyRequests.columns.project')}</TableHead>
-                    <TableHead>{t('ai4s.keyRequests.columns.createdAt')}</TableHead>
-                    <TableHead>{t('ai4s.keyRequests.columns.status')}</TableHead>
-                    <TableHead>{t('ai4s.keyRequests.columns.result')}</TableHead>
-                    <TableHead>{t('ai4s.keyRequests.columns.actions')}</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {requests.map((r) => (
-                    <TableRow key={r.id}>
-                      <TableCell className='font-medium'>{r.applicant?.email || '—'}</TableCell>
-                      <TableCell>{t(`ai4s.keyRequests.kind.${r.kind}`)}</TableCell>
-                      <TableCell className='max-w-48 truncate text-muted-foreground'>
-                        {/* issue #86：提额申请显示所选 Key（名称快照优先，fail-open 回退 id）；存量申请回退只显示目标档 */}
-                        {r.kind === 'new' ? r.purpose : (upgradeDetailLabel(r) ?? r.tier)}
-                      </TableCell>
-                      {/* issue #89：项目名快照；存量申请无字段按 Default 显示（与 shim 过滤/执行同口径）。
-                          issue #128：批准改选过项目的记录优先显示 override 后的项目名 */}
-                      <TableCell className='text-muted-foreground'>{r.projectNameOverride || r.projectName || 'Default'}</TableCell>
-                      <TableCell className='text-muted-foreground'>
-                        {r.createdAt ? format(new Date(r.createdAt), 'yyyy-MM-dd HH:mm') : '—'}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={statusVariant(r.status)}>
-                          {t(`ai4s.keyRequests.status.${r.status}`, r.status)}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className='max-w-64 truncate text-muted-foreground' title={r.result || ''}>
-                        {r.result || '—'}
-                      </TableCell>
-                      <TableCell>
-                        {r.status === 'pending' && (
-                          <div className='flex gap-2'>
-                            <Button
-                              size='sm'
-                              disabled={!canResolve}
-                              onClick={() => {
-                                setApproveTarget(r);
-                                setApproveTier(defaultApproveTier(r));
-                                // issue #128：默认选中申请单项目快照；存量申请无快照回退当前选中项目
-                                setApproveProjectId(r.projectId || projectId || '');
-                              }}
-                            >
-                              {t('ai4s.keyRequests.approve')}
-                            </Button>
-                            <Button size='sm' variant='outline' disabled={!canResolve} onClick={() => setRejectTarget(r)}>
-                              {t('ai4s.keyRequests.reject')}
-                            </Button>
-                          </div>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            )}
+            {/* issue #134：独立页与 Key 管理页「待审批」Tab 共用同一份表格区 */}
+            <Ai4sKeyRequestsPanel />
           </CardContent>
         </Card>
-
-        <AlertDialog open={approveTarget !== null} onOpenChange={(open) => !open && setApproveTarget(null)}>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>{t('ai4s.keyRequests.approveConfirmTitle')}</AlertDialogTitle>
-              <AlertDialogDescription>
-                {t('ai4s.keyRequests.approveConfirmDesc')}
-                {approveTarget && (
-                  <span className='mt-2 block'>
-                    {approveTarget.applicant?.email} · {t(`ai4s.keyRequests.kind.${approveTarget.kind}`)} ·{' '}
-                    {approveTarget.kind === 'new' ? approveTarget.purpose : (upgradeDetailLabel(approveTarget) ?? approveTarget.tier)} ·{' '}
-                    {approveTarget.projectName || 'Default'}
-                  </span>
-                )}
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            {/* issue #81：批准时可选生效档位（默认新建=体验档/提额=所求档），随 approve body 传 shim */}
-            <div className='flex items-center gap-3'>
-              <span className='text-sm text-muted-foreground'>{t('ai4s.keyRequests.approveTierLabel')}</span>
-              <Select value={approveTier} onValueChange={setApproveTier}>
-                <SelectTrigger className='w-40'>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {/* issue #85：提额申请档位收窄为标准/高档（shim resolve 同收窄，双保险）；新建仍全集 */}
-                  {(approveTarget?.kind === 'upgrade' ? UPGRADE_TIERS : APPROVE_TIERS).map((tier) => (
-                    <SelectItem key={tier} value={tier}>
-                      {tier}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            {/* issue #128：新建申请可改选目标项目（默认申请单项目快照），随 approve body 传 project_override */}
-            {approveTarget?.kind === 'new' && (
-              <div className='flex items-center gap-3'>
-                <span className='text-sm text-muted-foreground'>{t('ai4s.keyRequests.approveProjectLabel')}</span>
-                <Select value={approveProjectId} onValueChange={setApproveProjectId}>
-                  <SelectTrigger className='w-40'>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(myProjects ?? []).map((p) => (
-                      <SelectItem key={p.id} value={p.id}>
-                        {p.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-            {approveTarget?.kind === 'upgrade' && (
-              <p className='text-sm text-muted-foreground'>{t('ai4s.keyRequests.approveUpgradeNote')}</p>
-            )}
-            <AlertDialogFooter>
-              <AlertDialogCancel>{t('common.cancel', '取消')}</AlertDialogCancel>
-              <AlertDialogAction
-                disabled={resolve.isPending}
-                onClick={() =>
-                  approveTarget &&
-                  doResolve(approveTarget.id, 'approve', '', approveTier, approveTarget.kind === 'new' ? approveProjectId : '')
-                }
-              >
-                {t('ai4s.keyRequests.approve')}
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-
-        <Dialog open={rejectTarget !== null} onOpenChange={(open) => !open && (setRejectTarget(null), setReason(''))}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>{t('ai4s.keyRequests.rejectTitle')}</DialogTitle>
-              <DialogDescription>
-                {rejectTarget?.applicant?.email} · {rejectTarget && t(`ai4s.keyRequests.kind.${rejectTarget.kind}`)}
-              </DialogDescription>
-            </DialogHeader>
-            <Textarea
-              placeholder={t('ai4s.keyRequests.rejectReasonPlaceholder')}
-              value={reason}
-              onChange={(e) => setReason(e.target.value)}
-              rows={3}
-              maxLength={200}
-            />
-            <DialogFooter>
-              <Button variant='outline' onClick={() => (setRejectTarget(null), setReason(''))}>
-                {t('common.cancel', '取消')}
-              </Button>
-              <Button
-                variant='destructive'
-                disabled={resolve.isPending}
-                onClick={() => rejectTarget && doResolve(rejectTarget.id, 'reject', reason)}
-              >
-                {t('ai4s.keyRequests.reject')}
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
       </Main>
     </>
   );

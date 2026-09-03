@@ -83,6 +83,15 @@ export function useAllProjectKeyRequests(projectIds: string[]) {
   });
 }
 
+/**
+ * issue #134：待审批计数（Key 管理页「待审批」Tab 角标用）——与列表同一聚合查询
+ * （queryKey 同源，共享缓存与 30s 轮询）；挂在 Tab 层调用，Tab 未打开时数字也在。
+ */
+export function usePendingKeyRequestCount(projectIds: string[]): number {
+  const query = useAllProjectKeyRequests(projectIds);
+  return (query.data ?? []).filter((r) => r.status === 'pending').length;
+}
+
 export function useResolveKeyRequest() {
   const qc = useQueryClient();
   return useMutation({
