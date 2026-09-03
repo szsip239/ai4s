@@ -6,7 +6,6 @@ import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { useTranslation } from 'react-i18next';
 import { IconAlertTriangle } from '@tabler/icons-react';
-import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Form, FormControl, FormDescription, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
@@ -19,6 +18,7 @@ import { useProjectsContext } from '../context/projects-context';
 import { useCreateProject, useUpdateProject, useArchiveProject, useActivateProject, useDeleteProject, useUpdateProjectProfiles } from '../data/projects';
 import { createProjectInputSchema, updateProjectInputSchema, type UpdateProjectProfilesInput } from '../data/schema';
 import { ProjectProfilesDialog } from './project-profiles-dialog';
+import { ProjectMembersDialog } from './project-members-dialog';
 
 // Create Project Dialog
 export function CreateProjectDialog() {
@@ -39,7 +39,7 @@ export function CreateProjectDialog() {
       await createProject.mutateAsync(values);
       setIsCreateDialogOpen(false);
       form.reset();
-    } catch (error) {
+    } catch (_error) {
       // Error is handled by the mutation
     }
   };
@@ -140,7 +140,7 @@ export function EditProjectDialog() {
     try {
       await updateProject.mutateAsync({ id: editingProject.id, input: values });
       setEditingProject(null);
-    } catch (error) {
+    } catch (_error) {
       // Error is handled by the mutation
     }
   };
@@ -226,7 +226,7 @@ export function ArchiveProjectDialog() {
     try {
       await archiveProject.mutateAsync(archivingProject.id);
       setArchivingProject(null);
-    } catch (error) {
+    } catch (_error) {
       // Error is handled by the mutation
     }
   };
@@ -258,7 +258,7 @@ export function ActivateProjectDialog() {
     try {
       await activateProject.mutateAsync(activatingProject.id);
       setActivatingProject(null);
-    } catch (error) {
+    } catch (_error) {
       // Error is handled by the mutation
     }
   };
@@ -291,7 +291,7 @@ export function DeleteProjectDialog() {
       await deleteProject.mutateAsync(deletingProject.id);
       setDeletingProject(null);
       setValue('');
-    } catch (error) {
+    } catch (_error) {
       // Error is handled by the mutation
     }
   };
@@ -385,6 +385,8 @@ export function ProjectsDialogs() {
       <ActivateProjectDialog />
       <DeleteProjectDialog />
       <ProjectProfilesDialogWrapper />
+      {/* issue #135：项目成员弹窗 */}
+      <ProjectMembersDialog />
     </>
   );
 }

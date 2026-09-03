@@ -57,5 +57,8 @@
   "projects.profiles.validation.nameRequired": "配置名称不能为空",
   "projects.profiles.validation.atLeastOneProfile": "至少需要一个配置",
   "projects.profiles.errors.updateFailed": "更新项目配置失败",
-  "projects.profiles.messages.updateSuccess": "项目配置已更新"
+  "projects.profiles.messages.updateSuccess": "项目配置已更新",
+  "projects.members.title": "成员",
+  "projects.members.description": "项目 {{name}} 的成员与权限。",
+  "projects.members.empty": "该项目暂无成员"
 }

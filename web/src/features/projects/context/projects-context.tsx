@@ -12,6 +12,9 @@ interface ProjectsContextType {
   setDeletingProject: (project: Project | null) => void;
   profilesProject: Project | null;
   setProfilesProject: (project: Project | null) => void;
+  // issue #135：项目页行操作「成员」弹窗的目标项目
+  membersProject: Project | null;
+  setMembersProject: (project: Project | null) => void;
   isCreateDialogOpen: boolean;
   setIsCreateDialogOpen: (open: boolean) => void;
 }
@@ -36,6 +39,7 @@ export default function ProjectsProvider({ children }: ProjectsProviderProps) {
   const [activatingProject, setActivatingProject] = useState<Project | null>(null);
   const [deletingProject, setDeletingProject] = useState<Project | null>(null);
   const [profilesProject, setProfilesProject] = useState<Project | null>(null);
+  const [membersProject, setMembersProject] = useState<Project | null>(null);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
 
   return (
@@ -51,6 +55,8 @@ export default function ProjectsProvider({ children }: ProjectsProviderProps) {
         setDeletingProject,
         profilesProject,
         setProfilesProject,
+        membersProject,
+        setMembersProject,
         isCreateDialogOpen,
         setIsCreateDialogOpen,
       }}

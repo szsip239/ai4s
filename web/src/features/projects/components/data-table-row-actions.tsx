@@ -1,7 +1,7 @@
 import React from 'react';
 import { DotsHorizontalIcon } from '@radix-ui/react-icons';
 import { Row } from '@tanstack/react-table';
-import { IconEdit, IconSettings, IconTrash } from '@tabler/icons-react';
+import { IconEdit, IconSettings, IconTrash, IconUsersGroup } from '@tabler/icons-react';
 import { useTranslation } from 'react-i18next';
 import { usePermissions } from '@/hooks/usePermissions';
 import { Button } from '@/components/ui/button';
@@ -22,7 +22,7 @@ interface DataTableRowActionsProps {
 export function DataTableRowActions({ row }: DataTableRowActionsProps) {
   const { t } = useTranslation();
   const project = row.original;
-  const { setEditingProject, setArchivingProject, setActivatingProject, setDeletingProject, setProfilesProject } = useProjectsContext();
+  const { setEditingProject, setArchivingProject, setActivatingProject, setDeletingProject, setProfilesProject, setMembersProject } = useProjectsContext();
   const { projectPermissions } = usePermissions();
   const [open, setOpen] = React.useState(false);
 
@@ -34,6 +34,12 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
   const handleProfiles = () => {
     setOpen(false);
     setTimeout(() => setProfilesProject(project), 0);
+  };
+
+  // issue #135：项目成员弹窗入口
+  const handleMembers = () => {
+    setOpen(false);
+    setTimeout(() => setMembersProject(project), 0);
   };
 
   const handleEdit = () => {
@@ -80,6 +86,14 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
           <DropdownMenuItem onClick={handleProfiles}>
             <IconSettings className='mr-2 h-4 w-4' />
             {t('projects.profiles.title')}
+          </DropdownMenuItem>
+        )}
+
+        {/* Members - requires write permission (issue #135) */}
+        {projectPermissions.canWrite && (
+          <DropdownMenuItem onClick={handleMembers}>
+            <IconUsersGroup className='mr-2 h-4 w-4' />
+            {t('projects.members.title')}
           </DropdownMenuItem>
         )}
 

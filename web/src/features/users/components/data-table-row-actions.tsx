@@ -71,7 +71,7 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
             </DropdownMenuItem>
           )}
 
-          {/* Add to Project - requires write permission */}
+          {/* Project Memberships - requires write permission (issue #135：加入/移出/改权限统一入口) */}
           {userPermissions.canWrite && (
             <DropdownMenuItem
               onClick={() => {
@@ -80,7 +80,7 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
               }}
             >
               <IconUserPlus size={16} className='mr-2' />
-              {t('users.actions.addToProject')}
+              {t('users.actions.manageProjects')}
             </DropdownMenuItem>
           )}
 

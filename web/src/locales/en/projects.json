@@ -57,5 +57,8 @@
   "projects.profiles.validation.nameRequired": "Profile name is required",
   "projects.profiles.validation.atLeastOneProfile": "At least one profile is required",
   "projects.profiles.errors.updateFailed": "Failed to update project profiles",
-  "projects.profiles.messages.updateSuccess": "Project profiles updated successfully"
+  "projects.profiles.messages.updateSuccess": "Project profiles updated successfully",
+  "projects.members.title": "Members",
+  "projects.members.description": "Members and access of project {{name}}.",
+  "projects.members.empty": "No members in this project yet."
 }

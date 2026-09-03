@@ -16,6 +16,15 @@ export const userSchema = z.object({
   lastName: z.string().optional(),
   isOwner: z.boolean().optional(),
   scopes: z.array(z.string()).optional().nullable(),
+  // issue #135：用户的项目归属（人员列表「项目归属」列）
+  projectUsers: z
+    .array(
+      z.object({
+        projectID: z.string(),
+        isOwner: z.boolean(),
+      })
+    )
+    .optional(),
   roles: z
     .object({
       edges: z.array(
@@ -37,6 +46,38 @@ export const userConnectionSchema = z.object({
     })
   ),
   pageInfo: pageInfoSchema,
+});
+
+// issue #135：项目成员关系（UserProject），人员/项目两侧成员管理共用
+export const projectMembershipSchema = z.object({
+  id: z.string(),
+  userID: z.string(),
+  projectID: z.string(),
+  isOwner: z.boolean(),
+  scopes: z.array(z.string()).optional().nullable(),
+});
+
+// 项目成员（含用户信息与其在该项目内的角色，项目页成员弹窗用）
+export const projectMemberSchema = projectMembershipSchema.extend({
+  user: z.object({
+    id: z.string(),
+    email: z.string(),
+    firstName: z.string().optional(),
+    lastName: z.string().optional(),
+    status: userStatusSchema,
+    roles: z
+      .object({
+        edges: z.array(
+          z.object({
+            node: z.object({
+              id: z.string(),
+              name: z.string(),
+            }),
+          })
+        ),
+      })
+      .optional(),
+  }),
 });
 
 // 前端表单验证模式（包含 confirmPassword）
@@ -104,6 +145,8 @@ export const updateUserInputSchema = z.object({
 
 export type User = z.infer<typeof userSchema>;
 export type UserConnection = z.infer<typeof userConnectionSchema>;
+export type ProjectMembership = z.infer<typeof projectMembershipSchema>;
+export type ProjectMember = z.infer<typeof projectMemberSchema>;
 export type CreateUserForm = z.infer<typeof createUserFormSchema>;
 export type CreateUserInput = z.infer<typeof createUserInputSchema>;
 export type UpdateUserInput = z.infer<typeof updateUserInputSchema>;

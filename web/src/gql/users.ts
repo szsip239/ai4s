@@ -49,6 +49,11 @@ export const USERS_QUERY = `
           isOwner
           preferLanguage
           scopes
+          # issue #135：人员列表「项目归属」列需要用户的项目成员关系
+          projectUsers {
+            projectID
+            isOwner
+          }
           roles {
             edges {
               node {

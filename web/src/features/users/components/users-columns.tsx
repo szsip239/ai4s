@@ -7,6 +7,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import LongText from '@/components/long-text';
 import { User } from '../data/schema';
 import { DataTableRowActions } from './data-table-row-actions';
+import { UserProjectBadges } from './user-project-badges';
 
 export const createColumns = (t: ReturnType<typeof useTranslation>['t'], canWrite: boolean = false): ColumnDef<User>[] => {
   const columns: ColumnDef<User>[] = [];
@@ -78,6 +79,13 @@ export const createColumns = (t: ReturnType<typeof useTranslation>['t'], canWrit
           </div>
         );
       },
+    },
+    {
+      // issue #135：项目归属列，展示用户已加入的项目（owner 项目带标识）
+      id: 'projectUsers',
+      header: t('users.columns.projects'),
+      cell: ({ row }) => <UserProjectBadges user={row.original} />,
+      enableSorting: false,
     },
     {
       accessorKey: 'status',
