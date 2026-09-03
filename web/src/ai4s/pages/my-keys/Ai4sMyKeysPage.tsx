@@ -14,9 +14,10 @@
  * 非飞书（本地/钉钉/企微账号）→ 明文私信管理员备付；两种身份都可在本页查看明文。
  * issue #82：页底内嵌配置指南折叠卡（KeyGuide）——接入地址/客户端示例/档位说明/FAQ，
  * 员工零 scope 可看；入口地址取 window.location.origin 自适应（tailnet 规范名/localhost）。
- * issue #83：每把 key 展示当前档用量（进度条+数字：cost 点/token/请求次数），可展开看各档
- * 用量与周期/重置时间（窗口边界为北京时间自然月，issue #83 B）；数据来自 /self/keys 内嵌
- * usage（shim 代查 apiKeyQuotaUsages，与管理员侧 profiles 对话框同源），只读。
+ * issue #83：每把 key 展示当前档用量（进度条+数字：cost 点/token/请求次数）；2026-09-03 起
+ * 用量明细从行内展开改为弹窗（MyKeyUsageDialog，对齐管理端「token 使用」小窗口形态——
+ * tokens 页复用管理端展示主体 ApiKeyTokenUsageView，数据走 shim /self/key-usage-stats；
+ * quota 页为各档配额/周期/重置时间），未挂档 key 也可开弹窗看 token 用量。
  * issue #85：提额入口收窄——「申请提额」按本人 enabled key 当前最高档门控（已是高档/无
  * enabled key 禁用，提示走 Tooltip：disabled 按钮 pointer-events-none，原生 title 不可达，
  * 故包 span 作 trigger），弹窗选项只列秩次更高的档；档位秩次/门态/选项过滤抽在
@@ -30,11 +31,10 @@
  */
 import { useEffect, useMemo, useState } from 'react';
 import { format } from 'date-fns';
-import { IconChevronDown, IconEye, IconEyeOff, IconKey, IconPlus, IconTrendingUp } from '@tabler/icons-react';
+import { IconChartBar, IconEye, IconEyeOff, IconKey, IconPlus, IconTrendingUp } from '@tabler/icons-react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { useSelectedProjectId } from '@/stores/projectStore';
-import { cn } from '@/lib/utils';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   AlertDialog,
@@ -55,7 +55,6 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Progress } from '@/components/ui/progress';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Textarea } from '@/components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Header } from '@/components/layout/header';
@@ -65,22 +64,16 @@ import { KeyGuide } from './KeyGuide';
 import {
   useCancelKeyRequest,
   useCreateKeyRequest,
-  useKeyUsageStats,
   useMyKeyRequests,
   useMyKeys,
   upgradeDetailLabel,
   type KeyRequest,
   type MyKey,
 } from './api';
+import { MyKeyUsageDialog, UsageNumbers } from './MyKeyUsageDialog';
 import {
   activeUsageEntry,
-  formatCredits,
-  formatTokenCount,
-  modelTotalTokens,
   quotaProgress,
-  windowTotalTokens,
-  type UsageEntry,
-  type UsageWindow,
 } from './key-usage';
 import { upgradeButtonBlock, upgradeOptions, type TierName } from './tier-rank';
 
@@ -99,134 +92,17 @@ function reqStatusVariant(status: string): 'default' | 'secondary' | 'destructiv
   return 'outline';
 }
 
-/** issue #83：单档用量数字行——cost 点 / token / 请求次数；配额非空的维度显示「已用 / 上限」，
- * 配额为空（不设限）但有实际用量时显示「已用 X」（不设限也要看得见用量） */
-function UsageNumbers({ entry, zh }: { entry: UsageEntry; zh: boolean }) {
-  const { t } = useTranslation();
-  const q = entry.quota ?? {};
-  const u = entry.usage ?? {};
-  const parts: string[] = [];
-  if (q.cost != null) {
-    parts.push(`${formatCredits(Number(u.totalCost ?? 0))} / ${formatCredits(Number(q.cost))} ${t('ai4s.myKeys.usage.credits')}`);
-  } else if (u.totalCost != null && Number(u.totalCost) > 0) {
-    parts.push(`${formatCredits(Number(u.totalCost))} ${t('ai4s.myKeys.usage.credits')}`);
-  }
-  if (q.totalTokens != null) {
-    parts.push(`${formatTokenCount(Number(u.totalTokens ?? 0), zh)} / ${formatTokenCount(Number(q.totalTokens), zh)} Token`);
-  } else if (u.totalTokens != null && Number(u.totalTokens) > 0) {
-    parts.push(`${formatTokenCount(Number(u.totalTokens), zh)} Token`);
-  }
-  parts.push(t('ai4s.myKeys.usage.requests', { count: Number(u.requestCount ?? 0) }));
-  return <span>{parts.join(' · ')}</span>;
-}
-
-/** 时间窗用量视图（今天/本月/累计）：shim 代查 apiKeyTokenUsageStats，合计 + 输入/输出分解 + 模型前三 */
-function WindowUsage({ keyId, window }: { keyId: string; window: UsageWindow }) {
-  const { t, i18n } = useTranslation();
-  const zh = i18n.language.startsWith('zh');
-  const projectId = useSelectedProjectId();
-  const { data, isLoading, isError } = useKeyUsageStats(keyId, window, projectId);
-  if (isLoading) return <div className='text-muted-foreground py-2 text-xs'>{t('common.loading')}</div>;
-  if (isError || !data) return <div className='text-muted-foreground py-2 text-xs'>{t('ai4s.myKeys.usage.unavailable')}</div>;
-  const s = data.stats;
-  const total = windowTotalTokens(s);
-  const models = [...(s.topModels ?? [])].sort((a, b) => modelTotalTokens(b) - modelTotalTokens(a)).slice(0, 3);
-  return (
-    <div className='space-y-1 py-1 text-xs'>
-      <div>
-        <span className='text-sm font-medium'>{formatTokenCount(total, zh)} Token</span>
-        <span className='text-muted-foreground'>
-          {' '}
-          · {t('ai4s.myKeys.usage.window.input')} {formatTokenCount(Number(s.inputTokens ?? 0), zh)} ·{' '}
-          {t('ai4s.myKeys.usage.window.output')} {formatTokenCount(Number(s.outputTokens ?? 0), zh)}
-          {Number(s.cachedTokens ?? 0) > 0 && (
-            <> · {t('ai4s.myKeys.usage.window.cached')} {formatTokenCount(Number(s.cachedTokens), zh)}</>
-          )}
-        </span>
-      </div>
-      {models.length > 0 && (
-        <div className='text-muted-foreground'>
-          {models.map((m) => `${m.modelId} ${formatTokenCount(modelTotalTokens(m), zh)}`).join(' · ')}
-        </div>
-      )}
-      {total === 0 && <div className='text-muted-foreground'>{t('ai4s.myKeys.usage.window.noData')}</div>}
-    </div>
-  );
-}
-
-/** issue #83：各档用量展开明细（对齐上游 profiles 对话框粒度，只读；含周期与重置时间）；
- * 时间窗切换（今天/本月/累计）：不设限档也有用量可显示（shim 代查 apiKeyTokenUsageStats） */
-function UsageDetailRows({ k }: { k: MyKey }) {
-  const { t, i18n } = useTranslation();
-  const zh = i18n.language.startsWith('zh');
-  const [tab, setTab] = useState<'quota' | UsageWindow>('quota');
-  return (
-    <TableRow>
-      <TableCell colSpan={6} className='bg-muted/30'>
-        <Tabs value={tab} onValueChange={(v) => setTab(v as 'quota' | UsageWindow)} className='w-full'>
-          <TabsList className='h-8'>
-            <TabsTrigger value='quota' className='text-xs'>{t('ai4s.myKeys.usage.window.quota')}</TabsTrigger>
-            <TabsTrigger value='day' className='text-xs'>{t('ai4s.myKeys.usage.window.day')}</TabsTrigger>
-            <TabsTrigger value='month' className='text-xs'>{t('ai4s.myKeys.usage.window.month')}</TabsTrigger>
-            <TabsTrigger value='all' className='text-xs'>{t('ai4s.myKeys.usage.window.all')}</TabsTrigger>
-          </TabsList>
-        </Tabs>
-        {tab === 'quota' ? (
-          <div className='space-y-4 py-1'>
-            {(k.usage ?? []).length === 0 && (
-              <div className='text-muted-foreground py-1 text-xs'>{t('ai4s.myKeys.usage.noQuotaEntries')}</div>
-            )}
-            {(k.usage ?? []).map((e) => {
-              const p = quotaProgress(e);
-              return (
-                <div key={e.profileName} className='space-y-1'>
-                  <div className='flex items-center gap-2 text-sm'>
-                    <span className='font-medium'>{e.profileName}</span>
-                    {e.profileName === k.profiles?.activeProfile && <Badge variant='secondary'>{t('ai4s.myKeys.usage.current')}</Badge>}
-                    {!p && <span className='text-muted-foreground text-xs'>{t('ai4s.myKeys.usage.unlimited')}</span>}
-                    {p && <span className='text-muted-foreground text-xs'>{Math.round(p.pct)}%</span>}
-                  </div>
-                  {p && <Progress value={Math.min(p.pct, 100)} className='h-1.5 max-w-72' />}
-                  <div className='text-muted-foreground text-xs'>
-                    <UsageNumbers entry={e} zh={zh} />
-                  </div>
-                  {(e.window?.start || e.window?.end) && (
-                    <div className='text-muted-foreground text-xs'>
-                      {t('ai4s.myKeys.usage.period')}: {e.window?.start ? format(new Date(e.window.start), 'yyyy-MM-dd HH:mm') : '—'} →{' '}
-                      {e.window?.end ? format(new Date(e.window.end), 'yyyy-MM-dd HH:mm') : '—'}
-                      {e.window?.end && (
-                        <>
-                          {' '}
-                          · {t('ai4s.myKeys.usage.resetAt')}: {format(new Date(e.window.end), 'yyyy-MM-dd HH:mm')}
-                        </>
-                      )}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        ) : (
-          <WindowUsage keyId={k.id} window={tab} />
-        )}
-      </TableCell>
-    </TableRow>
-  );
-}
-
 function KeyRow({ k }: { k: MyKey }) {
   const { t, i18n } = useTranslation();
   const zh = i18n.language.startsWith('zh');
   const [showKey, setShowKey] = useState(false);
-  const [showUsage, setShowUsage] = useState(false);
+  const [usageOpen, setUsageOpen] = useState(false);
   const activeProfile = k.profiles?.activeProfile;
   const tier = activeProfile || t('ai4s.myKeys.noTier');
   // 掩码：保前缀 ah- 与尾 4 位便于辨认，中间打码（issue #81 明文本人可见，默认不裸露）
   const masked = k.key ? `${k.key.slice(0, 3)}••••••••${k.key.slice(-4)}` : '—';
   const activeEntry = activeUsageEntry(k.usage, activeProfile);
   const progress = activeEntry ? quotaProgress(activeEntry) : null;
-  // 可展开（issue #83 补强）：挂档即可展开——不设限（无配额条目/配额全空）也能看时间窗用量
-  const canExpand = !!activeProfile && k.usage != null;
   return (
     <>
       <TableRow>
@@ -257,52 +133,49 @@ function KeyRow({ k }: { k: MyKey }) {
         <TableCell>{tier}</TableCell>
         <TableCell>
           {/* issue #83 用量列：未挂档 —（档位列已显示「未挂档」）；usage=null 降级「暂不可用」；
-              不设限（挂档但无配额条目/配额全空）显示标注 + 可展开看时间窗用量 */}
-          {!activeProfile ? (
-            <span className='text-muted-foreground'>—</span>
-          ) : k.usage == null ? (
-            <span className='text-muted-foreground text-xs'>{t('ai4s.myKeys.usage.unavailable')}</span>
-          ) : (
-            <div className='flex items-center gap-1'>
-              <div className='min-w-36 flex-1'>
-                {activeEntry && progress ? (
-                  <>
-                    <div className='flex items-center gap-2'>
-                      <Progress value={Math.min(progress.pct, 100)} className='h-1.5 flex-1' />
-                      <span className='text-muted-foreground text-xs'>{Math.round(progress.pct)}%</span>
-                    </div>
+              不设限（挂档但无配额条目/配额全空）显示标注。2026-09-03 起明细改弹窗（MyKeyUsageDialog），
+              按钮全状态可开——tokens 页走 shim 代查不依赖挂档，quota 页空态降级 */}
+          <div className='flex items-center gap-1'>
+            <div className='min-w-36 flex-1'>
+              {!activeProfile ? (
+                <span className='text-muted-foreground'>—</span>
+              ) : k.usage == null ? (
+                <span className='text-muted-foreground text-xs'>{t('ai4s.myKeys.usage.unavailable')}</span>
+              ) : activeEntry && progress ? (
+                <>
+                  <div className='flex items-center gap-2'>
+                    <Progress value={Math.min(progress.pct, 100)} className='h-1.5 flex-1' />
+                    <span className='text-muted-foreground text-xs'>{Math.round(progress.pct)}%</span>
+                  </div>
+                  <div className='text-muted-foreground mt-1 text-xs'>
+                    <UsageNumbers entry={activeEntry} zh={zh} />
+                  </div>
+                </>
+              ) : (
+                <div>
+                  <span className='text-muted-foreground text-xs'>{t('ai4s.myKeys.usage.unlimited')}</span>
+                  {activeEntry && (
                     <div className='text-muted-foreground mt-1 text-xs'>
                       <UsageNumbers entry={activeEntry} zh={zh} />
                     </div>
-                  </>
-                ) : (
-                  <div>
-                    <span className='text-muted-foreground text-xs'>{t('ai4s.myKeys.usage.unlimited')}</span>
-                    {activeEntry && (
-                      <div className='text-muted-foreground mt-1 text-xs'>
-                        <UsageNumbers entry={activeEntry} zh={zh} />
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-              {canExpand && (
-                <Button
-                  size='icon'
-                  variant='ghost'
-                  className='h-6 w-6'
-                  aria-label={t('ai4s.myKeys.usage.expand')}
-                  onClick={() => setShowUsage((v) => !v)}
-                >
-                  <IconChevronDown className={cn('h-3.5 w-3.5 transition-transform', showUsage && 'rotate-180')} />
-                </Button>
+                  )}
+                </div>
               )}
             </div>
-          )}
+            <Button
+              size='icon'
+              variant='ghost'
+              className='h-6 w-6'
+              aria-label={t('ai4s.myKeys.usage.expand')}
+              onClick={() => setUsageOpen(true)}
+            >
+              <IconChartBar className='h-3.5 w-3.5' />
+            </Button>
+          </div>
         </TableCell>
         <TableCell className='text-muted-foreground'>{k.createdAt ? format(new Date(k.createdAt), 'yyyy-MM-dd HH:mm') : '—'}</TableCell>
       </TableRow>
-      {showUsage && canExpand && <UsageDetailRows k={k} />}
+      {usageOpen && <MyKeyUsageDialog k={k} open={usageOpen} onOpenChange={setUsageOpen} />}
     </>
   );
 }

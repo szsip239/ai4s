@@ -4,13 +4,10 @@
   "common.link": "Link",
   "common.unlink": "Unlink",
   "common.errors.unknown": "Unknown error",
-
   "channel.auto_disabled": "Auto-disabled",
-
   "preview.chunk": "Chunk",
   "preview.completed": "Completed",
   "preview.replay": "Replay",
-
   "profile.name": "Profile Name",
   "profile.channelIDs": "Channel IDs",
   "profile.channelTags": "Channel Tags",
@@ -28,7 +25,6 @@
   "profile.quota.period.pastDuration.unit": "Unit",
   "profile.quota.period.calendarDuration": "Calendar Period",
   "profile.quota.period.calendarDuration.unit": "Calendar Period Unit",
-
   "security.title": "Security Settings",
   "security.messages.passwordChangeSuccess": "Password changed successfully",
   "security.messages.passwordChangeError": "Failed to change password",
@@ -47,16 +43,13 @@
   "security.oidc.linkError": "Failed to link account",
   "security.oidc.unlinkSuccess": "Account unlinked",
   "security.oidc.unlinkError": "Failed to unlink account",
-
   "settings.providerQuota.opencodeGo.authCookie": "Auth Cookie",
   "settings.providerQuota.opencodeGo.workspaceId": "Workspace ID",
-
   "request_header.X-Model": "X-Model Request Header",
   "response.output_item.added": "Output Item Added",
   "response.output_text.delta": "Output Text Delta",
   "response.reasoning_summary_text.delta": "Reasoning Summary Delta",
   "response.function_call_arguments.delta": "Function Call Arguments Delta",
-
   "ai4s.batchTier.button": "Batch Tier Change",
   "ai4s.batchTier.title": "Batch Quota Tier Change",
   "ai4s.batchTier.description": "Filter target keys by project / employee / current tier, preview the matches, then reassign them to the target quota tier in one go.",
@@ -77,7 +70,6 @@
   "ai4s.batchTier.resultSummary": "Done: {{success}} succeeded, {{fail}} failed",
   "ai4s.batchTier.resultOk": "Success",
   "ai4s.batchTier.resultFail": "Failed: {{reason}}",
-
   "ai4s.topnav.dashboard": "Dashboard",
   "ai4s.topnav.myKeys": "Key Management",
   "ai4s.topnav.promptProtectionRules": "Prompt Protection",
@@ -191,10 +183,6 @@
   "ai4s.myKeys.usage.window.day": "Today",
   "ai4s.myKeys.usage.window.month": "This month",
   "ai4s.myKeys.usage.window.all": "All time",
-  "ai4s.myKeys.usage.window.input": "Input",
-  "ai4s.myKeys.usage.window.output": "Output",
-  "ai4s.myKeys.usage.window.cached": "Cached",
-  "ai4s.myKeys.usage.window.noData": "No usage in this window",
   "ai4s.myKeys.usage.noQuotaEntries": "No quota entries — unlimited. See the time-window tabs above for actual usage.",
   "ai4s.myKeys.empty": "No keys under the current project. Keys are project-scoped — check the project switcher at the top first; click \"Request New Key\" only if you really need a new one.",
   "ai4s.myKeys.noProject": "Select a project from the top switcher first.",
@@ -295,5 +283,6 @@
   "ai4s.keyRequests.approveProjectLabel": "Target Project",
   "ai4s.keyRequests.approveUpgradeNote": "Upgrades can only be approved as Standard or Premium. Downgrades are hard-blocked at execution — keys already on a higher tier are skipped and listed in the result.",
   "ai4s.keyRequests.rejectTitle": "Reject Request",
-  "ai4s.keyRequests.rejectReasonPlaceholder": "Reason (optional, shown to the applicant)"
+  "ai4s.keyRequests.rejectReasonPlaceholder": "Reason (optional, shown to the applicant)",
+  "ai4s.myKeys.usage.tab.tokens": "Token Usage"
 }

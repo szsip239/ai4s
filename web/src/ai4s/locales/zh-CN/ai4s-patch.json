@@ -4,13 +4,10 @@
   "common.link": "绑定",
   "common.unlink": "解绑",
   "common.errors.unknown": "未知错误",
-
   "channel.auto_disabled": "自动禁用",
-
   "preview.chunk": "分片",
   "preview.completed": "已完成",
   "preview.replay": "重放",
-
   "profile.name": "档案名称",
   "profile.channelIDs": "渠道 ID",
   "profile.channelTags": "渠道标签",
@@ -28,7 +25,6 @@
   "profile.quota.period.pastDuration.unit": "单位",
   "profile.quota.period.calendarDuration": "自然周期",
   "profile.quota.period.calendarDuration.unit": "自然周期单位",
-
   "security.title": "安全设置",
   "security.messages.passwordChangeSuccess": "密码修改成功",
   "security.messages.passwordChangeError": "密码修改失败",
@@ -47,18 +43,14 @@
   "security.oidc.linkError": "绑定失败",
   "security.oidc.unlinkSuccess": "解绑成功",
   "security.oidc.unlinkError": "解绑失败",
-
   "settings.providerQuota.opencodeGo.authCookie": "认证 Cookie",
   "settings.providerQuota.opencodeGo.workspaceId": "工作区 ID",
-
   "models.developers.inclusionai": "零一万物",
-
   "request_header.X-Model": "X-Model 请求头",
   "response.output_item.added": "输出项新增",
   "response.output_text.delta": "输出文本增量",
   "response.reasoning_summary_text.delta": "推理摘要增量",
   "response.function_call_arguments.delta": "函数调用参数增量",
-
   "ai4s.batchTier.button": "批量换档",
   "ai4s.batchTier.title": "批量配额换档",
   "ai4s.batchTier.description": "按项目/员工/当前档筛选目标 Key，预览命中列表后统一换挂到目标限额档。",
@@ -79,7 +71,6 @@
   "ai4s.batchTier.resultSummary": "执行完成：成功 {{success}} 个，失败 {{fail}} 个",
   "ai4s.batchTier.resultOk": "成功",
   "ai4s.batchTier.resultFail": "失败：{{reason}}",
-
   "ai4s.topnav.dashboard": "仪表盘",
   "ai4s.topnav.myKeys": "Key 管理",
   "ai4s.topnav.promptProtectionRules": "脱敏规则",
@@ -193,10 +184,6 @@
   "ai4s.myKeys.usage.window.day": "今天",
   "ai4s.myKeys.usage.window.month": "本月",
   "ai4s.myKeys.usage.window.all": "累计",
-  "ai4s.myKeys.usage.window.input": "输入",
-  "ai4s.myKeys.usage.window.output": "输出",
-  "ai4s.myKeys.usage.window.cached": "缓存",
-  "ai4s.myKeys.usage.window.noData": "该时间窗暂无用量",
   "ai4s.myKeys.usage.noQuotaEntries": "无配额条目——不设限，实际用量看上方时间窗标签",
   "ai4s.myKeys.empty": "当前项目下还没有 Key。Key 按项目隔离——先确认顶部项目切换器选对了项目；确需新建再点「申请新 Key」。",
   "ai4s.myKeys.noProject": "请先在顶部选择项目",
@@ -297,5 +284,6 @@
   "ai4s.keyRequests.approveProjectLabel": "生效项目",
   "ai4s.keyRequests.approveUpgradeNote": "提额申请只可批为标准档或高档；执行侧已硬拦降档——低于 Key 当前档的目标会被跳过并在结果中列出。",
   "ai4s.keyRequests.rejectTitle": "拒绝申请",
-  "ai4s.keyRequests.rejectReasonPlaceholder": "拒绝理由（可选，将展示给申请人）"
+  "ai4s.keyRequests.rejectReasonPlaceholder": "拒绝理由（可选，将展示给申请人）",
+  "ai4s.myKeys.usage.tab.tokens": "Token 用量"
 }
