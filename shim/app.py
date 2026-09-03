@@ -74,6 +74,9 @@ WORDLIST_PATH = os.environ.get("WORDLIST_PATH", "/dlp/confidential-terms.json")
 PII_RECOGNIZERS_PATH = os.environ.get("PII_RECOGNIZERS_PATH", "/recognizers/pii-zh.json")
 SETTINGS_PATH = os.environ.get("SETTINGS_PATH", "/dlp/settings.json")
 MAX_BODY = 256 * 1024  # 契约：请求体超限截断送检
+# /graphql-authz 检查体上限（2026-09-03）：与网关 extAuthz includeRequestBody
+# maxRequestBytes 对齐（1 MiB）；控制台真实 GraphQL 查询为 KB 级，超限即拒
+MAX_GRAPHQL_AUTHZ_BODY = 1024 * 1024
 
 # auto 智能路由（issue #117）：#115 spike 的 /classify 桩（auto→echo-test 写死、其他原值
 # 回显）已退役，真实分档分类见下方「auto 智能路由」段。响应头白名单纪律保留：进
@@ -1468,6 +1471,45 @@ class Handler(BaseHTTPRequestHandler):
             print(f"[dlp.playground] 403 deny user={me.get('email')} project={pid}", flush=True)
             self._json(403, {"error": "playground requires write_requests in the selected project"})
 
+    def _graphql_authz(self):
+        """/admin/graphql extAuthz 门（2026-09-03，上游未修网关先行）：beta6 四实体无 ent
+        policy + 两操作无 scope 校验（模式表与背景见 admin_api._GRAPHQL_* 注释）。正常查询
+        仅正则扫描零内省放行；命中受限模式才 Bearer 内省核系统 scope。fail-closed：body
+        缺失/超限/不可解码一律 403（超限网关侧 allowPartialMessage=false 已先拒，本端兜底
+        「危险字段推到截断点之后」的绕行）。GET 无法检查（extAuthz 子请求不带原始 query
+        string）且控制台 GraphQL 只走 POST，由 do_GET 分支直接 403。"""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length <= 0 or length > MAX_GRAPHQL_AUTHZ_BODY:
+            self._json(403, {"error": "graphql-authz requires a bounded request body"})
+            return
+        try:
+            text = self.rfile.read(length).decode("utf-8")
+        except Exception:
+            self._json(403, {"error": "graphql-authz body undecodable"})
+            return
+        required = admin_api.graphql_required_scopes(text)
+        if not required:
+            self._json(200, {"ok": True})
+            return
+        auth = self.headers.get("Authorization") or ""
+        parts = auth.split(None, 1)
+        token = parts[1].strip() if len(parts) == 2 and parts[0].lower() == "bearer" else ""
+        if not token:
+            self._json(403, {"error": f"restricted graphql pattern requires system scope: {', '.join(required)}"})
+            return
+        me, err = admin_api._introspect(token)  # _ME_QUERY 已含 isOwner+scopes（判定不需要项目成员档）
+        if err is not None:
+            self._json(err, {"error": "introspection unavailable" if err == 503 else "unauthorized"})
+            return
+        if admin_api.graphql_authz_allowed(me, required):
+            self._json(200, {"ok": True})
+        else:
+            print(f"[dlp.graphql] 403 deny user={me.get('email')} need={required}", flush=True)
+            self._json(403, {"error": f"restricted graphql pattern requires system scope: {', '.join(required)}"})
+
     def do_GET(self):
         if admin_api.handle(self, "GET"):  # admin 平面（issue #31）：/dlp-admin/* 优先分流
             return
@@ -1475,6 +1517,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/bv1-authz":
             self._bv1_authz(None)
+            return
+        if self.path == "/graphql-authz":
+            # GET 无法检查（extAuthz 子请求不带原始 query string，query 参数里的受限模式
+            # 看不到）且控制台 GraphQL 只走 POST——直接 403（fail-closed，见 _graphql_authz）
+            self._json(403, {"error": "graphql-authz: method not inspectable"})
             return
         if self.path == "/classify":
             # extAuthz 会对 /v1 路由的全部方法发起同方法授权调用（如 GET /v1/models →
@@ -1502,6 +1549,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/playground-authz":
             # playground extAuthz 门（issue #128）：只读头鉴权不读 body（网关不开 includeRequestBody）
             self._playground_authz()
+            return
+        if self.path == "/graphql-authz":
+            # /admin/graphql extAuthz 门（2026-09-03）：读 body 扫受限模式（网关开 includeRequestBody）
+            self._graphql_authz()
             return
         if self.path == "/classify":
             # auto 智能路由（issue #117 真实分类器；#115 spike 桩已退役）：

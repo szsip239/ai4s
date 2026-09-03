@@ -256,6 +256,32 @@ routes:
             path: '"/playground-authz"'
     backends:
       - host: axonhub:8090
+  # /admin/graphql 受限访问门（2026-09-03，同 #68 P2-D/#128「上游未修网关先行」）：
+  # beta6 上游 RequestExecution/ChannelProbe/ProviderQuotaStatus/UserRole 四实体未挂 ent
+  # policy（GraphQL node(id:) 任意 JWT 跨项目直读——活栈实证零权限员工不带项目头读到
+  # 非成员项目执行记录完整 requestBody），channelProbeData/checkProviderQuotas 两操作
+  # 无 scope 校验。shim /graphql-authz 正则扫描请求体：常规查询零内省放行；命中受限
+  # 模式才内省要求系统级对应 scope，否则 403。控制台自身 node(id:) 只作用于有 policy
+  # 的类型（Request/UsageLog/Channel/APIKey/Project），不受影响。
+  # includeRequestBody allowPartialMessage=false：超 1 MiB 直接拒（控制台查询为 KB 级），
+  # 杜绝「危险字段推到截断点之后」的绕行；exact 精确匹配优先于下方 /admin 前缀。
+  - gateways: [default, mtls]
+    matches:
+      - path:
+          exact: /admin/graphql
+    policies:
+      extAuthz:
+        host: shim:8080
+        failureMode: deny
+        includeRequestHeaders: [authorization]
+        includeRequestBody:
+          maxRequestBytes: 1048576
+          allowPartialMessage: false
+        protocol:
+          http:
+            path: '"/graphql-authz"'
+    backends:
+      - host: axonhub:8090
   - gateways: [default, mtls]
     matches:
       - path:

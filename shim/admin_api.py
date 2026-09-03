@@ -93,6 +93,50 @@ def playground_allowed(me: dict, project_gid: str) -> bool:
             return True
     return False
 
+# /graphql-authz 受限模式（2026-09-03，「上游未修网关先行」继 #68 P2-D/#128）：
+# beta6 上游 RequestExecution/ChannelProbe/ProviderQuotaStatus/UserRole 四实体未挂 ent
+# policy（生成代码零 privacy 调用）——GraphQL node(id:) 任意 JWT 跨项目直读，活栈实证
+# 零权限员工不带项目头读到非成员项目执行记录的完整 requestBody（prompt 原文）；
+# channelProbeData（探针数据）/checkProviderQuotas（触发全渠道配额外呼）两操作同样无
+# scope 校验。控制台自身 node(id:) 仅作用于有 policy 的类型（Request/UsageLog/Channel/
+# APIKey/Project），不在此表、不受影响。命中即要求系统级对应 scope——node 直读不带
+# 项目上下文，项目级授权无法映射到目标实体所属项目，刻意不认项目级（同 _LEVEL_SCOPES
+# 系统档纪律）。
+_GRAPHQL_GID_TYPE_SCOPES = {
+    "RequestExecution": "read_requests",
+    "ChannelProbe": "read_channels",
+    "ProviderQuotaStatus": "read_channels",
+    "UserRole": "read_roles",
+}
+_GRAPHQL_OP_SCOPES = {
+    "channelProbeData": "read_channels",
+    "checkProviderQuotas": "write_channels",
+}
+# gid 实参必须是字面 gid 字符串（axonhub node resolver 只认 gid:// 形，无编码绕行），
+# 无论内联在 query 还是放在 variables 都在请求体 JSON 原文里，正则扫描完备。
+_GRAPHQL_GID_RE = re.compile(r"gid://axonhub/(" + "|".join(_GRAPHQL_GID_TYPE_SCOPES) + r")/")
+_GRAPHQL_OP_RE = re.compile(r"\b(" + "|".join(_GRAPHQL_OP_SCOPES) + r")\b")
+
+
+def graphql_required_scopes(body: str) -> list:
+    """扫描 GraphQL 请求体原文，返回命中受限模式所需的系统 scope 列表（去重排序）；
+    空列表 = 常规查询（控制台全部日常流量），调用方零内省直接放行。"""
+    if not body:
+        return []
+    required = {_GRAPHQL_GID_TYPE_SCOPES[t] for t in _GRAPHQL_GID_RE.findall(body)}
+    required.update(_GRAPHQL_OP_SCOPES[op] for op in _GRAPHQL_OP_RE.findall(body))
+    return sorted(required)
+
+
+def graphql_authz_allowed(me: dict, required) -> bool:
+    """命中受限模式后的闸门判定：owner 直通；否则须持全部所需系统 scope（精确匹配，
+    同 _authorize/playground_allowed 纪律——"*" 不通配）。required 为空不应走到本函数。"""
+    if me.get("isOwner"):
+        return True
+    have = set(me.get("scopes") or [])
+    return all(s in have for s in required)
+
+
 # 配置文件路径（与 app.py 相同 env/默认值；测试用临时文件覆写模块属性）
 WORDLIST_PATH = os.environ.get("WORDLIST_PATH", "/dlp/confidential-terms.json")
 PII_RECOGNIZERS_PATH = os.environ.get("PII_RECOGNIZERS_PATH", "/recognizers/pii-zh.json")
