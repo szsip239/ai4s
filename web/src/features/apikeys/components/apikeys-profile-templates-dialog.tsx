@@ -16,7 +16,6 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { useApiKeyProfileTemplates, useDeleteApiKeyProfileTemplate } from '../data/apikeys';
 import type { ApiKeyProfileTemplate } from '../data/schema';
 import { ApiKeyCreateTemplateDialog } from './apikeys-create-template-dialog';
@@ -142,7 +141,9 @@ export function ApiKeysProfileTemplatesDialog({ open, onOpenChange }: ApiKeysPro
           )}
 
           {!isEmpty && !isLoadingTemplates && (
-            <ScrollArea className='max-h-[400px]'>
+            // 不用 ScrollArea：Radix Viewport 内层 display:table 会使 flex min-w-0 + truncate 失效，
+            // 长描述把编辑/删除按钮挤出可视区（issue：配置模板列表溢出）
+            <div className='max-h-[400px] overflow-y-auto'>
               <div className='py-1'>
                 {templateList.map((template) => (
                   <TemplateItem
@@ -155,7 +156,7 @@ export function ApiKeysProfileTemplatesDialog({ open, onOpenChange }: ApiKeysPro
                   />
                 ))}
               </div>
-            </ScrollArea>
+            </div>
           )}
 
           <div className='flex justify-end gap-2'>
