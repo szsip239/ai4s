@@ -22,6 +22,12 @@ routes:
       - path:
           pathPrefix: /v1
     policies:
+      # 真实客户端 IP 透传：无 XFF 的直连流量补注下游对端地址（axonhub getClientIP 取 XFF 首跳）；
+      # nginx 入口已设 XFF 时 add 语义追加于后，axonhub 取最左值行为不变
+      transformations:
+        request:
+          add:
+            x-forwarded-for: source.address
       # auto 智能路由插入点（issue #115 spike）：extAuthz(HTTP) 调 shim /classify 桩分类。
       # 协议语义：shim 任何输入恒 200（2xx=放行；非 2xx 会被当 deny 决策直回客户端——
       # failureMode=allow 只管传输层失败）；响应头 x-resolved-model 经 metadata CEL 存为
