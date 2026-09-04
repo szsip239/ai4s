@@ -1,6 +1,6 @@
 # ai4s — 面向企业的 AI 接入及安全网关
 
-**ai4s = AI for Security · Smart · Sustainability · Success（安全 · 智能 · 可持续 · 成功）**
+**ai4s = AI for 4S：Security · Smart · Sustainability · Success（安全 · 智能 · 可持续 · 成功）**
 
 为企业员工提供统一、安全、可治理的 LLM API 出口：一个 OpenAI 兼容入口，聚合多渠道上游；请求经内容级 DLP 脱敏/阻断与智能路由；员工 Key 审批签发、按档限额、全程可审计。
 
@@ -12,7 +12,7 @@
 |---|---|
 | ![脱敏规则配置中心](docs/showcase/console-rules.webp) | ![Key 管理](docs/showcase/console-keys.webp) |
 
-## 四个 S
+## 4S
 
 - **Security**：密钥、PII、商业机密在发给 LLM 前被检测、脱敏或阻断；全链路审计留痕，语义层永不阻断业务。
 - **Smart**：多渠道聚合 + `auto` 智能路由按请求复杂度分档选模型，成本/额度/健康度参与选路，自动故障转移。
@@ -81,7 +81,7 @@ docker compose up -d
 - `web/` — 控制台前端（React + Vite，构建产物由 web-static nginx 托管）
 - `opf/` — privacy-filter sidecar（profile 默认不启动）
 - `recognizers/` — 中文 PII recognizer 定义（热更新）
-- `docs/` — `adr/` 架构决策、`contracts/` 接口契约、`research/` 调研评测、`architecture/` 架构图产物
+- `docs/` — `architecture/` 架构图产物、`showcase/` 控制台预览图
 
 ## 开发与测试
 
