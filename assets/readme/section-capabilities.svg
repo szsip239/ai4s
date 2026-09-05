@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="110" viewBox="0 0 1200 110" role="img" aria-labelledby="t d">
+  <title id="t">功能现状</title>
+  <desc id="d">节标题：功能现状，右侧为 DLP 分层防线堆叠图标。</desc>
+  <rect width="1200" height="110" rx="16" fill="#0A0F1C"/>
+  <rect x="32" y="30" width="6" height="50" rx="3" fill="#F56420"/>
+  <text x="56" y="47" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" letter-spacing="2" fill="#5C6B82">CAPABILITIES</text>
+  <text x="56" y="81" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif" font-size="32" font-weight="700" fill="#E9EEF6">功能现状</text>
+  <g transform="translate(1104 19)" stroke="#243351" stroke-width="2" fill="none">
+    <rect x="0" y="0" width="64" height="14" rx="4"/>
+    <rect x="8" y="25" width="56" height="14" rx="4"/>
+    <rect x="8" y="25" width="5" height="14" rx="2" fill="#F56420" stroke="none"/>
+    <rect x="16" y="50" width="48" height="14" rx="4"/>
+  </g>
+</svg>

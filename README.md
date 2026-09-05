@@ -1,10 +1,16 @@
 # ai4s — 面向企业的 AI 接入及安全网关
 
+[![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
+[![Release 0.1](https://img.shields.io/badge/release-0.1-F56420)](https://github.com/szsip239/ai4s/releases/tag/0.1)
+[![API OpenAI 兼容](https://img.shields.io/badge/API-OpenAI_%E5%85%BC%E5%AE%B9-0A0F1C)](#)
+
 **ai4s = AI for 4S：Security · Smart · Sustainability · Success（安全 · 智能 · 可持续 · 成功）**
 
 为企业员工提供统一、安全、可治理的 LLM API 出口：一个 OpenAI 兼容入口，聚合多渠道上游；请求经内容级 DLP 脱敏/阻断与智能路由；员工 Key 审批签发、按档限额、全程可审计。
 
-## 控制台预览
+<p align="center">
+  <img src="./assets/readme/section-console.svg" width="100%" alt="控制台预览">
+</p>
 
 ![ai4s 控制台](docs/showcase/console-hero.webp)
 
@@ -12,14 +18,18 @@
 |---|---|
 | ![脱敏规则配置中心](docs/showcase/console-rules.webp) | ![Key 管理](docs/showcase/console-keys.webp) |
 
-## 4S
+<p align="center">
+  <img src="./assets/readme/section-4s.svg" width="100%" alt="4S：Security · Smart · Sustainability · Success">
+</p>
 
 - **Security**：密钥、PII、商业机密在发给 LLM 前被检测、脱敏或阻断；全链路审计留痕，语义层永不阻断业务。
 - **Smart**：多渠道聚合 + `auto` 智能路由按请求复杂度分档选模型，成本/额度/健康度参与选路，自动故障转移。
 - **Sustainability**：员工 Key 全生命周期管理——审批签发、档位额度、用量追踪、回收，成本可控、合规可运营。
 - **Success**：员工顺畅用上 AI 而不被安全流程绊住：自助查 Key、审批走飞书、手机 PWA 可用。
 
-## 功能现状
+<p align="center">
+  <img src="./assets/readme/section-capabilities.svg" width="100%" alt="功能现状">
+</p>
 
 - **统一出口**：OpenAI 兼容 `/v1`，员工入口 `:3000`，设备身份 mTLS `:3443`。
 - **内容级 DLP 管线**，逐层可独立开关：
@@ -48,7 +58,9 @@
 | PostgreSQL | 16-alpine | 控制面 / SSO 数据 |
 | Casdoor | 3.133.0 | SSO 枢纽：飞书 OAuth → 标准 OIDC |
 
-## 快速开始
+<p align="center">
+  <img src="./assets/readme/section-quickstart.svg" width="100%" alt="快速开始">
+</p>
 
 ```bash
 cd deploy
@@ -68,7 +80,9 @@ docker compose up -d
 - **opf privacy-filter 中文 NER sidecar**（~1.5GB，profile 默认不启动）：L2 内嵌第二检测器，仅适合有 GPU 的机型（CPU 延迟实测不可用，issue #122）。启用步骤见 [`deploy/README.md`](deploy/README.md)「OPF 第二检测器」节。
 - **Presidio PII 识别开箱即用**：镜像内置 NLP 模型，中文 ad-hoc 识别器 `recognizers/pii-zh.json` 已入库，无需额外配置。
 
-## 架构
+<p align="center">
+  <img src="./assets/readme/section-architecture.svg" width="100%" alt="架构">
+</p>
 
 ![ai4s 运行时架构](docs/architecture/ai4s-runtime.png)
 
@@ -83,7 +97,9 @@ docker compose up -d
 - `recognizers/` — 中文 PII recognizer 定义（热更新）
 - `docs/` — `architecture/` 架构图产物、`showcase/` 控制台预览图
 
-## 开发与测试
+<p align="center">
+  <img src="./assets/readme/section-dev.svg" width="100%" alt="开发与测试">
+</p>
 
 ```bash
 # shim 单测（本机 venv，进程内假线路边界）
