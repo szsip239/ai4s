@@ -1552,7 +1552,9 @@ class Handler(BaseHTTPRequestHandler):
         string）且控制台 GraphQL 只走 POST，由 do_GET 分支直接 403。
         扫描纪律（审计B 严重1）：先 json.loads 再用 graphql_strings 取解码后的字符串值
         扫描——扫原始字节会被 JSON \\u 转义绕过（危险 gid 以转义形态隐身，axonhub 解码后
-        还原执行）。"""
+        还原执行）。issue #138：解码后文本在 graphql_required_scopes 内再经
+        graphql_unescape 归一化——GraphQL 字符串字面量自身的 \\uXXXX 转义在 gqlgen
+        执行时二次还原，不归一化则受限 gid 仍以转义形态隐身。"""
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:

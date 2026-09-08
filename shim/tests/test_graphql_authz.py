@@ -305,5 +305,109 @@ class GraphqlAuthzEscapeRegressionTest(unittest.TestCase):
         m.assert_not_called()
 
 
+# GraphQL 字符串字面量转义形态的攻击载荷（issue #138）：JSON 解码后 query 文本里仍是
+# 6 字符字面 \uXXXX（JSON 层 \\ 还原成单个反斜杠），但 gqlgen 执行时按 GraphQL 语义
+# 二次反转义还原成受限 gid——扫描必须先做 GraphQL 反转义归一化再过正则。
+_GBS = chr(92)  # 反斜杠字面量：程序化构造，保证载荷里是转义序列原文
+# R\u0065questExecution：JSON 原文 \\u0065 → 解码后 query 文本 \u0065 → gqlgen 还原 "e"
+_GQL_ESC_GID = ('{"query":"query { node(id: \\"gid://axonhub/R' + _GBS + _GBS +
+                'u0065questExecution/13939\\") { id ... on RequestExecution { requestBody } } }"}')
+# gid:\/\/axonhub\/...：JSON 原文 \\/ → 解码后 query 文本 \/ → gqlgen 还原 "/"
+_GQL_ESC_SLASH_GID = ('{"query":"{ node(id: \\"gid:' + _GBS + _GBS + '/' + _GBS + _GBS +
+                      '/axonhub' + _GBS + _GBS + '/RequestExecution' + _GBS + _GBS +
+                      '/1\\") { id } }"}')
+# 有 policy 类型（Request）的 \\u0065 转义形态：解码后仍安全，不得误报
+_GQL_ESC_SAFE_REQUEST = ('{"query":"{ node(id: \\"gid://axonhub/R' + _GBS + _GBS +
+                         'u0065quest/1\\") { id } }"}')
+# 双反斜杠非攻击形态：query 文本 R\\u0065... 经 gqlgen 反转义得字面 R\u0065...（\\ → \，
+# u0065 不再二次解码）——不是受限 gid，不得误报（归一化必须与 gqlgen 同款单次左到右语义）
+_GQL_DBL_ESC_GID = ('{"query":"{ node(id: \\"gid://axonhub/R' + _GBS * 4 +
+                    'u0065questExecution/1\\") { id } }"}')
+
+
+class GraphqlUnescapePureTest(unittest.TestCase):
+    """graphql_unescape 纯函数（issue #138）：GraphQL 单行字符串字面量反转义归一化。"""
+
+    def test_unicode_escape(self):
+        self.assertEqual(admin_api.graphql_unescape("R" + _GBS + "u0065quest"), "Request")
+
+    def test_brace_unicode_escape(self):
+        self.assertEqual(admin_api.graphql_unescape("R" + _GBS + "u{65}quest"), "Request")
+
+    def test_simple_escapes(self):
+        self.assertEqual(admin_api.graphql_unescape("a" + _GBS + "/b"), "a/b")
+        self.assertEqual(admin_api.graphql_unescape(_GBS + '"' + _GBS + "n"), '"\n')
+
+    def test_double_backslash_not_double_decoded(self):
+        # \\u0065 单次左到右语义：\\ → \，剩余 u0065 是字面量不再二次反转义
+        self.assertEqual(admin_api.graphql_unescape(_GBS + _GBS + "u0065"), _GBS + "u0065")
+
+    def test_invalid_escapes_kept_literal(self):
+        # 非法/不完整转义原样保留（gqlgen 会拒该 query，永不执行；保留原文最大化可见性）
+        self.assertEqual(admin_api.graphql_unescape("a" + _GBS + "x"), "a" + _GBS + "x")
+        self.assertEqual(admin_api.graphql_unescape("tail" + _GBS), "tail" + _GBS)
+        self.assertEqual(admin_api.graphql_unescape(_GBS + "u006"), _GBS + "u006")
+
+    def test_no_backslash_passthrough(self):
+        self.assertEqual(admin_api.graphql_unescape("gid://axonhub/Request/1"),
+                         "gid://axonhub/Request/1")
+
+
+class GraphqlAuthzGqlEscapeTest(unittest.TestCase):
+    """issue #138 回归：GraphQL \\uXXXX 转义绕过受限 gid 扫描——修复前解码后文本不含
+    字面模式，零内省放行，gqlgen 执行时才还原成 RequestExecution gid。"""
+
+    def _with_me(self, me=None, err=None):
+        return mock.patch.object(admin_api, "_introspect",
+                                 return_value=(me, err) if err is None else (None, err))
+
+    def test_pure_escaped_gid_flagged(self):
+        # JSON 解码后的 query 文本（含 6 字符字面 \u0065）直接过扫描函数也必须命中
+        decoded = json.loads(_GQL_ESC_GID)["query"]
+        # 前提：解码后 gid 确实是 6 字符字面 \u0065 转义形态（片段里的 RequestExecution
+        # 类型名是字面出现，但无 gid:// 前缀不命中正则）
+        self.assertIn("R" + _GBS + "u0065questExecution", decoded)
+        self.assertEqual(admin_api.graphql_required_scopes(decoded), ["read_requests"])
+
+    def test_pure_double_escape_not_flagged(self):
+        decoded = json.loads(_GQL_DBL_ESC_GID)["query"]
+        self.assertEqual(admin_api.graphql_required_scopes(decoded), [])
+
+    def test_gql_escaped_gid_zero_scope_denied(self):
+        with self._with_me(me=_me(projects=[("gid://axonhub/Project/1", ["read_requests"])])):
+            status, body = _post_authz(_GQL_ESC_GID)
+        self.assertEqual(status, 403)
+        self.assertIn("read_requests", body.get("error", ""))
+
+    def test_gql_escaped_gid_owner_allowed(self):
+        with self._with_me(me=_me(owner=True)):
+            status, _ = _post_authz(_GQL_ESC_GID)
+        self.assertEqual(status, 200)
+
+    def test_gql_escaped_gid_system_scope_allowed(self):
+        with self._with_me(me=_me(scopes=["read_requests"])):
+            status, _ = _post_authz(_GQL_ESC_GID)
+        self.assertEqual(status, 200)
+
+    def test_gql_slash_escape_gid_denied(self):
+        with self._with_me(me=_me()):
+            status, _ = _post_authz(_GQL_ESC_SLASH_GID)
+        self.assertEqual(status, 403)
+
+    def test_gql_escaped_safe_type_not_flagged(self):
+        # 转义形态的有 policy 类型（Request）归一化后仍安全 → 零内省放行，无误报
+        with self._with_me(me=_me()) as m:
+            status, _ = _post_authz(_GQL_ESC_SAFE_REQUEST)
+        self.assertEqual(status, 200)
+        m.assert_not_called()
+
+    def test_gql_double_escape_not_flagged(self):
+        # 双反斜杠非攻击形态：执行语义不是受限 gid → 零内省放行，无误报
+        with self._with_me(me=_me()) as m:
+            status, _ = _post_authz(_GQL_DBL_ESC_GID)
+        self.assertEqual(status, 200)
+        m.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

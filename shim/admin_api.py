@@ -50,6 +50,11 @@ issue #129：Key 绕行名单 CRUD——GET/POST /dlp-admin/bypass-keys + PUT/DE
 （绕行审计条只带模型名与范围，不落原文不记 token）。
 issue #130：shadow-verdicts 出口 layer 过滤接受 block、stats 加 block 层（词表/
 归一化 secrets/EDM 内容阻断条，records 带 rule_ids 命中规则族标识——脱敏字段）。
+issue #138：graphql-authz 扫描补 GraphQL 字符串反转义归一化（graphql_unescape——
+query 文本内 \\uXXXX 等转义在 gqlgen 执行时才还原，不归一化则受限 gid 以转义形态
+隐身绕过正则）；白名单 key 服务端匹配 POST /dlp-admin/bypass-keys/match（读语义
+read_api_keys 档，携调用方 Bearer 按 idIn 批量取明文算 SHA-256 比对名单，只回匹配条，
+不明文落盘落日志）——控制台不再拉全量 key 明文到浏览器。
 
 与检测路径（/request /response 调用链）完全隔离：admin 平面 fail-closed——
 内省不可达回 503，不适用检测链的 fail-open 分级（契约 docs/contracts/dlp-webhook-shim.md）。
@@ -117,8 +122,54 @@ _GRAPHQL_OP_SCOPES = {
 # 可让危险 gid/字段名在原文里隐身（斜杠等字符以转义形态出现），经 axonhub JSON
 # 解码后还原执行；调用方必须先 json.loads，再用 graphql_strings 递归取全部字符串
 # 值后扫描（app.py _graphql_authz 即如此；本函数只对喂入的文本负责）。
+# issue #138：JSON 解码后还有第二层——GraphQL 单行字符串字面量自身支持转义
+# （\uXXXX/\u{…}/\" \\/ \/ \b \f \n \r \t），query 文本写 node(id:
+# "gid://axonhub/R\u0065questExecution/1") 时解码后仍是 6 字符字面 \u0065，
+# 正则不命中即放行，gqlgen 执行时按 GraphQL 语义二次反转义还原成受限 gid。
+# 故扫描前先经 graphql_unescape 反转义归一化，归一化产物再过正则。
 _GRAPHQL_GID_RE = re.compile(r"gid://axonhub/(" + "|".join(_GRAPHQL_GID_TYPE_SCOPES) + r")/")
 _GRAPHQL_OP_RE = re.compile(r"\b(" + "|".join(_GRAPHQL_OP_SCOPES) + r")\b")
+
+# GraphQL 单行字符串字面量转义表（issue #138；gqlgen/gqlparser 同款词法语义）
+_GQL_SIMPLE_ESCAPES = {'"': '"', "\\": "\\", "/": "/", "b": "\b",
+                       "f": "\f", "n": "\n", "r": "\r", "t": "\t"}
+_GQL_UESCAPE_RE = re.compile(r"\\u\{([0-9A-Fa-f]{1,6})\}|\\u([0-9A-Fa-f]{4})")
+
+
+def graphql_unescape(text: str) -> str:
+    """GraphQL 字符串反转义归一化（issue #138）：单次左到右扫描，与 gqlgen 解码语义一致
+    （"\\\\u0065" 的 "\\\\" 先成字面反斜杠，剩余 u0065 不再二次反转义——不放大攻击面
+    也不误报双反斜杠非攻击形态）。\\u{…} 变长形属新规范形态（gqlgen 未必支持——多解一处
+    不会漏判：不支持的引擎会拒该 query，语义等价 fail-closed）。非法/不完整转义原样保留
+    （gqlgen 会拒该 query，永不执行；保留原文最大化扫描可见性）。不做词法分析（不区分
+    转义是否在字符串字面量内）：字面量外的反斜杠在 GraphQL 是语法错误，对永不执行的
+    文本多归一化只会多命中（fail-closed），不会漏判。无反斜杠直通（常规流量零成本）。"""
+    if "\\" not in text:
+        return text
+    out = []
+    i, n = 0, len(text)
+    while i < n:
+        if text[i] != "\\" or i + 1 >= n:
+            out.append(text[i])
+            i += 1
+            continue
+        simple = _GQL_SIMPLE_ESCAPES.get(text[i + 1])
+        if simple is not None:
+            out.append(simple)
+            i += 2
+            continue
+        if text[i + 1] == "u":
+            m = _GQL_UESCAPE_RE.match(text, i)
+            if m:
+                try:
+                    out.append(chr(int(m.group(1) or m.group(2), 16)))
+                except (ValueError, OverflowError):
+                    out.append(m.group(0))  # 超码点上限：原样保留
+                i = m.end()
+                continue
+        out.append(text[i])  # 非法转义：保留反斜杠，下一字符照常扫描
+        i += 1
+    return "".join(out)
 
 
 def graphql_strings(payload):
@@ -136,9 +187,12 @@ def graphql_strings(payload):
 
 def graphql_required_scopes(body: str) -> list:
     """扫描 GraphQL 请求体原文，返回命中受限模式所需的系统 scope 列表（去重排序）；
-    空列表 = 常规查询（控制台全部日常流量），调用方零内省直接放行。"""
+    空列表 = 常规查询（控制台全部日常流量），调用方零内省直接放行。
+    issue #138：扫描前先 graphql_unescape 反转义归一化（GraphQL 字符串字面量 \\uXXXX
+    等转义在 gqlgen 执行时才还原，不归一化则受限 gid 以转义形态隐身）。"""
     if not body:
         return []
+    body = graphql_unescape(body)
     required = {_GRAPHQL_GID_TYPE_SCOPES[t] for t in _GRAPHQL_GID_RE.findall(body)}
     required.update(_GRAPHQL_OP_SCOPES[op] for op in _GRAPHQL_OP_RE.findall(body))
     return sorted(required)
@@ -165,7 +219,9 @@ _MAX_ADMIN_BODY = 1024 * 1024  # admin 请求体上限（配置文本足够）
 _MAX_EDM_BODY = 16 * 1024 * 1024  # EDM corpus POST 放宽（review #5：真实商密文档规模可达数 MB）
 
 # 端点级别 → 所需系统 scope（2026-08-06 定案：读 read_channels / 写 write_channels；isOwner 直通）。
-_LEVEL_SCOPES = {"read": "read_channels", "write": "write_channels"}
+# issue #138：bypass-keys/match 为读语义但读的是 key 面数据，用 read_api_keys 档
+# （与白名单面板页面路由同 scope；_authorize 机制本身任意 scope 名通用，加档即支持）。
+_LEVEL_SCOPES = {"read": "read_channels", "write": "write_channels", "read_api_keys": "read_api_keys"}
 
 
 def _respond(handler, code: int, obj) -> None:
@@ -1386,6 +1442,77 @@ def _bypass_keys_delete_item(handler, _me, kid):
     _respond(handler, 200, {"ok": True})
 
 
+# issue #138：白名单 key 服务端匹配——控制台不再拉全量 key 明文到浏览器算哈希比对
+# （名单只存哈希，明文只在 shim 内存过手）。APIKeyWhereInput.idIn 2026-09-08 活栈内省
+# 实证支持（[ID!] 列表过滤），一次批量查询；不存在/无权限的 id 不在 edges 出现——
+# 自然静默跳过。keyIds 上限与 apiKeys first 对齐（idIn ≤500 ⇒ first:500 必取全）。
+_MATCH_MAX_IDS = 500
+_APIKEYS_BY_IDS_QUERY = (
+    "query($ids: [ID!]!) { apiKeys(first: 500, where: {idIn: $ids}) { edges { node { id key } } } }"
+)
+
+
+def _query_apikeys_by_ids(token: str, ids: list):
+    """携调用方 Bearer 按 id 批量查 axonhub key 明文（issue #138；与 _introspect 同款
+    Bearer 透传纪律，不加客服端权——调用方看不见的 key 上游自然不返回）。
+    返回 node 列表；传输/报文失败或应答无 data.apiKeys → None（调用方 fail-closed 503）。
+    明文只在本函数与调用点内存过手：不落盘不落日志。"""
+    body = json.dumps({"query": _APIKEYS_BY_IDS_QUERY, "variables": {"ids": ids}}).encode()
+    req = urllib.request.Request(
+        AXONHUB_ADMIN_URL,
+        data=body,
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=INTROSPECT_TIMEOUT) as r:
+            payload = json.load(r)
+    except Exception:
+        return None
+    conn = (payload.get("data") or {}).get("apiKeys")
+    if not isinstance(conn, dict) or not isinstance(conn.get("edges"), list):
+        return None
+    return [e.get("node") or {} for e in conn["edges"]]
+
+
+def _bypass_keys_match_post(handler, me):
+    """POST /dlp-admin/bypass-keys/match（issue #138，读语义 read_api_keys 档）：
+    {"keyIds": [gid, ...]}（>500 → 400）→ 携调用方 Bearer 批量取明文，服务端算
+    SHA-256 与绕行名单比对，只回匹配条（keyId/entryId/label/scope/enabled，不含明文，
+    停用条照常回报 enabled=false 由前端展示）；未命中/查不到的 id 静默跳过，整体仍 200。"""
+    payload = _read_body(handler)
+    if payload is None:
+        return
+    ids = payload.get("keyIds") if isinstance(payload, dict) else None
+    if not isinstance(ids, list) or any(not isinstance(x, str) or not x for x in ids):
+        _respond(handler, 400, {"error": "keyIds 必须是非空字符串数组"})
+        return
+    if len(ids) > _MATCH_MAX_IDS:
+        _respond(handler, 400, {"error": f"keyIds 超上限: {len(ids)} > {_MATCH_MAX_IDS}"})
+        return
+    if not ids:
+        _respond(handler, 200, {"matches": []})
+        return
+    auth = handler.headers.get("Authorization") or ""
+    _, _, token = auth.partition(" ")  # _authorize 已校验形态，此处重取调用方 token 透传
+    nodes = _query_apikeys_by_ids(token, ids)
+    if nodes is None:
+        _respond(handler, 503, {"error": "axonhub key 查询不可用"})
+        return
+    entries = {k.get("id"): k for k in bypass_keys.load().get("keys") or []}
+    matches = []
+    for node in nodes:
+        raw = node.get("key") or ""
+        if not raw:
+            continue
+        entry = entries.get(hashlib.sha256(raw.encode("utf-8")).hexdigest())
+        if entry is not None:
+            matches.append({"keyId": node.get("id"), "entryId": entry.get("id"),
+                            "label": entry.get("label"), "scope": entry.get("scope"),
+                            "enabled": bool(entry.get("enabled"))})
+    matches.sort(key=lambda m: str(m["keyId"]))  # 确定性输出
+    _respond(handler, 200, {"matches": matches})
+
+
 # 路由表：(方法, 路径) -> (鉴权级别 | None, 端点)
 _ROUTES = {
     ("GET", "/dlp-admin/healthz"): (None, _healthz),
@@ -1406,6 +1533,7 @@ _ROUTES = {
     ("GET", "/dlp-admin/shadow-verdicts"): ("read", _shadow_verdicts),  # issue #92：shadow 观测出口
     ("GET", "/dlp-admin/bypass-keys"): ("read", _bypass_keys_get),  # issue #129：Key 绕行名单
     ("POST", "/dlp-admin/bypass-keys"): ("write", _bypass_keys_post),
+    ("POST", "/dlp-admin/bypass-keys/match"): ("read_api_keys", _bypass_keys_match_post),  # issue #138：服务端匹配
 }
 
 
