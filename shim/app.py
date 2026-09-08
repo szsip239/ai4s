@@ -73,7 +73,7 @@ OPF_URL = os.environ.get("OPF_URL", "http://opf:8081")
 WORDLIST_PATH = os.environ.get("WORDLIST_PATH", "/dlp/confidential-terms.json")
 PII_RECOGNIZERS_PATH = os.environ.get("PII_RECOGNIZERS_PATH", "/recognizers/pii-zh.json")
 SETTINGS_PATH = os.environ.get("SETTINGS_PATH", "/dlp/settings.json")
-MAX_BODY = 256 * 1024  # 契约：请求体超限截断送检
+MAX_BODY = 256 * 1024  # 体长上限：超限只读前 MAX_BODY 字节；截断体 json 解析失败走降级送检（issue #137，不 5xx）
 # /graphql-authz 检查体上限（2026-09-03）：与网关 extAuthz includeRequestBody
 # maxRequestBytes 对齐（1 MiB）；控制台真实 GraphQL 查询为 KB 级，超限即拒
 MAX_GRAPHQL_AUTHZ_BODY = 1024 * 1024
@@ -317,6 +317,56 @@ def judge_pre_decode(text: str) -> str:
         if s and sum(ch.isprintable() or ch.isspace() for ch in s) / len(s) > 0.9:
             text = text.replace(m, s)
     return text
+
+
+# 阻断路径解码重扫（issue #137 P1-2）：base64/hex 编码包裹曾绕过全部阻断层——直扫只做
+# normalize_hard 后子串/正则匹配，无解码阶段（解码此前只存在于永不阻断的 judge shadow）。
+# 此处对文本中的编码形 token 探测解码，产物过同一密钥/词表/EDM 判定函数，命中即 451。
+# 误伤控制（多模态/正常 base64 讨论不伤）：
+#   - 解码产物必须 UTF-8 可解且可打印率 >0.9（inject_rules.decode_probe 同款门槛）——
+#     data:image/* 等 data URL 载荷与图片/压缩/加密字节落不进重扫；不专门剥离 data URL
+#     前缀（前缀可伪造，剥了反而开「data:image/png;base64,<编码秘密>」绕行口）；
+#   - 多模态 image_url part 本就不进 extract_text（结构隔离）；
+#   - 性能：base64 复用 decode_probe（深度上限 2 + token set 去重，总量随输入线性）；
+#     hex 单趟不迭代（嵌套 hex 无现实攻击样本）；产物数量/总字符双上限防密集 token 拖慢阻扫。
+_HEX_TOKEN = re.compile(r"[0-9a-fA-F]{24,}")  # 24 hex = 12 字节（最短商密词的 UTF-8 字节量级）
+_RESCAN_MAX_TEXTS = 64   # 每请求解码产物条数上限（正常请求 0-2 条；密集 token 文本的有界代价）
+_RESCAN_MAX_CHARS = MAX_BODY  # 解码产物累计字符上限（与原 body 上限同量级）
+
+
+def _printable_utf8(raw: bytes) -> str:
+    """bytes → 合法 UTF-8 且可打印率 >0.9 的文本，否则 ''（decode_probe 同款门槛）。"""
+    try:
+        s = raw.decode("utf-8")
+    except Exception:
+        return ""
+    if s and sum(ch.isprintable() or ch.isspace() for ch in s) / len(s) > 0.9:
+        return s
+    return ""
+
+
+def decode_rescan(text: str) -> list:
+    """返回文本中 base64/hex 编码段的去重解码产物（均为可打印 UTF-8 文本，条数/总字符有上限）。
+    纯函数，任何解码异常 fail-open（token 跳过，绝不向阻断主流程抛）。"""
+    out, seen, total = [], set(), 0
+
+    def _push(plain):
+        nonlocal total
+        if plain and plain not in seen and len(out) < _RESCAN_MAX_TEXTS and total < _RESCAN_MAX_CHARS:
+            seen.add(plain)
+            total += len(plain)
+            out.append(plain)
+
+    for _, plain in inject_rules.decode_probe(text):  # base64 迭代探针（深度上限 2）
+        _push(plain)
+    for tok in set(_HEX_TOKEN.findall(text)):
+        if len(tok) % 2:  # fromhex 要求偶长
+            continue
+        try:
+            _push(_printable_utf8(bytes.fromhex(tok)))
+        except Exception:
+            continue
+    return out
 
 
 def _judge_chat(model, base_url, timeout, system_content, fewshot, text):
@@ -800,6 +850,18 @@ def extract_text(messages) -> str:
                 if isinstance(p, dict) and isinstance(p.get("text"), str):
                     parts.append(p["text"])
     return "\n".join(parts)
+
+
+def degraded_body_text(raw: bytes) -> str:
+    """截断/畸形请求体的容错文本抽取（issue #137 P1-1）：体超 MAX_BODY 截断（或畸形 JSON/
+    顶层非对象）时 json.loads 必抛，原路径落 500——网关 failureMode=failOpen 下 5xx=全层
+    放行（撤防）。改为对截得原始字节 UTF-8 容错解码后直接交同一检测管线（归一化密钥/词表/
+    EDM/注入规则）：命中仍 451，未命中放行。已知边界记账：截断点之后的敏感内容不可见
+    （网关上送完整体，shim 只看前 MAX_BODY）；JSON \\uXXXX 转义形态不还原（agentgateway
+    serde_json 产出 UTF-8 字面量，生产路径无此形态）。"""
+    if not raw:
+        return ""
+    return raw.decode("utf-8", errors="replace")
 
 
 def presidio_hits(text: str, latin_terms: list) -> list:
@@ -1390,6 +1452,16 @@ def mask_pipeline(messages, l1_on: bool, l2_on: bool):
     return masked_msgs, any_masked, entities
 
 
+def _body_length(headers) -> int:
+    """声明体长解析（issue #137）：非法/负值 Content-Length → 0（不抛异常、不读流至 EOF 挂连接），
+    正值封顶 MAX_BODY。网关 failOpen 下 shim 任何 5xx=全层放行，体长解析永不进 500 面。"""
+    try:
+        n = int(headers.get("Content-Length") or 0)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(n, MAX_BODY))
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):  # 静默（命中敏感值不进 shim 日志，契约）
         pass
@@ -1544,7 +1616,7 @@ class Handler(BaseHTTPRequestHandler):
             # /bv1 全绕入口鉴权（issue #129）；body 只为审计读模型名，解析失败不挡鉴权
             payload = None
             try:
-                length = min(int(self.headers.get("Content-Length") or 0), MAX_BODY)
+                length = _body_length(self.headers)
                 payload = json.loads(self.rfile.read(length) or b"{}")
             except Exception:
                 payload = {}
@@ -1573,7 +1645,7 @@ class Handler(BaseHTTPRequestHandler):
             # shadow_log layer="router" 决策条（无原文无会话 key，供阈值校准回放与
             # router 层异常率巡检）。
             try:
-                length = min(int(self.headers.get("Content-Length") or 0), MAX_BODY)
+                length = _body_length(self.headers)
                 payload = json.loads(self.rfile.read(length) or b"{}")
                 model = payload.get("model") if isinstance(payload, dict) else None
             except Exception:
@@ -1604,7 +1676,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/feishu-alert":
             # axonhub webhook → 飞书适配（issue #17）
             try:
-                length = min(int(self.headers.get("Content-Length") or 0), MAX_BODY)
+                length = _body_length(self.headers)
                 payload = json.loads(self.rfile.read(length) or b"{}")
                 ok = send_feishu_text(format_axonhub_alert(payload))
             except Exception as e:
@@ -1620,7 +1692,7 @@ class Handler(BaseHTTPRequestHandler):
             # 管线同口径；受 inject_enabled 门控——关态 verdict=null，与商密 duty 受 enabled
             # 门控同语义），缺省/省略 duty=商密判定（既有形状不变）；非法 duty 显式 400
             try:
-                length = min(int(self.headers.get("Content-Length") or 0), MAX_BODY)
+                length = _body_length(self.headers)
                 payload = json.loads(self.rfile.read(length) or b"{}")
                 duty = payload.get("duty") or "commercial"
                 if duty not in ("commercial", "inject"):
@@ -1647,9 +1719,17 @@ class Handler(BaseHTTPRequestHandler):
             # 总开关（issue #40）：response.enabled=false → 整个分支直接放行不检测；
             # l1/l2 总开关在响应侧同样生效（模块关=处处关）。
             try:
-                length = min(int(self.headers.get("Content-Length") or 0), MAX_BODY)
-                payload = json.loads(self.rfile.read(length) or b"{}")
-                resp_body = payload.get("body")
+                raw = self.rfile.read(_body_length(self.headers)) or b""
+                try:
+                    payload = json.loads(raw or b"{}")
+                    resp_body = payload.get("body")
+                except Exception:
+                    # 降级送检（issue #137 P1-1，与 /request 同义）：体超 MAX_BODY 截断/畸形
+                    # JSON 不再 500（网关 failOpen 下 5xx=全层放行）；截得字节容错抽取文本，
+                    # 包成 choices 形状交同一 mask_response_body 管线（l1/l2 门控不变）。
+                    payload = {"body": {}}
+                    resp_body = {"choices": [{"message": {"content": degraded_body_text(raw)}}]}
+                    print(f"[dlp.degraded] /response body 解析失败，降级扫描原始字节 {len(raw)}B", flush=True)
                 settings = load_settings()
                 _layer_switch_observe(settings)  # 开关状态变化 warn（issue #40 review）
                 # Key 绕行（issue #129）：scope=all 或覆盖 response 层 → 直接放行；覆盖 l1/l2
@@ -1697,10 +1777,20 @@ class Handler(BaseHTTPRequestHandler):
             self._json(404, {})
             return
         try:
-            length = min(int(self.headers.get("Content-Length") or 0), MAX_BODY)
-            payload = json.loads(self.rfile.read(length) or b"{}")
-            messages = (payload.get("body") or {}).get("messages") or []
-            text = extract_text(messages)
+            raw = self.rfile.read(_body_length(self.headers)) or b""
+            try:
+                payload = json.loads(raw or b"{}")
+                messages = (payload.get("body") or {}).get("messages") or []
+                text = extract_text(messages)
+            except Exception:
+                # 降级送检（issue #137 P1-1）：体超 MAX_BODY 截断/畸形 JSON/顶层非对象 →
+                # 不再 500（网关 failOpen 下 5xx=全层放行，即撤防）；截得原始字节容错抽取
+                # 文本交下方同一检测管线，命中仍 451，未命中放行。payload 留空壳（审计/
+                # 模型名回退 x-model 头），messages 置空——掩码段无改写对象自然 pass
+                # （截断体本就改写不能），judge shadow 因空输入跳过（shadow 层不影响阻断）。
+                payload, messages = {"body": {}}, []
+                text = degraded_body_text(raw)
+                print(f"[dlp.degraded] /request body 解析失败，降级扫描原始字节 {len(raw)}B", flush=True)
             terms = load_terms()
             # 统一配置（issue #35）：settings.json > env > 内置默认，每请求重读热生效；本段一次读多键用
             settings = load_settings()
@@ -1737,8 +1827,32 @@ class Handler(BaseHTTPRequestHandler):
             # EDM 文档指纹（issue #29，L3）：整段粘贴商密文档 → 命中阈值即拦
             edm_enabled = setting_value(settings, "edm", "enabled", "EDM_ENABLED", False)
             edm_min_hits = setting_value(settings, "edm", "min_hits", "EDM_MIN_HITS", 2)
-            if edm_enabled and not pre_rules and edm_hit_count(text, load_edm_fps()) >= edm_min_hits:
-                pre_rules = ["edm.doc_match"]
+            # 解码重扫（issue #137 P1-2）：直扫未命中时对文本中的 base64/hex 编码段探测解码，
+            # 产物过同一密钥/词表/EDM 判定（误伤控制与性能上限见 decode_rescan 头注）。
+            # 直扫已命中不重扫（451 已定）；三层全关不解码（撤防态零开销）。层自身异常
+            # fail-open：跳过重扫放行，不进 500 面。
+            _decoded = []
+            if text and not pre_rules and (l1_on or l2_on or edm_enabled):
+                try:
+                    _decoded = decode_rescan(text)
+                except Exception as e:
+                    print(f"[dlp.rescan] fail-open: {type(e).__name__}", flush=True)
+            if _decoded and (l1_on or l2_on):
+                _rules = load_format_rules()  # 循环外一次加载（review #4 纪律）
+                for _dt in _decoded:
+                    _dnorm, _ = normalize_hard(_dt)
+                    if l1_on:
+                        _codes = norm_secret_hits(_dnorm, _rules)
+                        _secret_codes += _codes
+                        pre_rules += _codes
+                    if l2_on:
+                        _thits = norm_term_hits(_dnorm.lower(), terms)
+                        _term_hits += _thits
+                        pre_rules += [t["rule_id"] for t in _thits]
+            if edm_enabled and not pre_rules:
+                _fps = load_edm_fps()
+                if any(edm_hit_count(_et, _fps) >= edm_min_hits for _et in [text, *_decoded]):
+                    pre_rules = ["edm.doc_match"]
             hits = [] if (pre_rules or not l2_on) else (analyze(text, terms) if text else [])
         except Exception as e:
             # shim 自身异常 → 500，由 agentgateway failureMode=failOpen 放行（契约分级）

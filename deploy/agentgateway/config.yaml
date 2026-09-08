@@ -215,6 +215,7 @@ routes:
       extAuthz:
         host: shim:8080
         failureMode: deny  # fail-closed：绕行门在 shim 故障时常闭
+        includeRequestHeaders: [authorization]  # issue #137：extAuthz 子请求默认不带原请求头，缺此则白名单 key 恒 403
         includeRequestBody:
           maxRequestBytes: 65536  # 只为审计条带模型名；截断时 shim 侧容错不落模型键
           allowPartialMessage: true

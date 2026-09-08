@@ -636,5 +636,90 @@ class TestExtractedTextCap(unittest.TestCase):
         self.assertIn("商密文档边界行", text)
 
 
+class TestStreamCapInterrupt(unittest.TestCase):
+    """提取过程流式计数、超限即中断（issue #137 P1-4）：字符上限原在全文 materialize 后
+    才查（extract_text_from_bytes 尾部），zip/PDF 扩张文本可 OOM 打挂 shim（检测链
+    fail-open 窗口）；文本层 PDF 补页数上限 MAX_TEXT_PAGES（MAX_OCR_PAGES 只管 OCR）。
+    cap 常量经 mock.patch.object 缩微，不造真实超大文件。"""
+
+    def test_xlsx_interrupts_mid_iteration(self):
+        # 计数假工作簿：超限立即抛，不得消费完全部行（修复前无中途封顶，1000 行全读）
+        from unittest import mock
+
+        consumed, closed = [0], [False]
+
+        class _Sheet:
+            def iter_rows(self, values_only=True):
+                for i in range(1000):
+                    consumed[0] += 1
+                    yield (f"第{i}行 " + "数据" * 30,)  # ~65 字符/行
+
+        class _Wb:
+            sheetnames = ["s1"]
+
+            def __getitem__(self, name):
+                return _Sheet()
+
+            def close(self):
+                closed[0] = True
+
+        with mock.patch.object(dx, "MAX_EXTRACTED_CHARS", 500), \
+                mock.patch("openpyxl.load_workbook", return_value=_Wb()):
+            with self.assertRaises(dx.ExtractedTextTooLargeError):
+                dx._extract_xlsx(b"PK\x03\x04" + b"0" * 64, "bomb.xlsx")
+        self.assertLess(consumed[0], 100)  # 超限即中断（远未读完 1000 行）
+        self.assertTrue(closed[0])  # finally 关闭工作簿不变
+
+    def test_xlsx_real_file_over_cap_not_wrapped_corrupt(self):
+        # 真实 xlsx：超抛出 ExtractedTextTooLargeError 本身（不被 except Exception 裹成 Corrupt）
+        rows = [["甲公司机密数据" * 10] for _ in range(50)]  # ~80 字符/行
+        from unittest import mock
+        with mock.patch.object(dx, "MAX_EXTRACTED_CHARS", 1000):
+            with self.assertRaises(dx.ExtractedTextTooLargeError) as cm:
+                dx.extract_text_from_bytes("big.xlsx", make_xlsx_bytes({"s": rows}))
+        self.assertIn("上限", str(cm.exception))
+
+    def test_pdf_text_layer_page_cap(self):
+        # 文本层页数上限（修复前只有 OCR 路径有 MAX_OCR_PAGES，文本层无界）
+        from unittest import mock
+        data = make_pdf_bytes([f"page {i} body " + "x" * 60 for i in range(3)])
+        with mock.patch.object(dx, "MAX_TEXT_PAGES", 2):
+            with self.assertRaises(dx.ExtractedTextTooLargeError) as cm:
+                dx.extract_text_from_bytes("long.pdf", data)
+        self.assertIn("页", str(cm.exception))
+
+    def test_pdf_text_layer_page_cap_boundary(self):
+        # 恰达页数上限放行（≥ 语义）：两页密集文本正常提取（每页 ≥50 有效字符不触发 OCR 回退）
+        from unittest import mock
+        data = make_pdf_bytes(["first page " + "a" * 60, "second page " + "b" * 60])
+        with mock.patch.object(dx, "MAX_TEXT_PAGES", 2):
+            text = dx.extract_text_from_bytes("ok.pdf", data)
+        self.assertIn("first page", text)
+        self.assertIn("second page", text)
+
+    def test_pdf_text_chars_capped_mid_loop(self):
+        # 直调 _extract_pdf（绕开 extract_text_from_bytes 尾部事后检查）：
+        # 抛错即证明页循环内流式中断，而非全文 join 后才判
+        from unittest import mock
+        data = make_pdf_bytes([f"page {i} " + "y" * 60 for i in range(5)])  # ~70 字符/页
+        with mock.patch.object(dx, "MAX_EXTRACTED_CHARS", 150):
+            with self.assertRaises(dx.ExtractedTextTooLargeError):
+                dx._extract_pdf(data, "dense.pdf")
+
+    def test_docx_over_cap_not_wrapped_corrupt(self):
+        from unittest import mock
+        data = make_docx_bytes(["机密段落" + "字" * 80 for _ in range(10)])
+        with mock.patch.object(dx, "MAX_EXTRACTED_CHARS", 300):
+            with self.assertRaises(dx.ExtractedTextTooLargeError):
+                dx._extract_docx(data, "big.docx")
+
+    def test_pptx_over_cap_not_wrapped_corrupt(self):
+        from unittest import mock
+        data = make_pptx_bytes([["幻灯片文本" + "内容" * 40 for _ in range(5)]])  # 5×~85 字符
+        with mock.patch.object(dx, "MAX_EXTRACTED_CHARS", 300):
+            with self.assertRaises(dx.ExtractedTextTooLargeError):
+                dx._extract_pptx(data, "big.pptx")
+
+
 if __name__ == "__main__":
     unittest.main()

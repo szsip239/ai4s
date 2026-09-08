@@ -22,7 +22,10 @@ OCR_PAGE_TIMEOUT 超时（pytesseract timeout kwarg），超时/引擎失败 →
 直传图片路径 OCR 调用兜底一切内部异常转 CorruptDocumentError（不裸泄断线）。
 提取文本长度上限 MAX_EXTRACTED_CHARS（issue #49 P1-1）：zip 压缩态/流扩张可使 16MB 文件
 提出数十 MB 文本，edm_lib.shingles 全量滑窗内存随字符数线性膨胀，无上限可 OOM 打挂 shim
-（检测链 fail-open 窗口）；8M 字符 ≈ 500 页 PDF（~1.5M 字符）的 5 倍余量。
+（检测链 fail-open 窗口）；8M 字符 ≈ 500 页 PDF（~1.5M 字符）的 5 倍余量。issue #137 P1-4
+起提取过程流式计数（_cap_check 逐行/逐页），超限立即中断抛错——原事后检查拦在全文
+materialize 之后，OOM 窗口依旧；文本层 PDF 补页数上限 MAX_TEXT_PAGES（MAX_OCR_PAGES 只管
+OCR 路径，百万稀疏页的畸形 PDF 字符上限兜不住）。
 第三方解析库（fitz/docx/openpyxl/pptx/pytesseract/Pillow）一律函数级懒加载（issue #49 P2-7）：
 app.py → admin_api → doc_extract 模块级 import 链不含第三方库，解析库缺失/损坏不波及
 /request /response 检测路径。
@@ -54,6 +57,10 @@ _IMAGE_MAGICS = (  # 与 IMAGE_EXTENSIONS 对应：png / jpeg / bmp / tiff(LE|BE
 # 提取文本字符数上限（issue #49 P1-1）：防 zip/流扩张提出超大文本 OOM 打挂 shim
 MAX_EXTRACTED_CHARS = 8 * 1000 * 1000
 MAX_OCR_PAGES = 50  # 扫描 PDF OCR 页数上限（issue #50）：单页 OCR 秒级，防超长扫描件拖死上传请求
+# 文本层 PDF 页数上限（issue #137 P1-4）：MAX_OCR_PAGES 只管 OCR 路径；文本层单页 get_text
+# ms 级但页数无界（百万稀疏页的畸形 PDF 字符上限兜不住），提取时间随页数线性膨胀拖住上传请求。
+# 2000 页 ≈ 6M 字符密集文本，仍在 8M 字符上限内（不影响正常大文档）
+MAX_TEXT_PAGES = 2000
 # OCR 单页/单图渲染-解码像素预算（issue #51 P1-1，两条 OCR 路径共用）：≈180DPI 的 A0 页有余量；
 # 数万 pt MediaBox 畸形 PDF（文件仅几 KB，字节/页数/字符三重上限兜不住）渲染即数百亿像素，
 # 直传超大图解码同理，超限可 OOM 打挂 shim（检测链 fail-open 窗口，#49 P1-1 同类）
@@ -102,6 +109,18 @@ class ExtractedTextTooLargeError(DocumentExtractionError):
     """提取文本超过 MAX_EXTRACTED_CHARS（issue #49 P1-1）。"""
 
 
+def _cap_check(total: int, filename: str) -> None:
+    """流式字符上限检查（issue #137 P1-4）：累计超限立即中断抛错——原上限在提取完成后
+    才查（extract_text_from_bytes 尾部），zip/PDF 扩张文本会全文 materialize 后才拦，
+    edm_lib.shingles 全量滑窗内存随字符数线性膨胀，可 OOM 打挂 shim（检测链 fail-open
+    窗口）。各提取器逐行/逐页调用；尾部事后检查保留兜 _decode_text 等无中间检查路径。"""
+    if total > MAX_EXTRACTED_CHARS:
+        raise ExtractedTextTooLargeError(
+            f"「{filename}」提取文本超过 {MAX_EXTRACTED_CHARS // 1000000}00 万字符上限"
+            "（zip/流扩张防 OOM 保护），请拆分文档后上传"
+        )
+
+
 def extract_text_from_bytes(filename: str, data: bytes) -> str:
     """从单个文档的原始字节提取纯文本；失败抛 DocumentExtractionError 子类。"""
     if not data:
@@ -142,6 +161,8 @@ def extract_text_from_bytes(filename: str, data: bytes) -> str:
                 "请用更清晰版本或文字版文件）"
             )
         raise EmptyDocumentError(f"「{filename}」未提取到文本")
+    # 尾部事后检查（issue #49 P1-1 原检查，issue #137 起降级为兜底）：_decode_text 等无中间
+    # 检查路径的防线；Office/PDF 路径由 _cap_check 在提取过程中流式拦截
     if len(text) > MAX_EXTRACTED_CHARS:
         raise ExtractedTextTooLargeError(
             f"「{filename}」提取文本 {len(text)} 字符超过 {MAX_EXTRACTED_CHARS // 1000000}00 万字符上限"
@@ -164,12 +185,25 @@ def _extract_pdf(data: bytes, filename: str) -> str:
         with fitz.open(stream=data, filetype="pdf") as doc:
             if doc.is_encrypted and not doc.authenticate(""):
                 raise CorruptDocumentError(f"「{filename}」已加密，无法读取")
-            text = "\n\n".join(page.get_text() for page in doc)
+            # 文本层页数上限（issue #137 P1-4）：页数无界时提取时间随页数线性膨胀
+            if doc.page_count > MAX_TEXT_PAGES:
+                raise ExtractedTextTooLargeError(
+                    f"「{filename}」共 {doc.page_count} 页超过文本层 {MAX_TEXT_PAGES} 页上限"
+                    "（防超长文档提取拖死上传），请拆分文档后上传"
+                )
+            parts, total = [], 0
+            for page in doc:
+                piece = page.get_text()
+                total += len(piece) + 2  # +2 ≈ "\n\n" 分隔符
+                _cap_check(total, filename)  # 流式计数超限即中断（issue #137 P1-4）
+                parts.append(piece)
+            text = "\n\n".join(parts)
             if text.strip() and not _needs_ocr_fallback(doc, text):
                 return text
             # 无内嵌文本层（issue #50），或水印文本层挡住（issue #52 缺口 2）→ 渲染页图逐页 OCR
             return _ocr_pdf_pages(doc, filename)
-    except (CorruptDocumentError, OcrUnavailableError, OcrImageTooLargeError, EmptyDocumentError):
+    except (CorruptDocumentError, OcrUnavailableError, OcrImageTooLargeError, EmptyDocumentError,
+            ExtractedTextTooLargeError):
         raise
     except Exception as e:
         raise CorruptDocumentError(f"「{filename}」PDF 解析失败（{e}）") from e
@@ -283,16 +317,22 @@ def _extract_docx(data: bytes, filename: str) -> str:
         doc = DocxDocument(io.BytesIO(data))
         # iter_inner_content()（python-docx 1.2.0）按文档顺序产出段落+表格（issue #52 缺口 1：
         # 旧实现只取 document.paragraphs，试点真实文档 95% 内容在表格里全丢）
-        lines = []
+        lines, total = [], 0
         for block in doc.iter_inner_content():
             if isinstance(block, DocxTable):
                 for row in block.rows:
                     line = "\t".join(_dedup_adjacent_cells([cell.text.strip() for cell in row.cells]))
                     if line.strip():
+                        total += len(line) + 1
+                        _cap_check(total, filename)  # 流式计数超限即中断（issue #137 P1-4）
                         lines.append(line)
             elif block.text.strip():
+                total += len(block.text) + 1
+                _cap_check(total, filename)
                 lines.append(block.text)
         return "\n".join(lines)
+    except ExtractedTextTooLargeError:
+        raise
     except Exception as e:
         raise CorruptDocumentError(f"「{filename}」DOCX 解析失败（{e}）") from e
 
@@ -316,15 +356,19 @@ def _extract_xlsx(data: bytes, filename: str) -> str:
     try:
         wb = load_workbook(io.BytesIO(data), read_only=True, data_only=True)
         try:
-            lines = []
+            lines, total = [], 0
             for sheet_name in wb.sheetnames:
                 for row in wb[sheet_name].iter_rows(values_only=True):
                     line = "\t".join(str(cell) if cell is not None else "" for cell in row)
                     if line.strip():
+                        total += len(line) + 1
+                        _cap_check(total, filename)  # 流式计数超限即中断（issue #137 P1-4）
                         lines.append(line)
             return "\n".join(lines)
         finally:
             wb.close()
+    except ExtractedTextTooLargeError:
+        raise
     except Exception as e:
         raise CorruptDocumentError(f"「{filename}」XLSX 解析失败（{e}）") from e
 
@@ -335,11 +379,16 @@ def _extract_pptx(data: bytes, filename: str) -> str:
     _check_magic(data, _OOXML_MAGIC, filename, "Office 文件")
     try:
         prs = PptxPresentation(io.BytesIO(data))
-        lines = []
+        lines, total = [], 0
         for slide in prs.slides:
             for shape in slide.shapes:
-                lines.extend(_pptx_shape_lines(shape))
+                for line in _pptx_shape_lines(shape):
+                    total += len(line) + 1
+                    _cap_check(total, filename)  # 流式计数超限即中断（issue #137 P1-4）
+                    lines.append(line)
         return "\n".join(lines)
+    except ExtractedTextTooLargeError:
+        raise
     except Exception as e:
         raise CorruptDocumentError(f"「{filename}」PPTX 解析失败（{e}）") from e
 
