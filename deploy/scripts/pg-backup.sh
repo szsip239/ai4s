@@ -4,6 +4,8 @@
 # 建议每日定时（crontab 示例）：
 #   0 3 * * * cd /path/to/ai4s/deploy && ./scripts/pg-backup.sh >> backups/cron.log 2>&1
 set -euo pipefail
+# 备份含全库明文（api_keys 等），产物权限 600（issue #139）
+umask 077
 cd "$(dirname "$0")/.."
 
 mkdir -p backups
