@@ -6,6 +6,8 @@
 #   默认常开、无外部依赖；l1.enabled=false（issue #40 总开关）整层撤防——密钥拦截全敞口，下方标记区块联动渲染为空
 #   L2 shim → Presidio（PII/商密，fail-open 分级）——已经下方 webhook 接入（issue #15 请求侧 / #23 响应侧），
 #   l2.enabled 总开关同 #40；L3 EDM 语料、judge、PG 注入检测（judge/PG 为 shadow 只记不拦）全在 shim 内，不经本文件
+# 安全注意（issue #139）：shim 启动会把 SHIM_LOCAL_TOKEN 明文渲染进本文件 SHIM-LOCAL-TOKEN
+# 标记段（File 模式不支持 env 展开，渲染写回是唯一注入路径）——commit 前确认 diff 不含渲染态 token
 config:
   # readiness 探针服务，健康判定：GET /healthz/ready
   readinessAddr: 0.0.0.0:15001
@@ -32,6 +34,9 @@ routes:
       # 协议语义：shim 任何输入恒 200（2xx=放行；非 2xx 会被当 deny 决策直回客户端——
       # failureMode=allow 只管传输层失败）；响应头 x-resolved-model 经 metadata CEL 存为
       # extauthz.resolved_model，供下方 ai.transformations 改写 model 用。
+      # 请求注头（issue #139）：/classify 挂共享密钥守卫，X-Shim-Local-Token 由 shim 启动
+      # 渲染进下方 SHIM-LOCAL-TOKEN 标记段（addRequestHeaders）；缺失/过期 → shim 403 →
+      # 网关当 deny 决策，/v1 断流——token 轮换须先 restart shim 再 restart agentgateway。
       # 执行顺序（v1.4.1 源码实证 httpproxy.rs apply_request_policies → llm read_body）：
       # extAuthz → extProc → ai.transformations → modelAliases → promptGuard webhook（DLP）。
       extAuthz:
@@ -43,6 +48,8 @@ routes:
         protocol:
           http:
             path: '"/classify"'
+            # >>> SHIM-LOCAL-TOKEN BEGIN（issue #139：shim 启动渲染 addRequestHeaders 注守卫头，勿手改；env SHIM_LOCAL_TOKEN 空则段内渲染为空） >>>
+            # <<< SHIM-LOCAL-TOKEN END <<<
             metadata:
               resolved_model: 'response.headers["x-resolved-model"]'
       ai:
@@ -238,6 +245,16 @@ routes:
     matches:
       - path:
           regex: '^/admin/requests/.+/content$'
+    policies:
+      directResponse:
+        status: 403
+  # /admin/system/initialize 公网匿名可抢注 owner（issue #139，同 #68 P2-D 先例）：
+  # DB 重置窗口内无鉴权。系统已完成初始化，网关侧先行 403；未来需重新初始化时临时注释本规则。
+  # /admin/system/status 保持开放（控制台初始化向导依赖它判断 isInitialized，仅泄漏布尔值）。
+  - gateways: [default, mtls]
+    matches:
+      - path:
+          exact: /admin/system/initialize
     policies:
       directResponse:
         status: 403

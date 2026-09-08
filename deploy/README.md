@@ -107,7 +107,8 @@ crontab 每日 03:00：`0 3 * * * cd <repo>/deploy && ./scripts/pg-backup.sh >> 
 部署或变更后开员工流量前逐项确认，任一不满足不得放行：
 
 - [ ] `python3 scripts/dlp-regression.py` 全绿（含 EDM/admin/注入/语义水位门禁段）
-- [ ] **judge 外发前置脱敏生效**（`judge.enabled=true` 前必查，issue #93 / ADR-0006）：judge 判定输入一律为 L1/L2 掩码后文本（masked_msgs）——用「仅含 `sk-` 密钥、无其他涉密语义」的样本过 `/judge-test`，judge 应判 clean（原文若真外发必判涉密，判 clean 即间接证明 judge 只见掩码占位）；secret/PII 原文不进 judge prompt
+- [ ] **judge 外发前置脱敏生效**（`judge.enabled=true` 前必查，issue #93 / ADR-0006）：judge 判定输入一律为 L1/L2 掩码后文本（masked_msgs）——用「仅含 `sk-` 密钥、无其他涉密语义」的样本过 `/judge-test`，judge 应判 clean（原文若真外发必判涉密，判 clean 即间接证明 judge 只见掩码占位）；secret/PII 原文不进 judge prompt。`/judge-test` 直测须带 `X-Shim-Local-Token` 头（issue #139 守卫；scripts 下评估脚本自动从 env/`deploy/.env` 读）
+- [ ] `SHIM_LOCAL_TOKEN` 链路完整（issue #139）：`.env` 已配置；`docker compose logs ai4s-shim 2>&1 | grep local-token` 无渲染失败行（shim 启动已把 token 渲染进 agentgateway `config.yaml` 的 `SHIM-LOCAL-TOKEN` 标记段）；token 轮换顺序 = 先 `docker compose restart shim` 再 `docker compose restart agentgateway`，不可反
 - [ ] `JUDGE_API_KEY`/`FEISHU_*` 只走 `.env`，未写入 settings.json 或任何入库配置文件
 - [ ] `judge.action` 只取 off/shadow/warn；reject 档契约不支持消费（语义层永不阻断，UI 灰置，误设按 shadow 处理 + 日志提示）
 - [ ] fail-open 告警链路可用：alert_poller 探活（shim `/healthz`、Presidio `/health`）与飞书群机器人签名发送实测可达；judge warn 巡检项 6 游标消费正常（`alert-state/shadow-verdicts.jsonl` 有判定落条）

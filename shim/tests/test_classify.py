@@ -6,6 +6,9 @@ issue #115 的桩行为（auto→echo-test 写死、其他合法 model 原值回
 
 - 协议语义：任何输入都 200（2xx=放行；本端点只分类不鉴权，永不阻断——非 2xx 会被网关
   当 deny 决策，fail-open 由网关 failureMode=allow 管，不由本端点）；
+  issue #139 起前置共享密钥守卫：请求头 X-Shim-Local-Token 与 env SHIM_LOCAL_TOKEN
+  不匹配或 env 未配置 → 恒 403（fail-closed）；本文件用例统一带有效头（模块级 setdefault），
+  守卫本身的 403 契约见 test_detection_surface.py LocalTokenGuardTest；
 - routing.enabled=false（settings 无 routing 节或显式 false）→ 对所有 model 回 200
   **不带** x-resolved-model 响应头（网关 CEL has(extauthz.resolved_model) 为 false，
   回退 llmRequest.model；auto 由 modelAliases 静态兜底落旗舰——与现网等价）；
@@ -40,6 +43,11 @@ _SHIM = ThreadingHTTPServer(("127.0.0.1", 0), shim_app.Handler)
 threading.Thread(target=_SHIM.serve_forever, daemon=True).start()
 _BASE = f"http://127.0.0.1:{_SHIM.server_address[1]}"
 
+# issue #139：/classify 挂共享密钥守卫（env 未配置恒 403）——测试进程配置固定 token，
+# 用例统一带有效头（守卫 403 契约由 test_detection_surface.py 锚定）
+os.environ.setdefault("SHIM_LOCAL_TOKEN", "test-local-token")
+_LOCAL_HEADERS = {"X-Shim-Local-Token": os.environ["SHIM_LOCAL_TOKEN"]}
+
 # 缺省态隔离（对齐 JudgeShadowMaskTest env 纪律）：SETTINGS_PATH 指到不存在路径
 # （routing 节缺席=disabled），并摘除开发机可能导出的 ROUTING_* env
 _TMP = tempfile.TemporaryDirectory()
@@ -52,7 +60,7 @@ def _post_classify(raw: bytes):
     """POST /classify，返回 (status, x-resolved-model 头或 None, 响应体 dict)。"""
     req = urllib.request.Request(
         _BASE + "/classify", data=raw,
-        headers={"Content-Type": "application/json"})
+        headers={"Content-Type": "application/json", **_LOCAL_HEADERS})
     with urllib.request.urlopen(req, timeout=5) as r:
         return r.status, r.headers.get("x-resolved-model"), json.load(r)
 
@@ -129,7 +137,8 @@ class ClassifyStubRetiredTest(unittest.TestCase):
         failureMode 只管传输层错误）。"""
         for method in ("GET", "PUT", "DELETE", "OPTIONS", "HEAD"):
             with self.subTest(method=method):
-                req = urllib.request.Request(_BASE + "/classify", method=method)
+                req = urllib.request.Request(_BASE + "/classify", method=method,
+                                             headers=_LOCAL_HEADERS)
                 with urllib.request.urlopen(req, timeout=5) as r:
                     self.assertEqual(r.status, 200)
                     self.assertIsNone(r.headers.get("x-resolved-model"))

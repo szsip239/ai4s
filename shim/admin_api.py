@@ -55,6 +55,9 @@ query 文本内 \\uXXXX 等转义在 gqlgen 执行时才还原，不归一化则
 隐身绕过正则）；白名单 key 服务端匹配 POST /dlp-admin/bypass-keys/match（读语义
 read_api_keys 档，携调用方 Bearer 按 idIn 批量取明文算 SHA-256 比对名单，只回匹配条，
 不明文落盘落日志）——控制台不再拉全量 key 明文到浏览器。
+issue #139：写端点读-改-写串行化——模块级 _RMW_LOCK 保护 wordlist PUT / settings PUT /
+recognizers POST·PUT·DELETE / EDM ingest·delete（并发管理写互持 stale 快照覆盖会丢更新）；
+Content-Length 非法/负值干净 400（_body_length fail-closed，不再进 read() 异常分支）。
 
 与检测路径（/request /response 调用链）完全隔离：admin 平面 fail-closed——
 内省不可达回 503，不适用检测链的 fail-open 分级（契约 docs/contracts/dlp-webhook-shim.md）。
@@ -218,6 +221,12 @@ SETTINGS_PATH = os.environ.get("SETTINGS_PATH", "/dlp/settings.json")  # 与 app
 _MAX_ADMIN_BODY = 1024 * 1024  # admin 请求体上限（配置文本足够）
 _MAX_EDM_BODY = 16 * 1024 * 1024  # EDM corpus POST 放宽（review #5：真实商密文档规模可达数 MB）
 
+# 配置面读-改-写互斥锁（issue #139，bypass_keys._RMW_LOCK 同款模式）：wordlist/recognizers/
+# settings/EDM 语料的「加载→校验→原子写」整体串行化——ThreadingHTTPServer 下并发写裸跑
+# 会 stale 读覆盖丢更新（先写者的变更被后写者的旧快照盖掉）。低频管理操作，单锁无性能顾虑；
+# 请求体读取/JSON 解析在锁外（慢客户端不持锁）。
+_RMW_LOCK = threading.Lock()
+
 # 端点级别 → 所需系统 scope（2026-08-06 定案：读 read_channels / 写 write_channels；isOwner 直通）。
 # issue #138：bypass-keys/match 为读语义但读的是 key 面数据，用 read_api_keys 档
 # （与白名单面板页面路由同 scope；_authorize 机制本身任意 scope 名通用，加档即支持）。
@@ -292,10 +301,25 @@ def _load_json_file(path):
         return None
 
 
+def _body_length(headers):
+    """admin 平面声明体长解析（issue #139）：非法/负值 Content-Length → None（调用方回干净
+    400，不读流）。对照 app.py 同名函数——检测路径非法值当 0（fail-open：5xx=全层放行），
+    admin 平面 fail-closed 不适用该语义，非法即拒；负值 rfile.read 会读流至 EOF 悬挂
+    （客户端等响应、服务端等 body），必须拒。"""
+    try:
+        n = int(headers.get("Content-Length") or 0)
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 0 else None
+
+
 def _read_raw_body(handler, max_body):
-    """读 admin 请求体原始字节；超限 → 已回 413 并返回 None。
+    """读 admin 请求体原始字节；声明体长非法/负值 → 已回 400；超限 → 已回 413 并返回 None。
     超限先分块 drain 再响应——否则客户端发送中途断连，看到 BrokenPipe 而非干净 413。"""
-    raw_len = int(handler.headers.get("Content-Length") or 0)
+    raw_len = _body_length(handler.headers)
+    if raw_len is None:
+        _respond(handler, 400, {"error": "Content-Length 非法（须为非负整数）"})
+        return None
     if raw_len > max_body:
         remaining = raw_len
         while remaining > 0:
@@ -363,7 +387,8 @@ def _validate_terms(terms) -> str | None:
 
 
 def _wordlist_put(handler, _me):
-    """PUT 整体替换 terms（issue #32）：保留文件原 version/_comment；非法 400 带原因。"""
+    """PUT 整体替换 terms（issue #32）：保留文件原 version/_comment；非法 400 带原因。
+    读-改-写持 _RMW_LOCK（issue #139）：并发 PUT 串行，后写者基于先写者落盘结果再改。"""
     payload = _read_body(handler)
     if payload is None:
         return
@@ -371,12 +396,13 @@ def _wordlist_put(handler, _me):
     if err:
         _respond(handler, 400, {"error": err})
         return
-    data, err = _load_for_write(WORDLIST_PATH, {"version": 1}, "wordlist")
-    if err:
-        _respond(handler, 500, {"error": err})
-        return
-    data["terms"] = payload["terms"]
-    write_json_atomic(WORDLIST_PATH, data)
+    with _RMW_LOCK:
+        data, err = _load_for_write(WORDLIST_PATH, {"version": 1}, "wordlist")
+        if err:
+            _respond(handler, 500, {"error": err})
+            return
+        data["terms"] = payload["terms"]
+        write_json_atomic(WORDLIST_PATH, data)
     _audit(_me, "put_wordlist", [f"terms({len(payload['terms'])})"])  # 词值不落盘（机密词本体）
     _respond(handler, 200, data)
 
@@ -678,7 +704,8 @@ def _settings_put(handler, _me):
     l1 总开关联动（issue #40）：l1.enabled 翻转时按新状态重渲染 config.yaml 标记区块
     （关=区块渲染为空，网关层同步撤掉格式规则）；渲染失败从 .bak 回滚 settings 并 500，
     两侧不留半更新（对称 format-rules PUT 纪律）。手改 settings.json 不触发联动，
-    漂移时用 POST /dlp-admin/format-rules/render 兜底修复。"""
+    漂移时用 POST /dlp-admin/format-rules/render 兜底修复。
+    读旧→写入→联动渲染/回滚整体持 _RMW_LOCK（issue #139，并发 PUT 串行不丢更新）。"""
     payload = _read_body(handler)
     if payload is None:
         return
@@ -686,25 +713,26 @@ def _settings_put(handler, _me):
     if err:
         _respond(handler, 400, {"error": err})
         return
-    old_l1 = _layer_enabled("l1")  # 写前读旧状态（文件缺失/env 兜底均按默认 True 语义）
-    old_settings = _load_json_file(SETTINGS_PATH)  # 审计 diff 基准（缺失 → None 记全量新建）
-    try:
-        write_json_atomic(SETTINGS_PATH, payload)
-    except OSError as e:
-        _respond(handler, 500, {"error": f"settings 写入失败: {e}"})
-        return
-    new_l1 = _layer_enabled("l1")  # 写后读新状态：文件级优先于 env，PUT 整体替换后必读到 payload 新值
-    if old_l1 != new_l1:
-        data = _load_json_file(FORMAT_RULES_PATH)
-        if not isinstance(data, dict) or not isinstance(data.get("rules"), list):
-            _rollback_settings_json()
-            _respond(handler, 500, {"error": "format-rules unreadable，无法联动渲染（settings 已回滚）"})
+    with _RMW_LOCK:  # issue #139：读旧→写入→l1 联动渲染/回滚整体串行（并发 PUT 丢更新/半更新）
+        old_l1 = _layer_enabled("l1")  # 写前读旧状态（文件缺失/env 兜底均按默认 True 语义）
+        old_settings = _load_json_file(SETTINGS_PATH)  # 审计 diff 基准（缺失 → None 记全量新建）
+        try:
+            write_json_atomic(SETTINGS_PATH, payload)
+        except OSError as e:
+            _respond(handler, 500, {"error": f"settings 写入失败: {e}"})
             return
-        rerr = _render_to_config(data["rules"], include_l1=new_l1)
-        if rerr:
-            _rollback_settings_json()
-            _respond(handler, 500, {"error": f"{rerr}（settings 已回滚）"})
-            return
+        new_l1 = _layer_enabled("l1")  # 写后读新状态：文件级优先于 env，PUT 整体替换后必读到 payload 新值
+        if old_l1 != new_l1:
+            data = _load_json_file(FORMAT_RULES_PATH)
+            if not isinstance(data, dict) or not isinstance(data.get("rules"), list):
+                _rollback_settings_json()
+                _respond(handler, 500, {"error": "format-rules unreadable，无法联动渲染（settings 已回滚）"})
+                return
+            rerr = _render_to_config(data["rules"], include_l1=new_l1)
+            if rerr:
+                _rollback_settings_json()
+                _respond(handler, 500, {"error": f"{rerr}（settings 已回滚）"})
+                return
     _audit(_me, "put_settings", _diff_settings(old_settings, payload))  # 回滚路径不落条（操作整体失败）
     _respond(handler, 200, payload)
 
@@ -988,41 +1016,44 @@ def _edm_now() -> str:
 def _edm_ingest_text(handler, name: str, text: str, me=None):
     """EDM 语料入库共用段（粘贴 JSON 与文件直传两条上传路径汇入，issue #48）：
     text 校验 → corpus 原文原子写 → 该文档指纹全量重算并入 fingerprints.json（不动其他文档）
-    → 原子写。指纹写失败时回滚删 corpus 文件，两侧不留半更新。"""
+    → 原子写。指纹写失败时回滚删 corpus 文件，两侧不留半更新。
+    加载→查重→corpus 写→指纹库改写整体持 _RMW_LOCK（issue #139）：并发入库串行——
+    裸跑时两篇同库文档互持 stale 快照覆盖，先入库者的指纹条目被丢（corpus 原文成孤儿）。"""
     if len(edm_lib.normalize(text)) < _EDM_MIN_TEXT:
         _respond(handler, 400, {"error": f"text 过短：归一化后不足 {_EDM_MIN_TEXT} 字符，无法产生有效行级指纹"
                                           "（整段 shingle 单指纹也达不到命中阈值 2，入库即死规则）"})
         return
-    store, lerr = _load_for_write(EDM_FP_PATH, {"version": 1, "docs": {}}, "edm fingerprints")
-    if lerr:
-        _respond(handler, 500, {"error": lerr})
-        return
-    if not isinstance(store.get("docs"), dict):  # schema 检查（非 _load_for_write 职责）：docs 必须对象
-        _respond(handler, 500, {"error": "edm fingerprints unreadable，拒绝覆盖写入"})
-        return
-    if name in store["docs"]:
-        _respond(handler, 400, {"error": f"文档已存在: {name}"})
-        return
-    now = _edm_now()
-    fps = edm_lib.doc_fingerprints(text)
-    os.makedirs(EDM_CORPUS_DIR, exist_ok=True)
-    corpus_path = os.path.join(EDM_CORPUS_DIR, name + ".txt")
-    try:
-        write_text_atomic(corpus_path, text)
-    except OSError as e:
-        _respond(handler, 500, {"error": f"corpus 写入失败: {e}"})
-        return
-    store["docs"][name] = {"shingles": fps["shingles"], "lines": fps["lines"], "added_at": now}
-    store["updated_at"] = now
-    try:
-        write_json_atomic(EDM_FP_PATH, store)
-    except OSError as e:
+    with _RMW_LOCK:
+        store, lerr = _load_for_write(EDM_FP_PATH, {"version": 1, "docs": {}}, "edm fingerprints")
+        if lerr:
+            _respond(handler, 500, {"error": lerr})
+            return
+        if not isinstance(store.get("docs"), dict):  # schema 检查（非 _load_for_write 职责）：docs 必须对象
+            _respond(handler, 500, {"error": "edm fingerprints unreadable，拒绝覆盖写入"})
+            return
+        if name in store["docs"]:
+            _respond(handler, 400, {"error": f"文档已存在: {name}"})
+            return
+        now = _edm_now()
+        fps = edm_lib.doc_fingerprints(text)
+        os.makedirs(EDM_CORPUS_DIR, exist_ok=True)
+        corpus_path = os.path.join(EDM_CORPUS_DIR, name + ".txt")
         try:
-            os.unlink(corpus_path)  # 回滚刚写的 corpus 文件，两侧不留半更新
-        except OSError:
-            pass
-        _respond(handler, 500, {"error": f"fingerprints 写入失败（corpus 已回滚）: {e}"})
-        return
+            write_text_atomic(corpus_path, text)
+        except OSError as e:
+            _respond(handler, 500, {"error": f"corpus 写入失败: {e}"})
+            return
+        store["docs"][name] = {"shingles": fps["shingles"], "lines": fps["lines"], "added_at": now}
+        store["updated_at"] = now
+        try:
+            write_json_atomic(EDM_FP_PATH, store)
+        except OSError as e:
+            try:
+                os.unlink(corpus_path)  # 回滚刚写的 corpus 文件，两侧不留半更新
+            except OSError:
+                pass
+            _respond(handler, 500, {"error": f"fingerprints 写入失败（corpus 已回滚）: {e}"})
+            return
     _audit(me, "edm_ingest", [f"name={name}", f"shingles({len(fps['shingles'])})",
                               f"lines({len(fps['lines'])})"])
     _respond(handler, 200, {"name": name, "shingle_count": len(fps["shingles"]),
@@ -1076,32 +1107,35 @@ def _edm_corpus_upload_post(handler, _me):
 def _edm_corpus_delete_item(handler, _me, name):
     """DELETE 删除 EDM 语料文档（issue #34）：指纹条目（权威）+ corpus 文件；不存在 → 404。
     name 正则校验与 POST 同款（review #4 双保险：薄壳 quote 误放行的分隔符等在此兜底）。
-    先写指纹库（检测权威源），corpus 文件缺失容忍（孤儿文件不阻断删除）。"""
+    先写指纹库（检测权威源），corpus 文件缺失容忍（孤儿文件不阻断删除）。
+    读-改-写持 _RMW_LOCK（issue #139）：与 _edm_ingest_text 同写 fingerprints.json，不互斥则
+    并发 ingest/delete 互持 stale 快照覆盖，丢条目或复活已删文档。"""
     if not _EDM_NAME_RE.match(name):
         _respond(handler, 400, {"error": "name 必须匹配 [A-Za-z0-9_.-]{1,64}"})
         return
-    store = _load_json_file(EDM_FP_PATH)
-    if not isinstance(store, dict) or not isinstance(store.get("docs"), dict):
-        _respond(handler, 500, {"error": "edm fingerprints unreadable"})
-        return
-    if name not in store["docs"]:
-        _respond(handler, 404, {"error": f"文档不存在: {name}"})
-        return
-    del store["docs"][name]
-    store["updated_at"] = _edm_now()
-    try:
-        write_json_atomic(EDM_FP_PATH, store)
-    except OSError as e:
-        # 与 POST 对称（review #6）：指纹写失败干净 500，corpus 文件不动（条目仍在库，两侧一致）
-        _respond(handler, 500, {"error": f"fingerprints 写入失败: {e}"})
-        return
-    try:
-        os.unlink(os.path.join(EDM_CORPUS_DIR, name + ".txt"))
-    except FileNotFoundError:
-        pass  # corpus 缺失容忍：指纹库为权威列表
-    except OSError as e:
-        _respond(handler, 500, {"error": f"指纹已删除但 corpus 文件删除失败（残留孤儿）: {e}"})
-        return
+    with _RMW_LOCK:
+        store = _load_json_file(EDM_FP_PATH)
+        if not isinstance(store, dict) or not isinstance(store.get("docs"), dict):
+            _respond(handler, 500, {"error": "edm fingerprints unreadable"})
+            return
+        if name not in store["docs"]:
+            _respond(handler, 404, {"error": f"文档不存在: {name}"})
+            return
+        del store["docs"][name]
+        store["updated_at"] = _edm_now()
+        try:
+            write_json_atomic(EDM_FP_PATH, store)
+        except OSError as e:
+            # 与 POST 对称（review #6）：指纹写失败干净 500，corpus 文件不动（条目仍在库，两侧一致）
+            _respond(handler, 500, {"error": f"fingerprints 写入失败: {e}"})
+            return
+        try:
+            os.unlink(os.path.join(EDM_CORPUS_DIR, name + ".txt"))
+        except FileNotFoundError:
+            pass  # corpus 缺失容忍：指纹库为权威列表
+        except OSError as e:
+            _respond(handler, 500, {"error": f"指纹已删除但 corpus 文件删除失败（残留孤儿）: {e}"})
+            return
     _audit(_me, "edm_delete", [f"name={name}"])
     _respond(handler, 200, {"deleted": name})
 
@@ -1140,70 +1174,76 @@ def _validate_recognizer_fields(rec) -> str | None:
 
 def _recognizers_post(handler, _me):
     """POST 新增一个 recognizer（issue #32）；context 可缺省（默认 []）。
-    校验：name 非空且不与现有重复；字段规则见 _validate_recognizer_fields。"""
+    校验：name 非空且不与现有重复；字段规则见 _validate_recognizer_fields。
+    读-改-写持 _RMW_LOCK（issue #139）：并发 POST 串行，查重基于先写者落盘结果。"""
     payload = _read_body(handler)
     if payload is None:
         return
-    data, err = _load_for_write(PII_RECOGNIZERS_PATH, {"version": 1, "recognizers": []}, "recognizers")
-    if err:
-        _respond(handler, 500, {"error": err})
-        return
-    recs = data.setdefault("recognizers", [])
-    name = payload.get("name") if isinstance(payload, dict) else None
-    if not isinstance(name, str) or not name:
-        _respond(handler, 400, {"error": "name 必须是非空字符串"})
-        return
-    if any(isinstance(r, dict) and r.get("name") == name for r in recs):
-        _respond(handler, 400, {"error": f"name 与现有 recognizer 重复: {name}"})
-        return
-    err = _validate_recognizer_fields(payload)
-    if err:
-        _respond(handler, 400, {"error": err})
-        return
-    payload.setdefault("context", [])
-    recs.append(payload)
-    write_json_atomic(PII_RECOGNIZERS_PATH, data)
+    with _RMW_LOCK:
+        data, err = _load_for_write(PII_RECOGNIZERS_PATH, {"version": 1, "recognizers": []}, "recognizers")
+        if err:
+            _respond(handler, 500, {"error": err})
+            return
+        recs = data.setdefault("recognizers", [])
+        name = payload.get("name") if isinstance(payload, dict) else None
+        if not isinstance(name, str) or not name:
+            _respond(handler, 400, {"error": "name 必须是非空字符串"})
+            return
+        if any(isinstance(r, dict) and r.get("name") == name for r in recs):
+            _respond(handler, 400, {"error": f"name 与现有 recognizer 重复: {name}"})
+            return
+        err = _validate_recognizer_fields(payload)
+        if err:
+            _respond(handler, 400, {"error": err})
+            return
+        payload.setdefault("context", [])
+        recs.append(payload)
+        write_json_atomic(PII_RECOGNIZERS_PATH, data)
     _respond(handler, 200, data)
 
 
 def _recognizer_put_item(handler, _me, name):
-    """PUT 替换指定 name 的 recognizer（issue #32）：字段校验同 POST，name 以 URL 为准；不存在 → 404。"""
+    """PUT 替换指定 name 的 recognizer（issue #32）：字段校验同 POST，name 以 URL 为准；不存在 → 404。
+    读-改-写持 _RMW_LOCK（issue #139）：与 POST/DELETE 互斥，后写者基于先写者落盘结果再改。"""
     payload = _read_body(handler)
     if payload is None:
         return
-    data, err = _load_for_write(PII_RECOGNIZERS_PATH, {"version": 1, "recognizers": []}, "recognizers")
-    if err:
-        _respond(handler, 500, {"error": err})
-        return
-    recs = data.setdefault("recognizers", [])
-    idx = next((i for i, r in enumerate(recs) if isinstance(r, dict) and r.get("name") == name), None)
-    if idx is None:
-        _respond(handler, 404, {"error": f"recognizer 不存在: {name}"})
-        return
-    err = _validate_recognizer_fields(payload)
-    if err:
-        _respond(handler, 400, {"error": err})
-        return
-    payload.setdefault("context", [])
-    payload["name"] = name  # name 以 URL 为准（body 里的 name 字段忽略）
-    recs[idx] = payload
-    write_json_atomic(PII_RECOGNIZERS_PATH, data)
+    with _RMW_LOCK:
+        data, err = _load_for_write(PII_RECOGNIZERS_PATH, {"version": 1, "recognizers": []}, "recognizers")
+        if err:
+            _respond(handler, 500, {"error": err})
+            return
+        recs = data.setdefault("recognizers", [])
+        idx = next((i for i, r in enumerate(recs) if isinstance(r, dict) and r.get("name") == name), None)
+        if idx is None:
+            _respond(handler, 404, {"error": f"recognizer 不存在: {name}"})
+            return
+        err = _validate_recognizer_fields(payload)
+        if err:
+            _respond(handler, 400, {"error": err})
+            return
+        payload.setdefault("context", [])
+        payload["name"] = name  # name 以 URL 为准（body 里的 name 字段忽略）
+        recs[idx] = payload
+        write_json_atomic(PII_RECOGNIZERS_PATH, data)
     _respond(handler, 200, data)
 
 
 def _recognizer_delete_item(handler, _me, name):
-    """DELETE 删除指定 name 的 recognizer（issue #32）；不存在 → 404；删空数组允许。"""
-    data, err = _load_for_write(PII_RECOGNIZERS_PATH, {"version": 1, "recognizers": []}, "recognizers")
-    if err:
-        _respond(handler, 500, {"error": err})
-        return
-    recs = data.setdefault("recognizers", [])
-    kept = [r for r in recs if not (isinstance(r, dict) and r.get("name") == name)]
-    if len(kept) == len(recs):
-        _respond(handler, 404, {"error": f"recognizer 不存在: {name}"})
-        return
-    data["recognizers"] = kept
-    write_json_atomic(PII_RECOGNIZERS_PATH, data)
+    """DELETE 删除指定 name 的 recognizer（issue #32）；不存在 → 404；删空数组允许。
+    读-改-写持 _RMW_LOCK（issue #139）：与 POST/PUT 互斥，后写者基于先写者落盘结果再改。"""
+    with _RMW_LOCK:
+        data, err = _load_for_write(PII_RECOGNIZERS_PATH, {"version": 1, "recognizers": []}, "recognizers")
+        if err:
+            _respond(handler, 500, {"error": err})
+            return
+        recs = data.setdefault("recognizers", [])
+        kept = [r for r in recs if not (isinstance(r, dict) and r.get("name") == name)]
+        if len(kept) == len(recs):
+            _respond(handler, 404, {"error": f"recognizer 不存在: {name}"})
+            return
+        data["recognizers"] = kept
+        write_json_atomic(PII_RECOGNIZERS_PATH, data)
     _respond(handler, 200, data)
 
 

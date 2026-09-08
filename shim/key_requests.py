@@ -50,9 +50,13 @@ pin + 懒加载纪律相悖；(c) 卡片必须 app bot 发送（webhook 自定�
 （key 名由申请 id 派生，确定性）。执行失败状态保持 pending（管理员可重试），与 #72
 「失败不标记」同语义。并发（评审 P2）：approve 锁外执行期间以 _executing 内存标记把
 reject/重复 approve/sweep 超时挡在门外（409/让位）——执行有真实副作用，不得半途改终态。
+issue #139：reject 第二段锁内复查 _executing（修 TOCTOU——首段锁通过后并发 approve
+登记执行，不复查则「已拒绝」单上建出 Key 并私信交付）。
 
 状态文件：默认 /state/key-requests.json（与 alert-state.json 同目录，deploy/.local/alert-state
 挂载，gitignored）；admin_api 原子写 + 模块锁保护读改写（HTTP 线程与巡检线程并发）。
+滚动截断只淘汰最旧终态条目（issue #139）——pending/执行中豁免逐出（旧 reqs[-200:]
+不分状态会吞 pending：员工列表丢单/审批卡永不回执/sweep 丢超时）。
 本模块不进检测路径；单请求失败只影响本请求。
 """
 import json
@@ -83,6 +87,15 @@ if not os.environ.get("KEY_REQUEST_CONSOLE_URL"):
           "（非本机管理员不可达，请在 deploy/.env 配置控制台地址）", flush=True)
 # 待办申请超时：超时置 expired + 回执（巡检线程 sweep_expired 每轮检查）
 REQUEST_TTL = alert_poller._env_int("KEY_REQUEST_TTL", 72 * 3600)
+# 隔离项目 gid（issue #128 邀请注册落点；issue #139 起 _exit_quarantine 由按名解析改为
+# 按 gid——项目可改名，按名解析失配即永不迁出/误配即误迁；未配置 fail-closed 不动作，
+# 绝不回退按名猜测。对照 alert_poller.auto_assign_project 按 KEY_PROJECT_ID gid 匹配先例）
+QUARANTINE_PROJECT_GID = os.environ.get("QUARANTINE_PROJECT_GID", "")
+if not QUARANTINE_PROJECT_GID:
+    # 与 CONSOLE_URL 同款模块加载 warning：部署未启用邀请/隔离流程时无害（迁出本就不触发），
+    # 启用而未配置时批准迁入正式项目不会自动迁出隔离区（结果不动作，日志见 [keyreq] 运行期提示）
+    print("[keyreq] QUARANTINE_PROJECT_GID 未配置，批准迁入正式项目时不会自动迁出隔离项目"
+          "（fail-closed 不按名解析；启用邀请流程请在 deploy/.env 配置隔离项目 gid）", flush=True)
 # 提额目标档白名单（与 alert_poller.parse_tier 可识别的两档一致）；
 # issue #85 起审批侧提额申请的 tier_override 也收窄到此集合（提额语义不含体验档，
 # 与执行侧 apply_tier_to_user 逐 key never-downgrade 守卫双保险）
@@ -92,8 +105,10 @@ TIERS = ("标准档", "高档")
 ALLOWED_TIERS = (alert_poller.KEY_INIT_TIER,) + TIERS
 MAX_PURPOSE = 200
 MAX_REASON = 200
-# 状态文件滚动上限（与 approval_done[-200:] 同款纪律）
+# 状态文件滚动上限（终态条目淘汰阈值；issue #139 起 pending 豁免，见 _trimmed）
 MAX_REQUESTS = 200
+# 终态集合（与 _STATUS_LABEL 词表一致，pending 之外全部）——截断只淘汰终态
+_TERMINAL_STATUSES = frozenset({"approved", "rejected", "expired", "canceled"})
 
 _lock = threading.Lock()
 # 执行中申请 id 集合（评审 P2 竞态修复）：approve 锁外执行期间登记，reject/重复 approve
@@ -133,11 +148,28 @@ def _load() -> list:
         return []
 
 
+def _trimmed(reqs: list) -> list:
+    """滚动截断（issue #139）：总量超 MAX_REQUESTS 时从旧到新只淘汰终态条目；
+    pending（含 approve 执行中——执行期状态仍是 pending）豁免逐出。修复前 reqs[-200:]
+    不分状态：后灌入的终态把在先 pending 顶出文件=员工列表丢单/审批卡永不回执/sweep
+    丢超时。pending 总量超上限也全保留（dup 门天然限流；正确性优先于体积纪律）。"""
+    if len(reqs) <= MAX_REQUESTS:
+        return reqs
+    overflow = len(reqs) - MAX_REQUESTS
+    out = []
+    for r in reqs:  # reqs 旧到新：命中最旧终态先淘汰
+        if overflow > 0 and r.get("status") in _TERMINAL_STATUSES:
+            overflow -= 1
+            continue
+        out.append(r)
+    return out
+
+
 def _save(reqs: list):
     d = os.path.dirname(REQUESTS_PATH)
     if d:
         os.makedirs(d, exist_ok=True)
-    admin_api.write_json_atomic(REQUESTS_PATH, {"version": 1, "requests": reqs[-MAX_REQUESTS:]})
+    admin_api.write_json_atomic(REQUESTS_PATH, {"version": 1, "requests": _trimmed(reqs)})
 
 
 def shape_public(req: dict) -> dict:
@@ -341,7 +373,9 @@ def _notify_canceled(req: dict):
 
 def validate_payload(payload) -> tuple:
     """POST body 校验：返回 (kind, purpose, tier, key_ids, err)。err 非 None 即 400 文案。
-    issue #86：kind=upgrade 必须带 keyIds（非空 Key id 列表，按 Key 勾选的目标子集）。"""
+    issue #86：kind=upgrade 必须带 keyIds（非空 Key id 列表，按 Key 勾选的目标子集）。
+    issue #139：kind=new 的 tier 过 ALLOWED_TIERS 白名单（此前免校验落库）——空串=缺省
+    体验档语义不变；存量垃圾值不迁移，只挡新增。"""
     if not isinstance(payload, dict):
         return None, None, None, None, "body 必须是 JSON 对象"
     kind = payload.get("kind")
@@ -354,6 +388,8 @@ def validate_payload(payload) -> tuple:
             return None, None, None, None, "新建申请必须填用途 purpose"
         if len(purpose) > MAX_PURPOSE:
             return None, None, None, None, f"purpose 超长（>{MAX_PURPOSE} 字符）"
+        if tier and tier not in ALLOWED_TIERS:
+            return None, None, None, None, f"tier 必须是 {'/'.join(ALLOWED_TIERS)}"
         return kind, purpose, tier, None, None
     if tier not in TIERS:
         return None, None, None, None, f"tier 必须是 {'/'.join(TIERS)}"
@@ -504,20 +540,24 @@ def _deliver_new_key(req: dict, name: str, plain: str, owner_note: str, tier_nam
 
 
 def _exit_quarantine(ax, user: dict, req: dict, pid: str) -> str:
-    """批准迁入正式项目 = 转正：执行成功后将申请人迁出隔离区（External-Quarantine，按名解析
-    gid，与前端邀请对话同名契约）。仅当申请源项目=隔离区且落点≠隔离区时触发；best-effort——
+    """批准迁入正式项目 = 转正：执行成功后将申请人迁出隔离区。issue #139：隔离区由按名解析
+    （External-Quarantine）改为按 gid（模块级 QUARANTINE_PROJECT_GID）——项目可改名，按名
+    解析失配即永不迁出、误配（同名仿冒项目）即误迁；未配置 gid 时 fail-closed 不动作只记
+    日志，绝不回退按名猜测。gid 直比后无需再查 myProjects（配错的 gid 由 remove 失败兜底，
+    走下方 best-effort 分支）。仅当申请源项目=隔离区且落点≠隔离区时触发；best-effort——
     Key 已建不回滚，迁出失败只记日志并在结果摘要注明可人工移除。返回结果摘要追加段（无操作为空串）。"""
     src = _req_project_id(req)
     if src == pid:
         return ""  # 落点即源项目（无迁移语义）
-    projs = ax.gql(alert_poller.MY_PROJECTS_QUERY)["myProjects"] or []
-    quar = next((p["id"] for p in projs
-                 if p.get("name") == alert_poller.QUARANTINE_PROJECT_NAME), None)
-    if not quar or src != quar:
+    if not QUARANTINE_PROJECT_GID:
+        print(f"[keyreq] QUARANTINE_PROJECT_GID 未配置，跳过隔离项目迁出 {req['id']}"
+              "（fail-closed 不按名解析；配置后可在项目页人工移除）", flush=True)
         return ""
+    if src != QUARANTINE_PROJECT_GID:
+        return ""  # 源项目非隔离区
     try:
         ax.gql(alert_poller.REMOVE_USER_FROM_PROJECT_MUTATION,
-               {"input": {"projectId": quar, "userId": user["id"]}})
+               {"input": {"projectId": QUARANTINE_PROJECT_GID, "userId": user["id"]}})
         return "；已迁出隔离项目"
     except Exception as e:
         print(f"[keyreq] 迁出隔离项目失败 {req['id']}: {type(e).__name__}: {e}", flush=True)
@@ -528,8 +568,9 @@ def _execute(req: dict, tier_override: str = ""):
     """approve 执行体（复用 #72/#19 primitives）。返回 (result 摘要, key_name 或 None, applicant_dm_text)。
     tier_override=管理员批准时改定的档位（issue #81）：新建覆盖默认体验档、提额覆盖所求档；空串=原默认。
     issue #89：执行落在申请单记录的项目（与管理员当前所在项目解耦，切错项目不批错单）；
-    无项目字段的存量申请视为 Default。kind=new 执行时复查成员资格——审批期间被移出项目
-    则不建 Key，结果文本说明（参照上方「无用户」先例，申请照常转 approved 落结果）。
+    无项目字段的存量申请视为 Default。执行时复查成员资格——审批期间被移出项目则不执行
+    （kind=new 不建 Key；issue #139 起 kind=upgrade 同款复查不换挂），结果文本说明
+    （参照上方「无用户」先例，申请照常转 approved 落结果）。
     issue #128：req.projectOverride 非空（管理员批准时指定正式项目）时执行落该项目——
     申请人非成员先以 scopes=[] 零能力入项（与员工自动入项 PROJECT_MEMBER_SCOPES 的
     read/write_requests 刻意不同：审批只解决「落在哪」，不白送请求读写能力，能力由项目
@@ -541,15 +582,18 @@ def _execute(req: dict, tier_override: str = ""):
     if not user:
         return f"axonhub 中无 {email} 用户（已删除？），未执行", None, None
     pid = req.get("projectOverride") or _req_project_id(req)  # issue #128：override 优先
+    # 成员复查两 kind 共用一次查询（issue #139：upgrade 此前无复查直接换挂——审批期间
+    # 被移出项目的申请人照样提额成功）；查询异常上抛=保持 pending 重试
+    projs = alert_poller.query_user_projects(_get_ax(), user["id"])
+    member_pids = {p.get("id") for p in projs}
     if req["kind"] == "new":
-        projs = alert_poller.query_user_projects(_get_ax(), user["id"])  # 异常上抛=保持 pending 重试
         if req.get("projectOverride"):
             # issue #128：override 项目——申请人非成员先零能力入项（scopes=[]，语义见 docstring）
             # 再建 Key；入项 gql 失败上抛=保持 pending 重试（与成员复查查询同纪律）
-            if pid not in {p.get("id") for p in projs}:
+            if pid not in member_pids:
                 _get_ax().gql(alert_poller.ADD_USER_TO_PROJECT_MUTATION, {"input": {
                     "projectId": pid, "userId": user["id"], "isOwner": False, "scopes": []}})
-        elif pid not in {p.get("id") for p in projs}:
+        elif pid not in member_pids:
             return (f"申请人已不在项目 {req.get('projectName') or pid} 中（审批期间被移除），未建 Key",
                     None, None)
         # seed：飞书身份用 open_id（与 #72 命名一致），非飞书用 u<uid>（同名幂等不受影响——tail 是申请 id）
@@ -566,6 +610,10 @@ def _execute(req: dict, tier_override: str = ""):
             # 批准迁入正式项目 = 转正：源项目是隔离区则迁出（best-effort，详见 _exit_quarantine）
             result += _exit_quarantine(_get_ax(), user, req, pid)
         return result, name, dm_text
+    if pid not in member_pids:
+        # issue #139：upgrade 执行前同款成员复查——非成员不换挂，落「未执行」结果
+        return (f"申请人已不在项目 {req.get('projectName') or pid} 中（审批期间被移除），未执行提额",
+                None, None)
     result = alert_poller.apply_tier_to_user(
         _get_ax(), user, tier_override or (req.get("tier") or ""),
         key_ids=req.get("keyIds"),  # issue #86：None（存量申请无字段）回退「全部 enabled Key」语义
@@ -632,6 +680,10 @@ def resolve_request(rid: str, action: str, reason: str = "", tier_override: str 
             req = next((r for r in reqs if r["id"] == rid), None)
             if req is None or req["status"] != "pending":
                 return (shape_public(req), None) if req else (None, (404, "request not found"))
+            if rid in _executing:
+                # issue #139 TOCTOU 复查：首段锁通过后、本段锁之前，并发 approve 可能已登记
+                # _executing 开始执行——不复查则「已拒绝」单上建出 Key 并私信交付明文
+                return shape_public(req), (409, "该申请正在执行通过操作，请稍后刷新查看结果")
             req["status"] = "rejected"
             req["resolvedAt"] = _iso(time.time())
             req["result"] = f"管理员拒绝{('：' + reason) if reason else ''}"

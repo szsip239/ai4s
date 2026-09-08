@@ -35,6 +35,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from unittest import mock
@@ -230,12 +231,27 @@ class TestApprovalSync(unittest.TestCase):
         self.assertEqual(applies, [])
         self.assertEqual(sends, [])
 
-    def test_done_list_trimmed_to_200(self):
+    def test_done_list_evicts_only_beyond_window(self):
+        # issue #139：approval_done 只淘汰超出 7 天回拉窗口的旧条目——窗口内条目被逐出
+        # 会在下轮回拉「重现」为未处理实例被重复执行（=重复私信投递 key 明文）。
+        old = time.time() - ap.APPROVAL_WINDOW_SEC - 3600  # 窗口外
+        state = {"approval_done": ["ancient0", "ancient1"],
+                 "approval_done_ts": {"ancient0": old, "ancient1": old}}
+        state, _, _ = self._run({"new1": {"status": "CANCELED"}}, state=state)
+        self.assertNotIn("ancient0", state["approval_done"])  # 窗口外淘汰
+        self.assertNotIn("ancient0", state["approval_done_ts"])  # 时间戳同步清
+        self.assertIn("new1", state["approval_done"])
+        self.assertIn("new1", state["approval_done_ts"])  # 新标记登记时间戳
+
+    def test_done_list_no_count_cap_within_window(self):
+        # issue #139：窗口内条目不设 200 数量上限（旧的 done[-200:] 截断在窗口内逐出=
+        # 重复执行源）：200 条存量（无时间戳，按当前时刻起算迁移）+ 1 条新标记全保留
         state = {"approval_done": [f"old{i}" for i in range(200)]}
         state, _, _ = self._run({"new1": {"status": "CANCELED"}}, state=state)
-        self.assertEqual(len(state["approval_done"]), 200)
+        self.assertEqual(len(state["approval_done"]), 201)
         self.assertEqual(state["approval_done"][-1], "new1")
-        self.assertNotIn("old0", state["approval_done"])
+        self.assertIn("old0", state["approval_done"])  # 存量窗口内条目不再被数量截断逐出
+        self.assertIn("old0", state["approval_done_ts"])  # 存量迁移登记时间戳
 
 
 class TestParsePurpose(unittest.TestCase):

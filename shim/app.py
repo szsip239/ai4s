@@ -41,12 +41,20 @@
     日志行；alert_poller 巡检项 5 复用阻断游标通道发飞书卡；issue #134 起增强：
     响应侧 451 同槽落条，block 条带 side/key_hash（SHA-256 指纹）/excerpts
     （词表原样、secrets 掩码），读侧 shadow-verdicts 按 key_hash 回填 key 名/用户邮箱
+  - issue #139 检测面批次（2026-09-08 对抗性审查）：工具调用载体（tool_calls arguments /
+    Anthropic tool_use/tool_result blocks）纳入请求侧抽取与响应侧回扫掩码（judge 外发
+    掩码管线同口径）；normalize_hard 升级 NFKC + Cyrillic/Greek 同形字折叠 + 繁简表
+    755 对 + 零宽清除（语义子集对齐 pg_engine.normalize_for_scoring，不 import 防环）；
+    /judge-test /feishu-alert /classify 挂 SHIM_LOCAL_TOKEN 共享密钥守卫（fail-closed）；
+    启动渲染闭环：进程启动（HTTP server 前）把守卫 token 渲染进网关 config.yaml 的
+    SHIM-LOCAL-TOKEN 标记段（/classify extAuthz addRequestHeaders），渲染失败大声报错不阻启动
 本模块（检测路径）依赖仅标准库；镜像 python:3.12-slim（issue #48 起含 doc_extract 文档解析依赖，
 检测路径不 import 第三方库，纪律不变）。
 """
 import base64
 import collections
 import hashlib
+import hmac
 import json
 import os
 import queue
@@ -54,6 +62,7 @@ import random
 import re
 import threading
 import time
+import unicodedata
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -839,7 +848,51 @@ def load_terms() -> list:
         return []  # 词表读不到 → 零命中（fail-open 语义）
 
 
+def _tool_carrier_texts(m: dict) -> list:
+    """消息内工具载体的可检测文本（issue #139）：此前 extract_text 只取 content 的 str/text
+    段——密钥/商密词藏进 assistant tool_calls[].function.arguments（OpenAI 形态）或
+    Anthropic content blocks（tool_use input / tool_result content）即绕过请求侧全链直扫。
+    - OpenAI：tool_calls[].function.arguments（规范为 JSON 字符串；dict/list 非规范形态
+      JSON 序列化后纳入——透传代理可能不序列化）；
+    - Anthropic：tool_use block 的 input（str/dict 两形态同上）、tool_result block 的
+      content（str / 嵌套 text blocks 两形态）。
+    role=tool 消息的 str/list content 走 extract_text 主路径本已覆盖，不在此列。"""
+    texts = []
+    tcs = m.get("tool_calls")
+    if isinstance(tcs, list):
+        for tc in tcs:
+            fn = tc.get("function") if isinstance(tc, dict) else None
+            args = fn.get("arguments") if isinstance(fn, dict) else None
+            if isinstance(args, str):
+                texts.append(args)
+            elif isinstance(args, (dict, list)):
+                texts.append(json.dumps(args, ensure_ascii=False))
+    c = m.get("content")
+    if isinstance(c, list):
+        for p in c:
+            if not isinstance(p, dict):
+                continue
+            t = p.get("type")
+            if t == "tool_use":
+                inp = p.get("input")
+                if isinstance(inp, str):
+                    texts.append(inp)
+                elif isinstance(inp, (dict, list)):
+                    texts.append(json.dumps(inp, ensure_ascii=False))
+            elif t == "tool_result":
+                rc = p.get("content")
+                if isinstance(rc, str):
+                    texts.append(rc)
+                elif isinstance(rc, list):
+                    texts.extend(b["text"] for b in rc
+                                 if isinstance(b, dict) and isinstance(b.get("text"), str))
+    return texts
+
+
 def extract_text(messages) -> str:
+    """请求侧检测面文本抽取：各消息 content（str / text 段列表）+ 工具载体
+    （tool_calls arguments / Anthropic tool_use input / tool_result content，issue #139）。
+    多模态 image_url 等 part 不进检测面（结构隔离，见 #137 头注）。"""
     parts = []
     for m in messages or []:
         c = m.get("content")
@@ -849,6 +902,7 @@ def extract_text(messages) -> str:
             for p in c:
                 if isinstance(p, dict) and isinstance(p.get("text"), str):
                     parts.append(p["text"])
+        parts.extend(_tool_carrier_texts(m))
     return "\n".join(parts)
 
 
@@ -994,13 +1048,113 @@ def pg_guard_async(text: str, threshold, q=None) -> bool:
         return False
 
 
-# ---- 归一化前置（issue #22）----
-# 只用于检测：全角→半角、词表字符繁简映射、空白/横线/下划线分隔容忍；
+# ---- 归一化前置（issue #22；issue #139 升级）----
+# 只用于检测：NFKC（兼容分解，含全角→半角/兼容象形字→统一汉字/连字展开）、词表字符
+# 繁简映射、Cyrillic/Greek 同形字折叠、零宽字符清除、空白/横线/下划线分隔容忍；
 # mask 经 index map 映射回原文位置，原文结构不丢。纯 stdlib，无新故障面。
-_FULLWIDTH = {i: chr(i - 0xFEE0) for i in range(0xFF01, 0xFF5F)}
-_FULLWIDTH[0x3000] = " "
-# 繁简映射：覆盖当前词表用字（词表扩词时按需补字，宁缺勿滥——错映射会误伤）
-_TRAD2SIMP = dict(zip("鳳計劃鯨藍號話統雲網內級鳳", "凤计划鲸蓝号话统云网内级凤"))
+# issue #139 对齐 pg_engine.normalize_for_scoring 的归一化语义子集（NFKC + 零宽清除；
+# base64 内联解码不搬——judge 侧有 judge_pre_decode、阻断侧有 decode_rescan 各管一段），
+# 自建不 import PG 侧：检测路径零 PG 开销纪律（issue #49）不动。
+# 全角映射已由 NFKC 涵盖（U+FF01–FF5E→ASCII、U+3000→空格），原 _FULLWIDTH 表退役。
+_ZERO_WIDTH = frozenset("\u200b\u200c\u200d\ufeff")  # 显式转义写法（同 pg_engine 纪律：抗格式化工具吞不可见字符）
+# 同形字折叠（issue #139）：Cyrillic/Greek 形似拉丁字母 → 拉丁（Unicode confusables 高频
+# 子集）——密钥形态串混入同形字即绕过格式正则（如 ѕk-… 的 ѕ 是 U+0455）。只收高置信
+# 单字映射（β/ß 类歧义大者不收）；折叠只影响检测匹配，不改转发原文。
+_HOMOGLYPH = {
+    # Cyrillic 小写
+    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c", "х": "x", "у": "y",
+    "і": "i", "ј": "j", "ѕ": "s", "һ": "h", "ԁ": "d", "ԝ": "w",
+    # Cyrillic 大写
+    "А": "A", "В": "B", "Е": "E", "К": "K", "М": "M", "Н": "H", "О": "O",
+    "Р": "P", "С": "C", "Т": "T", "Х": "X", "У": "Y", "І": "I", "Ј": "J", "Ѕ": "S",
+    # Greek 小写
+    "α": "a", "ε": "e", "η": "n", "ι": "i", "κ": "k", "μ": "u", "ν": "v",
+    "ο": "o", "ρ": "p", "τ": "t", "υ": "u", "χ": "x", "ω": "w",
+    # Greek 大写
+    "Α": "A", "Β": "B", "Ε": "E", "Ζ": "Z", "Η": "H", "Ι": "I", "Κ": "K",
+    "Μ": "M", "Ν": "N", "Ο": "O", "Ρ": "P", "Τ": "T", "Υ": "Y", "Χ": "X",
+}
+# 繁简映射（issue #139 扩充）：原 13 字（盖词表用字）→ 常用字量级（~700 对，含词表
+# 可能出现的繁体字形与通用简繁异体归并：後→后/發髮→发/臺檯颱→台 等）。逐行成对
+# （繁上简下等长），import 期断言行内等长——错映射会误伤，宁缺勿滥纪律不变。
+_TRAD2SIMP = {}
+for _trad_line, _simp_line in (
+    ("愛礙襖壩擺辦幫寶報貝備筆幣畢斃邊變標賓補",
+     "爱碍袄坝摆办帮宝报贝备笔币毕毙边变标宾补"),
+    ("財參倉產長嘗車徹塵陳稱誠懲遲衝蟲籌醜礎處",
+     "财参仓产长尝车彻尘陈称诚惩迟冲虫筹丑础处"),
+    ("觸傳創純詞聰從叢達帶單擔膽當檔黨導燈鄧敵",
+     "触传创纯词聪从丛达带单担胆当档党导灯邓敌"),
+    ("遞點電墊釣調疊頂訂東動棟鬥獨讀賭鍍鍛斷隊",
+     "递点电垫钓调叠顶订东动栋斗独读赌镀锻断队"),
+    ("對噸奪墮惡兒爾發髮罰煩販範飛廢費紛墳奮憤",
+     "对吨夺堕恶儿尔发发罚烦贩范飞废费纷坟奋愤"),
+    ("風鳳膚複復賦該蓋幹乾趕個給溝構購顧關觀館",
+     "风凤肤复复赋该盖干干赶个给沟构购顾关观馆"),
+    ("慣貫規軌櫃貴滾鍋國過駭漢號賀恆轟紅後壺護",
+     "惯贯规轨柜贵滚锅国过骇汉号贺恒轰红后壶护"),
+    ("戶華畫劃話懷壞歡環還緩換喚黃謊揮輝會毀貨",
+     "户华画划话怀坏欢环还缓换唤黄谎挥辉会毁货"),
+    ("禍獲穫機積饑雞極級擠幾計紀際劑濟繼績夾價",
+     "祸获获机积饥鸡极级挤几计纪际剂济继绩夹价"),
+    ("駕殲監堅間艱檢簡見艦鑒鍵講獎嬌攪繳階節潔",
+     "驾歼监坚间艰检简见舰鉴键讲奖娇搅缴阶节洁"),
+    ("結緊謹進盡儘驚經頸鏡競淨糾舊舉劇據懼覺決",
+     "结紧谨进尽尽惊经颈镜竞净纠旧举剧据惧觉决"),
+    ("絕軍開殼課墾懇庫褲誇塊寬礦虧擴闊來蘭欄懶",
+     "绝军开壳课垦恳库裤夸块宽矿亏扩阔来兰栏懒"),
+    ("爛藍覽勞樂類離禮裡裏歷曆厲勵倆連聯憐煉練",
+     "烂蓝览劳乐类离礼里里历历厉励俩连联怜炼练"),
+    ("糧兩輛遼療獵臨鄰齡鈴靈嶺劉龍樓錄陸虜亂輪",
+     "粮两辆辽疗猎临邻龄铃灵岭刘龙楼录陆虏乱轮"),
+    ("羅邏驢慮濾綠倫論馬買賣麥脈蠻滿貓貿麼門們",
+     "罗逻驴虑滤绿伦论马买卖麦脉蛮满猫贸么门们"),
+    ("夢彌覓祕綿麵廟滅鳴銘謀畝納難惱腦鬧擬釀鳥",
+     "梦弥觅秘绵面庙灭鸣铭谋亩纳难恼脑闹拟酿鸟"),
+    ("寧農濃諾歐盤賠噴貧頻評蘋憑樸撲鋪齊騎啟啓",
+     "宁农浓诺欧盘赔喷贫频评苹凭朴扑铺齐骑启启"),
+    ("氣棄牽簽籤錢潛淺譴槍強牆搶橋喬僑竊親輕氫",
+     "气弃牵签签钱潜浅谴枪强墙抢桥乔侨窃亲轻氢"),
+    ("傾請慶窮區趨權勸卻確讓擾熱認榮絨軟銳潤灑",
+     "倾请庆穷区趋权劝却确让扰热认荣绒软锐润洒"),
+    ("賽傘喪掃澀殺曬閃傷賞燒紹設攝紳審腎滲聲勝",
+     "赛伞丧扫涩杀晒闪伤赏烧绍设摄绅审肾渗声胜"),
+    ("繩聖師獅濕詩時識實勢適釋飾視試壽獸書輸屬",
+     "绳圣师狮湿诗时识实势适释饰视试寿兽书输属"),
+    ("術樹豎數帥雙誰順說絲飼聳訟蘇訴肅雖隨歲孫",
+     "术树竖数帅双谁顺说丝饲耸讼苏诉肃虽随岁孙"),
+    ("損縮鎖態攤灘壇談嘆湯濤討騰體條貼鐵聽廳銅",
+     "损缩锁态摊滩坛谈叹汤涛讨腾体条贴铁听厅铜"),
+    ("統頭圖塗團頹脫馱駝灣頑萬網為圍違偉偽緯衛",
+     "统头图涂团颓脱驮驼湾顽万网为围违伟伪纬卫"),
+    ("溫聞紋問渦臥烏汙嗚無吳務霧誤犧習襲戲細蝦",
+     "温闻纹问涡卧乌污呜无吴务雾误牺习袭戏细虾"),
+    ("轄狹嚇鮮閒賢顯險現線綫憲鄉詳響項蕭銷曉協",
+     "辖狭吓鲜闲贤显险现线线宪乡详响项萧销晓协"),
+    ("脅諧寫謝興繡鏽須鬚許續軒懸選學勳詢尋馴訓",
+     "胁谐写谢兴绣锈须须许续轩悬选学勋询寻驯训"),
+    ("訊壓鴉亞煙菸嚴鹽顏厭驗揚陽養癢樣謠藥鑰爺",
+     "讯压鸦亚烟烟严盐颜厌验扬阳养痒样谣药钥爷"),
+    ("業葉頁醫儀遺億憶藝議異譯蔭陰銀飲隱應營贏",
+     "业叶页医仪遗亿忆艺议异译荫阴银饮隐应营赢"),
+    ("擁優憂郵猶遊誘餘魚娛漁與嶼語獄預淵園員圓",
+     "拥优忧邮犹游诱余鱼娱渔与屿语狱预渊园员圆"),
+    ("緣遠願約躍閱雲勻隕運醞暈韻雜災載暫贊贓髒",
+     "缘远愿约跃阅云匀陨运酝晕韵杂灾载暂赞赃脏"),
+    ("鑿棗責擇澤賊贈債斬盞嶄戰張漲帳賬趙這偵針",
+     "凿枣责择泽贼赠债斩盏崭战张涨帐账赵这侦针"),
+    ("診陣鎮爭徵鄭證織執職紙製滯鐘鍾終眾種腫週",
+     "诊阵镇争征郑证织执职纸制滞钟钟终众种肿周"),
+    ("驟諸豬燭囑駐築鑄專磚轉賺莊樁裝壯狀墜綴準",
+     "骤诸猪烛嘱驻筑铸专砖转赚庄桩装壮状坠缀准"),
+    ("濁資茲蹤綜總縱組鑽鯨內沒則硯測碼併臺檯颱",
+     "浊资兹踪综总纵组钻鲸内没则砚测码并台台台"),
+    ("於纔昇瀋鬱嶽薑鹹籲佔摺隻衹硃註諮誌採捨纖縴湧慾癒係鬆佈穀闆錶牠絃豔燄窯蕩薦臘蠟黴蒞贗巖敘恥淚羣峯夠牀臟匯彙彎戀",
+     "于才升沈郁岳姜咸吁占折只只朱注咨志采舍纤纤涌欲愈系松布谷板表它弦艳焰窑荡荐腊蜡霉莅赝岩叙耻泪群峰够床脏汇汇弯恋"),
+):
+    assert len(_trad_line) == len(_simp_line), "繁简映射表行内不等长"
+    _TRAD2SIMP.update(zip(_trad_line, _simp_line))
+del _trad_line, _simp_line
 _SEP = set(" \t\r\n-_")
 
 # L1/L1.5 格式规则统一源（issue #33）：每请求重读（与 load_terms 同纪律，热更新免重启）；
@@ -1036,15 +1190,20 @@ def _norm_compiled(rule: dict) -> list:
 
 
 def normalize_hard(s: str):
-    """返回 (归一化文本, idx_map)：idx_map[归一化下标] = 原文下标。全角→半角、繁→简、剔除分隔符。"""
+    """返回 (归一化文本, idx_map)：idx_map[归一化下标] = 原文下标。
+    逐字符 NFKC（全角→半角/兼容象形字→统一汉字/连字展开）→ 繁→简 → 同形字折叠，
+    剔除分隔符与零宽字符（issue #139；语义子集对齐 pg_engine.normalize_for_scoring）。
+    逐字符处理保 idx_map 不变量：单字符兼容分解产出多字符（如 ﬁ→fi）时全部回映同一
+    原文下标；跨字符组合（结合符序列）不按整串 NFKC 重组——检测匹配不在意规范等价序。"""
     out, idx = [], []
     for i, ch in enumerate(s):
-        c = _FULLWIDTH.get(ord(ch), ch)
-        c = _TRAD2SIMP.get(c, c)
-        if c in _SEP:
-            continue
-        out.append(c)
-        idx.append(i)
+        for c in unicodedata.normalize("NFKC", ch):
+            c = _TRAD2SIMP.get(c, c)
+            c = _HOMOGLYPH.get(c, c)
+            if c in _SEP or c in _ZERO_WIDTH:
+                continue
+            out.append(c)
+            idx.append(i)
     return "".join(out), idx
 
 
@@ -1104,16 +1263,67 @@ def norm_pii_mask_in_text(s: str, rules: list = None):
     return out, entities
 
 
+def _mask_tool_carriers(m2: dict, mask_text):
+    """工具载体字段同口径掩码（issue #139）：extract_text 纳入检测面的载体（OpenAI
+    tool_calls[].function.arguments / Anthropic tool_use input / tool_result content）
+    是 judge 外发输入源（judge_input=extract_text(masked_msgs)）——载体不掩码等于把
+    原文外发外部 judge（issue #93 脱敏纪律破口）。
+    mask_text: str -> (new_str, hit_entities)；dict/list 形态深走 str 叶子。只重排
+    不改原对象语义：m2 的 tool_calls/content 键重指到新结构，未命中叶子值不变。
+    返回 (any_masked, entities)。"""
+    ents_all = []
+
+    def _walk(o):
+        if isinstance(o, str):
+            new, ents = mask_text(o)
+            ents_all.extend(ents)
+            return new
+        if isinstance(o, dict):
+            return {k: _walk(v) for k, v in o.items()}
+        if isinstance(o, list):
+            return [_walk(v) for v in o]
+        return o
+
+    tcs = m2.get("tool_calls")
+    if isinstance(tcs, list):
+        new_tcs = []
+        for tc in tcs:
+            fn = tc.get("function") if isinstance(tc, dict) else None
+            if isinstance(fn, dict) and isinstance(fn.get("arguments"), (str, dict, list)):
+                tc = {**tc, "function": {**fn, "arguments": _walk(fn["arguments"])}}
+            new_tcs.append(tc)
+        m2["tool_calls"] = new_tcs
+    c = m2.get("content")
+    if isinstance(c, list):
+        parts = []
+        for p in c:
+            if isinstance(p, dict) and p.get("type") == "tool_use" \
+                    and isinstance(p.get("input"), (str, dict, list)):
+                p = {**p, "input": _walk(p["input"])}
+            elif isinstance(p, dict) and p.get("type") == "tool_result" \
+                    and isinstance(p.get("content"), (str, dict, list)):
+                p = {**p, "content": _walk(p["content"])}
+            parts.append(p)
+        m2["content"] = parts
+    return bool(ents_all), ents_all
+
+
 def norm_mask_messages(messages, rules: list = None):
     """逐消息归一化 PII mask（issue #22）；返回 (new_messages, any_masked, entities)。
     规则一次加载传入各消息（issue #33：避免逐消息重读文件）；
-    rules 缺省内部加载，调用方在循环中使用时传入一次加载的结果（review #4）。"""
+    rules 缺省内部加载，调用方在循环中使用时传入一次加载的结果（review #4）。
+    issue #139：工具载体（tool_calls arguments / Anthropic tool_use input / tool_result
+    content）同口径掩码——extract_text 纳入检测面后，judge 外发输入不得漏掩载体。"""
     if rules is None:
         rules = load_format_rules()
     out, any_masked, all_entities = [], False, set()
     for m in messages or []:
         m2 = dict(m)
-        c = m.get("content")
+        tm, tents = _mask_tool_carriers(m2, lambda t: norm_pii_mask_in_text(t, rules))
+        if tm:
+            any_masked = True
+            all_entities |= set(tents)
+        c = m2.get("content")
         if isinstance(c, str):
             new_c, ents = norm_pii_mask_in_text(c, rules)
             if ents:
@@ -1138,6 +1348,9 @@ def norm_mask_messages(messages, rules: list = None):
 def mask_response_body(body, l1_enabled: bool = True, l2_enabled: bool = True):
     """响应侧 mask（issue #23）：对 completion JSON 的 choices[].message.content/reasoning_content
     做归一化 secrets/词表/PII 检测，命中字段整体替换为掩码。返回 (新body, 命中实体/规则列表)。
+    issue #139：message/delta 的 tool_calls[].function.arguments 纳入回扫（此前只扫
+    content/reasoning_content——模型回传的工具调用参数串藏密钥即可绕过响应侧全链），
+    命中同语义：arguments 参数串整体替换为掩码。
     响应侧不 reject（员工看到莫名错误比截断更糟）；命中只记规则，不落原文。
     分层总开关（issue #40）：模块关=处处关——l1_enabled=False 跳过 secrets/格式 PII 检测，
     l2_enabled=False 跳过词表检测（缺省 True 保旧调用方行为）。"""
@@ -1176,6 +1389,18 @@ def mask_response_body(body, l1_enabled: bool = True, l2_enabled: bool = True):
                     if f:
                         hits.update(f)
                         container[field] = f"【ai4s DLP：应答含敏感内容已屏蔽（{', '.join(sorted(set(f)))}）】"
+            # issue #139：tool_calls 参数串同口径回扫掩码（OpenAI 形态；Anthropic
+            # tool_use 经 axonhub 翻译进 OpenAI 形状后同落此处）
+            tcs = container.get("tool_calls")
+            if isinstance(tcs, list):
+                for tc in tcs:
+                    fn = tc.get("function") if isinstance(tc, dict) else None
+                    args = fn.get("arguments") if isinstance(fn, dict) else None
+                    if isinstance(args, str) and args:
+                        f = scan(args)
+                        if f:
+                            hits.update(f)
+                            fn["arguments"] = f"【ai4s DLP：应答含敏感内容已屏蔽（{', '.join(sorted(set(f)))}）】"
     return out, sorted(hits)
 
 
@@ -1402,7 +1627,9 @@ def pii_analyze_and_mask(text: str, recs: list) -> tuple:
 def mask_message_contents(messages, recs, opf_cfg=None):
     """逐消息脱敏；返回 (new_messages, any_masked, entities)。
     issue #127：opf_cfg 非 None 时同文本追加 OPF 检测（fail-open），与 Presidio span
-    合并（重叠取长）后统一回替换；recs 空但 opf_cfg 出席时仍走 OPF。"""
+    合并（重叠取长）后统一回替换；recs 空但 opf_cfg 出席时仍走 OPF。
+    issue #139：工具载体（tool_calls arguments / Anthropic tool_use input / tool_result
+    content）同口径掩码——extract_text 纳入检测面后，judge 外发输入不得漏掩载体。"""
     if not recs and not opf_cfg:
         return messages, False, []
 
@@ -1417,7 +1644,11 @@ def mask_message_contents(messages, recs, opf_cfg=None):
     out = []
     for m in messages or []:
         m2 = dict(m)
-        c = m.get("content")
+        tm, tents = _mask_tool_carriers(m2, mask_text)
+        if tm:
+            any_masked = True
+            all_entities |= set(tents)
+        c = m2.get("content")
         if isinstance(c, str):
             masked, ents = mask_text(c)
             if ents:
@@ -1462,6 +1693,94 @@ def _body_length(headers) -> int:
     return max(0, min(n, MAX_BODY))
 
 
+# ---- 本地端点共享密钥守卫（issue #139）----
+# /judge-test /feishu-alert /classify 三端点原零鉴权：经宿主 127.0.0.1:18080（compose 端口
+# 映射）或栈内网络即可直调——/judge-test 白烧 judge LLM 额度，/feishu-alert 可往运维群发
+# 任意文本，/classify 可探测路由行为。守卫语义：
+#   - 请求头 X-Shim-Local-Token 与 env SHIM_LOCAL_TOKEN 常量时间匹配才放行；
+#   - env 未配置/空 → 三端点恒 403（fail-closed：宁可端点不可用，不留未鉴权面）；
+#   - env 每请求热读（与 settings 重读同纪律；容器内 env 静态，热读只为测试 seam）。
+# 部署耦合（本文件启动渲染闭环，见下方 render_local_token_to_gateway）：agentgateway
+# /classify extAuthz 子请求须注同值头，否则 shim 403 被网关当 deny 决策直回客户端
+#（failureMode=allow 只兜传输层），/v1 全流量断流。File 模式配置不支持 env 展开、
+# config.yaml 又是 git 入库文件，故沿用 issue #33 渲染先例：进程启动（HTTP server 之前）
+# 把 env 值渲染进 config.yaml 的 SHIM-LOCAL-TOKEN 标记段，compose depends_on(shim)
+# 保证网关读配置在渲染之后。axonhub → /feishu-alert 的 webhook 来源也需带该头
+#（axonhub 侧配置，不在本仓）。
+def _local_token_ok(headers) -> bool:
+    tok = os.environ.get("SHIM_LOCAL_TOKEN") or ""
+    if not tok:
+        return False
+    got = headers.get("X-Shim-Local-Token") or ""
+    return hmac.compare_digest(got.encode("utf-8", "replace"), tok.encode("utf-8"))
+
+
+# ---- 启动渲染：守卫 token 注入网关 /classify extAuthz（issue #139）----
+# config.yaml 标记段（>>> SHIM-LOCAL-TOKEN BEGIN/END，/classify extAuthz protocol.http 内）
+# 由本进程启动时渲染——与 issue #33 format-rules 渲染同纪律（标记段外手改不动、原子写盘、
+# 渲染后校验），但触发点是启动而非 admin API：token 是 env 密钥，不该走 HTTP 管理面。
+LOCAL_TOKEN_BEGIN_MARK = "# >>> SHIM-LOCAL-TOKEN BEGIN"
+LOCAL_TOKEN_END_MARK = "# <<< SHIM-LOCAL-TOKEN END"
+
+
+def render_local_token_block(token: str) -> str:
+    """渲染标记段内容：env 有值 → addRequestHeaders 注入 CEL 字符串字面量头（12 空格基缩进，
+    与 protocol.http 的 path:/metadata: 同层）；空 → 空串（移除注入，与守卫 fail-closed
+    语义一致：未配置时 /classify 恒 403）。token 含引号/反斜杠/空白/不可打印字符 →
+    ValueError——破 YAML/CEL 的字符宁可渲染失败大声报错，不静默产出坏配置
+    （openssl rand -hex 生成的 token 天然安全）。"""
+    if not token:
+        return ""
+    if re.search(r"[\s'\"\\]", token) or not token.isprintable():
+        raise ValueError(f"SHIM_LOCAL_TOKEN 含无法安全渲染的字符（引号/反斜杠/空白/不可打印），len={len(token)}")
+    indent = " " * 12
+    return (f"{indent}addRequestHeaders:\n"
+            f"{indent}  x-shim-local-token: '\"{token}\"'\n")
+
+
+def splice_local_token(config_text: str, block: str) -> str:
+    """替换 SHIM-LOCAL-TOKEN BEGIN/END 标记行之间的内容（标记行保留）——语义同
+    admin_api.splice_rendered，但标记独立参数化（#33 的绑死 format-rules 标记，不通用）。
+    标记缺失/顺序错 → ValueError。"""
+    lines = config_text.splitlines(keepends=True)
+    marks = [i for i, l in enumerate(lines)
+             if l.strip().startswith(LOCAL_TOKEN_BEGIN_MARK) or l.strip().startswith(LOCAL_TOKEN_END_MARK)]
+    if len(marks) != 2 or not lines[marks[0]].strip().startswith(LOCAL_TOKEN_BEGIN_MARK):
+        raise ValueError("config.yaml 缺少 SHIM-LOCAL-TOKEN BEGIN/END 标记（或顺序错误）")
+    b, e = marks
+    return "".join(lines[:b + 1]) + block + "".join(lines[e:])
+
+
+def render_local_token_to_gateway() -> str | None:
+    """启动渲染入口（issue #139）：读 env SHIM_LOCAL_TOKEN → 渲染 splice 进 config.yaml
+    标记段 → 渲染后校验 → 原子写盘（复用 #33 write_text_atomic 的 .bak 纪律）。
+    成功或内容无变化（幂等不重写，避免每次启动滚动 .bak）返回 None；缺标记/非法 token/
+    读写失败返回错误消息——调用方（__main__）大声记录但不阻启动：渲染失败多半意味着
+    config.yaml 被人工改动漂移，需留日志人工修，而网关 failureMode=allow 至少兜住传输层。"""
+    token = os.environ.get("SHIM_LOCAL_TOKEN") or ""
+    try:
+        with open(admin_api.AGENTGW_CONFIG_PATH, encoding="utf-8") as f:
+            config_text = f.read()
+        new_config = splice_local_token(config_text, render_local_token_block(token))
+        # 渲染后校验（同 #33 _verify_spliced 纪律）：标记完整 + 注入头当且仅当 token 非空时在文本
+        if LOCAL_TOKEN_BEGIN_MARK not in new_config or LOCAL_TOKEN_END_MARK not in new_config:
+            raise ValueError("渲染后校验失败: SHIM-LOCAL-TOKEN 标记缺失")
+        needle = f"x-shim-local-token: '\"{token}\"'"
+        if token and needle not in new_config:
+            raise ValueError("渲染后校验失败: addRequestHeaders 未落文本")
+        if not token and "x-shim-local-token" in new_config:
+            raise ValueError("渲染后校验失败: 空 token 渲染后仍残留 x-shim-local-token")
+    except (OSError, ValueError) as e:
+        return f"local-token 渲染失败: {e}"
+    if new_config == config_text:
+        return None  # 幂等：无漂移不写盘
+    try:
+        admin_api.write_text_atomic(admin_api.AGENTGW_CONFIG_PATH, new_config)
+    except OSError as e:
+        return f"config.yaml 写入失败: {e}"
+    return None
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):  # 静默（命中敏感值不进 shim 日志，契约）
         pass
@@ -1473,6 +1792,14 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _local_guard(self) -> bool:
+        """共享密钥门（issue #139）：头匹配返回 True；否则回 403 返回 False（fail-closed，
+        env 未配置时永不放行）。HEAD 由调用方特判（无响应体，不走本方法）。"""
+        if _local_token_ok(self.headers):
+            return True
+        self._json(403, {"error": "local endpoint requires valid X-Shim-Local-Token"})
+        return False
 
     def _req_model(self, payload):
         """请求模型名（issue #116）：webhook 请求体协议不含 model 字段（MaskAction 只能
@@ -1602,6 +1929,10 @@ class Handler(BaseHTTPRequestHandler):
             self._json(403, {"error": "graphql-authz: method not inspectable"})
             return
         if self.path == "/classify":
+            # issue #139 共享密钥守卫：头不匹配/env 未配置 → 403（fail-closed）。
+            # 网关侧配套：extAuthz 须 addRequestHeaders 注入 X-Shim-Local-Token，否则 deny。
+            if not self._local_guard():
+                return
             # extAuthz 会对 /v1 路由的全部方法发起同方法授权调用（如 GET /v1/models →
             # GET /classify）；非 2xx 会被网关当 deny 决策直接回给客户端（failureMode 只管
             # 传输错误）。GET 无 body 可分类 → 200 不带响应头（网关 CEL 回退原 model）。
@@ -1633,9 +1964,14 @@ class Handler(BaseHTTPRequestHandler):
             self._graphql_authz()
             return
         if self.path == "/classify":
+            # issue #139 共享密钥守卫先行：头不匹配/env 未配置 → 403（fail-closed；
+            # 网关 extAuthz 须 addRequestHeaders 注入 X-Shim-Local-Token，否则 /v1 被 deny）。
+            if not self._local_guard():
+                return
             # auto 智能路由（issue #117 真实分类器；#115 spike 桩已退役）：
             # agentgateway extAuthz HTTP 授权服务形态。协议语义不变：2xx=放行（本端点只
-            # 分类不鉴权，任何输入都 200，永不阻断——非 2xx 会被网关当 deny 决策）；
+            # 分类不鉴权，守卫通过后任何输入都 200，检测语义上永不阻断——非 2xx 会被
+            # 网关当 deny 决策）；
             # 改写结论经响应头 x-resolved-model 回传（网关同路由 ai.transformations CEL
             # 读 extauthz.resolved_model 改写 model，缺头回退原值 + modelAliases
             # auto→gpt-5.6-luna 静态兜底）。
@@ -1677,6 +2013,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/feishu-alert":
             # axonhub webhook → 飞书适配（issue #17）
+            # issue #139 共享密钥守卫：未鉴权时可往运维群发任意文本——头不匹配/env 未配置 → 403
+            if not self._local_guard():
+                return
             try:
                 length = _body_length(self.headers)
                 payload = json.loads(self.rfile.read(length) or b"{}")
@@ -1688,6 +2027,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/judge-test":
             # 语义层直测端点（issue #21）：不进请求链，供回归脚本测 judge 准确率/延迟
+            # issue #139 共享密钥守卫：未鉴权时白烧 judge LLM 额度——头不匹配/env 未配置 → 403
+            if not self._local_guard():
+                return
             # issue #93：与 /request 链路同口径——text 包成单条 messages 过同一掩码管线再送 judge
             # （semantic-eval 量的即生产输入）；直测显式触发，不走采样/并发预算
             # issue #105：可选 duty="inject" 走注入第二职责判定（judge_inject_text，同一掩码
@@ -1827,6 +2169,9 @@ class Handler(BaseHTTPRequestHandler):
                     _term_hits = norm_term_hits(norm.lower(), terms)
                     pre_rules += [t["rule_id"] for t in _term_hits]
             # EDM 文档指纹（issue #29，L3）：整段粘贴商密文档 → 命中阈值即拦
+            # 已知缺口（issue #139 记账，2026-09-08 对抗性审查）：分片投喂绕过——本判定
+            # 按请求独立进行，多轮拆分 <50 字符段投喂时单请求 shingle 凑不齐 min_hits≥2
+            # （行级通道同按行截断失效）。修复需会话级滑窗聚合，属新功能立项，不在本卫生包。
             edm_enabled = setting_value(settings, "edm", "enabled", "EDM_ENABLED", False)
             edm_min_hits = setting_value(settings, "edm", "min_hits", "EDM_MIN_HITS", 2)
             # 解码重扫（issue #137 P1-2）：直扫未命中时对文本中的 base64/hex 编码段探测解码，
@@ -2119,7 +2464,10 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/classify":
             # issue #117 按 #115 坑 1 收口：extAuthz 按原请求方法转发授权调用——
             # /classify 全方法恒 200 无头（非 2xx 会被网关当 deny 决策直回客户端，
-            # failureMode 只管传输层错误）。
+            # failureMode 只管传输层错误）。issue #139：全方法同挂共享密钥守卫
+            # （头不匹配/env 未配置 → 403），缺方法覆盖会留绕过口。
+            if not self._local_guard():
+                return
             self._json(200, {"resolved_model": None})
             return
         self._json(404, {})
@@ -2131,6 +2479,8 @@ class Handler(BaseHTTPRequestHandler):
         if self_api.handle(self, "DELETE"):  # 员工自助平面（issue #74 评审 P2）：已鉴权 DELETE → 显式 404
             return
         if self.path == "/classify":
+            if not self._local_guard():  # issue #139 守卫，同 do_PUT
+                return
             self._json(200, {"resolved_model": None})  # 同 do_PUT 注释：/classify 全方法恒 200
             return
         self._json(404, {})
@@ -2138,14 +2488,20 @@ class Handler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         # issue #117：/classify 全方法恒 200 兜底（extAuthz 同方法转发授权调用，#115 坑 1）；
         # 其余路径与 do_PUT/do_DELETE 同语义回 404（非 BaseHTTPRequestHandler 默认 501）。
-        self._json(200 if self.path == "/classify" else 404,
-                   {"resolved_model": None} if self.path == "/classify" else {})
+        # issue #139：/classify 同样先过共享密钥守卫（403 fail-closed）。
+        if self.path == "/classify":
+            if not self._local_guard():
+                return
+            self._json(200, {"resolved_model": None})
+            return
+        self._json(404, {})
 
     def do_HEAD(self):
         # 评审 P2-3：HEAD 同收口——缺省时 BaseHTTPRequestHandler 默认 501 会被网关当 deny。
         # /classify 恒 200；HEAD 无响应体（Content-Length: 0，不走 _json 写 body）。
+        # issue #139：守卫失败回 403（同为无体响应，不走 _json）。
         if self.path == "/classify":
-            self.send_response(200)
+            self.send_response(200 if _local_token_ok(self.headers) else 403)
         else:
             self.send_response(404)
         self.send_header("Content-Length", "0")
@@ -2156,6 +2512,14 @@ if __name__ == "__main__":
     # 启动即打一行生效来源（issue #35）：settings.json 可读 → 配置来自 JSON 覆盖层；否则全量 env/内置默认
     _s = load_settings()
     print(f"[settings] 配置来源: {'settings.json' if _s else 'env/内置默认（settings.json 缺失/损坏）'} path={SETTINGS_PATH}", flush=True)
+    # issue #139：HTTP 服务前先把守卫 token 渲染进网关 config.yaml（/classify extAuthz
+    # addRequestHeaders）——网关启动读配置须晚于本渲染（compose depends_on shim 保证）。
+    # 渲染失败大声报错但不阻启动：失败多半意味着 config.yaml 标记段被人工改动漂移，须留痕
+    # 人工修；此时 /classify 无注头 → shim 403 → 网关当 deny 决策（failureMode=allow 只兜
+    # 传输层），/v1 智能路由断流——日志这行就是断流时的第一排查点。
+    _rerr = render_local_token_to_gateway()
+    if _rerr:
+        print(f"[local-token] 渲染失败（/v1 智能路由将被 403 deny，须人工核查 config.yaml SHIM-LOCAL-TOKEN 标记段）: {_rerr}", flush=True)
     # 告警巡检 daemon 线程（issue #56：alert-poller 并入）：与检测路径隔离——
     # 循环体整体 try/except，单轮异常只记日志；daemon 线程随主进程退出。
     # 先实例化 server 再 start_daemon（issue #57 P2-1 启动竞态）：ThreadingHTTPServer 构造即完成

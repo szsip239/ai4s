@@ -112,6 +112,9 @@ cd deploy && python3 scripts/dlp-regression.py
 cd web && npx tsc --noEmit && npm run test:unit
 ```
 
+额度说明以 `docs/contracts/quota-tiers.md` 最新决策为准：2026-09-06 新模板为
+50/300/1000 点，存量 Key 保留已分配快照；前端双语说明已同步，不修改线上额度。
+
 纪律：DLP 所有配置（词表/识别器/格式规则/EDM 语料/开关阈值）唯一写入口 = shim admin API `/dlp-admin/*`，控制台「脱敏规则」页是其前端；不直改挂载目录下的 JSON。
 
 ## 许可证

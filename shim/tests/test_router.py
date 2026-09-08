@@ -49,6 +49,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import app as shim_app  # noqa: E402
 import shadow_log  # noqa: E402
 
+# issue #139：/classify 挂共享密钥守卫（env 未配置恒 403）——测试进程配置固定 token，
+# _post 统一带有效头（守卫 403 契约由 test_detection_surface.py 锚定）
+os.environ.setdefault("SHIM_LOCAL_TOKEN", "test-local-token")
+_LOCAL_HEADERS = {"X-Shim-Local-Token": os.environ["SHIM_LOCAL_TOKEN"]}
+
 
 # ---- 假路由分类器上游：只顶替 judge 通道路线边界（POST /chat/completions）----
 # STATE 驱动行为：p=固定 p_complex 输出；mode=ok/garbage/http500/slow（slow 先睡再答）。
@@ -205,7 +210,7 @@ class RouterTestBase(unittest.TestCase):
         req = urllib.request.Request(
             self._shim_base + "/classify",
             data=json.dumps(payload, ensure_ascii=False).encode(),
-            headers={"Content-Type": "application/json"})
+            headers={"Content-Type": "application/json", **_LOCAL_HEADERS})
         for k, v in (headers or {}).items():
             req.add_header(k, v)
         with urllib.request.urlopen(req, timeout=10) as r:

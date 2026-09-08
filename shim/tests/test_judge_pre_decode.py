@@ -43,6 +43,11 @@ _SHIM = ThreadingHTTPServer(("127.0.0.1", 0), shim_app.Handler)
 threading.Thread(target=_SHIM.serve_forever, daemon=True).start()
 _BASE = f"http://127.0.0.1:{_SHIM.server_address[1]}"
 
+# issue #139：/judge-test 挂共享密钥守卫（env 未配置恒 403）——测试进程配置固定 token，
+# _judge_test 统一带有效头（守卫 403 契约由 test_detection_surface.py 锚定）
+os.environ.setdefault("SHIM_LOCAL_TOKEN", "test-local-token")
+_LOCAL_HEADERS = {"X-Shim-Local-Token": os.environ["SHIM_LOCAL_TOKEN"]}
+
 _REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # bypass 组两条 base64 样本（deploy/tests/dlp-vectors.json 同文）与 base64 负例样本
@@ -74,7 +79,7 @@ def _post(content):
 def _judge_test(payload):
     req = urllib.request.Request(
         _BASE + "/judge-test", data=json.dumps(payload, ensure_ascii=False).encode(),
-        headers={"Content-Type": "application/json"})
+        headers={"Content-Type": "application/json", **_LOCAL_HEADERS})
     with urllib.request.urlopen(req, timeout=5) as r:
         return r.status, json.load(r)
 

@@ -29,10 +29,14 @@ session_inherit/escalate/tool_loop_lock/thinking_lock/fail_open）/session（会
 - record 永不抛（检测路径纪律，与 pg_guard fail-open 同语义）——持久化失败只 print；
 - 仅标准库；不 import alert_poller（其需消费本模块 stats，反向会成环）——STATE_PATH
   默认值按同一 env 名自取，目录约定与 key-requests.json 一致；
-- 超 MAX_BYTES 截尾保留新的一半（tmp+os.replace 原子换文件，与 admin_api 原子写同原理）。
+- 超 MAX_BYTES 截尾保留新的一半（tmp+os.replace 原子换文件，与 admin_api 原子写同原理）；
+- issue #139：append+截尾整体持模块级 _WRITE_LOCK——并发 record 时一条线程截尾换文件、
+  另一条同时 append 旧 fd 会丢条（写进被 replace 掉的旧 inode）；截尾 tmp 名带线程 ident，
+  防并发截尾互踩同一 tmp 路径（锁内本不会并发，ident 是锁外误调/未来改动的兜底）。
 """
 import json
 import os
+import threading
 import time
 
 # 路径解析每次调用走 env（测试注入友好）：SHADOW_LOG_PATH 显式指定 >
@@ -43,6 +47,10 @@ def _default_path() -> str:
         return p
     d = os.path.dirname(os.environ.get("STATE_PATH", "/state/alert-state.json"))
     return os.path.join(d or ".", "shadow-verdicts.jsonl")
+
+
+# issue #139：record 的 append+截尾串行化锁（模块级单把——判定位低频，无争用顾虑）
+_WRITE_LOCK = threading.Lock()
 
 
 # 截尾阈值：1MB 约 5k 条判定，观察期统计（窗口 20/50）远在覆盖内。每次调用走 env（测试注入友好）
@@ -118,22 +126,25 @@ def record(layer: str, hit=None, score=None, confidence=None, latency_ms=None,
         d = os.path.dirname(p)
         if d:
             os.makedirs(d, exist_ok=True)
-        with open(p, "a", encoding="utf-8") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        _trim_if_oversize(p)
+        with _WRITE_LOCK:  # issue #139：append+截尾原子串行——否则截尾 replace 换 inode 丢并发 append
+            with open(p, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            _trim_if_oversize(p)
     except Exception as e:
         print(f"[shadow] 持久化失败（不影响检测）: {type(e).__name__}", flush=True)
 
 
 def _trim_if_oversize(path: str):
-    """超 MAX_BYTES 截尾留新的一半（tmp + os.replace 原子换文件，读者只见完整旧/新版）。"""
+    """超 MAX_BYTES 截尾留新的一半（tmp + os.replace 原子换文件，读者只见完整旧/新版）。
+    调用方须持 _WRITE_LOCK（issue #139）；tmp 名带进程 pid+线程 ident 双保险——
+    即便锁外误调/未来改动引入并发截尾，也不互踩同一 tmp 路径。"""
     try:
         if os.path.getsize(path) <= _max_bytes():
             return
         with open(path, "r", encoding="utf-8") as f:
             lines = f.readlines()
         keep = lines[len(lines) // 2:]
-        tmp = f"{path}.tmp.{os.getpid()}"
+        tmp = f"{path}.tmp.{os.getpid()}.{threading.get_ident()}"
         try:
             with open(tmp, "w", encoding="utf-8") as f:
                 f.writelines(keep)

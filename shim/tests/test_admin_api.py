@@ -7,6 +7,7 @@ seam 纪律：
 - 原子写：直接测 admin_api.write_json_atomic。
 """
 import contextlib
+import http.client
 import io
 import json
 import os
@@ -78,6 +79,11 @@ import pg_engine  # noqa: E402  # issue #67：PG 进程内引擎（模块级仅�
 
 _SHIM = _start_server(shim_app.Handler)
 _SHIM_BASE = f"http://127.0.0.1:{_SHIM.server_address[1]}"
+
+# issue #139：/judge-test 等挂共享密钥守卫（env 未配置恒 403）——测试进程配置固定 token，
+# 涉端点调用带 _LOCAL_HEADERS（守卫 403 契约由 test_detection_surface.py 锚定）
+os.environ.setdefault("SHIM_LOCAL_TOKEN", "test-local-token")
+_LOCAL_HEADERS = {"X-Shim-Local-Token": os.environ["SHIM_LOCAL_TOKEN"]}
 
 
 def _request(method, path, token=None, payload=None, scheme="Bearer", headers=None):
@@ -2212,7 +2218,8 @@ class JudgeShadowMaskTest(unittest.TestCase):
         直测显式触发不走采样（sample_rate=0 也照判）——semantic-eval 量的即生产输入。"""
         self._fixture["judge"]["sample_rate"] = 0
         self._write_settings()
-        status, body = _request("POST", "/judge-test", payload={"text": "打我手机 13800138000 聊排期"})
+        status, body = _request("POST", "/judge-test", payload={"text": "打我手机 13800138000 聊排期"},
+                                headers=_LOCAL_HEADERS)  # issue #139 守卫头
         self.assertEqual(status, 200)
         self.assertIsNotNone(body["verdict"])  # 直测不受采样限制，judge 被调用
         sent = _FakeJudge.captured["messages"][2]["content"]
@@ -2326,7 +2333,8 @@ class JudgeActionConsumeTest(unittest.TestCase):
     def test_action_off_judge_test_unaffected(self):
         """action=off 只管链路消费：/judge-test 直测（显式人肉调试通道）照常判定。"""
         self._set_action("off")
-        status, body = _request("POST", "/judge-test", payload={"text": "任意文本"})
+        status, body = _request("POST", "/judge-test", payload={"text": "任意文本"},
+                                headers=_LOCAL_HEADERS)  # issue #139 守卫头
         self.assertEqual(status, 200)
         self.assertIsNotNone(body["verdict"])
         self.assertNotEqual(_FakeJudge.captured, {})
@@ -4033,6 +4041,199 @@ class AdminAuditLogTest(unittest.TestCase):
         ops = [r.get("op") for r in body["records"]]
         self.assertIn("put_wordlist", ops)
         self.assertIn("admin", body["stats"])
+
+
+class AdminRmwLockTest(unittest.TestCase):
+    """issue #139：配置面读-改-写模块级锁（_RMW_LOCK，bypass_keys 同款）串行化回归——
+    并发写不得重入 write_json_atomic（裸跑=交错写/丢更新）。
+    门控间谍确定性复现：首个写盘者持闸阻塞期间，第二个写请求不得进入写盘点
+    （无锁时它直接重入 spy——最大并发数 >1 且后写者持 stale 读覆盖先写者=丢更新）。
+    fixture：临时 wordlist/recognizers/settings/edm 路径 + SHADOW_LOG_PATH（审计落 tmp）。"""
+
+    def setUp(self):
+        _FAKE_STATE["mode"] = "ok"
+        _FAKE_STATE["tokens"] = {
+            "writer-token": {"id": "7", "email": "ops@example.com", "isOwner": False,
+                             "scopes": ["read_channels", "write_channels"]},
+        }
+        self._tmp = tempfile.TemporaryDirectory()
+        d = self._tmp.name
+        self.wordlist_path = os.path.join(d, "confidential-terms.json")
+        self.recognizers_path = os.path.join(d, "pii-zh.json")
+        self.settings_path = os.path.join(d, "settings.json")
+        self.fp_path = os.path.join(d, "fingerprints.json")
+        self.corpus_dir = os.path.join(d, "corpus")
+        os.makedirs(self.corpus_dir)
+        with open(self.wordlist_path, "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "terms": []}, f)
+        with open(self.recognizers_path, "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "recognizers": [_REC_FIXTURE]}, f, ensure_ascii=False)
+        with open(self.settings_path, "w", encoding="utf-8") as f:
+            json.dump(_SETTINGS_FIXTURE, f, ensure_ascii=False)
+        with open(self.fp_path, "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "docs": {}}, f)
+        self._saved = (admin_api.WORDLIST_PATH, admin_api.PII_RECOGNIZERS_PATH,
+                       admin_api.SETTINGS_PATH, admin_api.EDM_FP_PATH, admin_api.EDM_CORPUS_DIR)
+        admin_api.WORDLIST_PATH = self.wordlist_path
+        admin_api.PII_RECOGNIZERS_PATH = self.recognizers_path
+        admin_api.SETTINGS_PATH = self.settings_path
+        admin_api.EDM_FP_PATH = self.fp_path
+        admin_api.EDM_CORPUS_DIR = self.corpus_dir
+        self._saved_env = os.environ.get("SHADOW_LOG_PATH")
+        os.environ["SHADOW_LOG_PATH"] = os.path.join(d, "audit.jsonl")
+
+    def tearDown(self):
+        (admin_api.WORDLIST_PATH, admin_api.PII_RECOGNIZERS_PATH, admin_api.SETTINGS_PATH,
+         admin_api.EDM_FP_PATH, admin_api.EDM_CORPUS_DIR) = self._saved
+        if self._saved_env is None:
+            os.environ.pop("SHADOW_LOG_PATH", None)
+        else:
+            os.environ["SHADOW_LOG_PATH"] = self._saved_env
+        self._tmp.cleanup()
+
+    def _read_json(self, path):
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+
+    @contextlib.contextmanager
+    def _gated_atomic(self):
+        """write_json_atomic 间谍门控：首个进入者阻塞至主线程放行；记录最大并发重入数。"""
+        first_entered = threading.Event()
+        release = threading.Event()
+        overlap = {"cur": 0, "max": 0}
+        orig = admin_api.write_json_atomic
+
+        def spy(path, obj):
+            first = not first_entered.is_set()
+            overlap["cur"] += 1
+            overlap["max"] = max(overlap["max"], overlap["cur"])
+            if first:
+                first_entered.set()
+                release.wait(5)
+            try:
+                orig(path, obj)
+            finally:
+                overlap["cur"] -= 1
+
+        with mock.patch.object(admin_api, "write_json_atomic", side_effect=spy):
+            yield first_entered, release, overlap
+
+    def _concurrent_pair(self, make_req_a, make_req_b):
+        """起线程 A 写（门控阻塞其写盘）→ 起线程 B 写 → 窗口期后放行 → 收双线程结果。
+        返回 ((status_a, body_a), (status_b, body_b), overlap)。"""
+        with self._gated_atomic() as (first_entered, release, overlap):
+            box = {}
+            ta = threading.Thread(target=lambda: box.__setitem__("a", make_req_a()))
+            ta.start()
+            self.assertTrue(first_entered.wait(5))  # A 已进入写盘点（持锁/持闸）
+            tb = threading.Thread(target=lambda: box.__setitem__("b", make_req_b()))
+            tb.start()
+            time.sleep(0.3)  # 给 B 走到写盘点的窗口：无锁=重入 spy，有锁=卡在 _RMW_LOCK
+            release.set()
+            ta.join(5)
+            tb.join(5)
+        return box["a"], box["b"], overlap
+
+    def test_wordlist_put_serialized_no_lost_update(self):
+        """并发双 PUT wordlist（整体替换语义）：串行化后落盘=后写者版本，两请求均 200。"""
+        terms_a = [{"value": "词甲", "rule_id": "confidential.a"}]
+        terms_b = [{"value": "词乙", "rule_id": "confidential.b"}]
+        (sa, _), (sb, _), overlap = self._concurrent_pair(
+            lambda: _request("PUT", "/dlp-admin/wordlist", token="writer-token",
+                             payload={"terms": terms_a}),
+            lambda: _request("PUT", "/dlp-admin/wordlist", token="writer-token",
+                             payload={"terms": terms_b}))
+        self.assertEqual((sa, sb), (200, 200))
+        self.assertEqual(overlap["max"], 1)  # 写盘零重入
+        # A 先到写盘点（持锁），B 串行在后 → 落盘必为 B 的版本（无锁时 B 先写、A 持
+        # stale 读后写=覆盖丢更新）
+        self.assertEqual(self._read_json(self.wordlist_path)["terms"], terms_b)
+
+    def test_recognizers_post_serialized_no_lost_update(self):
+        """并发双 POST recognizer（追加语义）：两个新条都必须落库（无锁时后写者持
+        stale 快照覆盖=先写者的新条被丢）。"""
+        rec_a = dict(_REC_FIXTURE, name="rec_a", entity="ENT_A")
+        rec_b = dict(_REC_FIXTURE, name="rec_b", entity="ENT_B")
+        (sa, _), (sb, _), overlap = self._concurrent_pair(
+            lambda: _request("POST", "/dlp-admin/recognizers", token="writer-token", payload=rec_a),
+            lambda: _request("POST", "/dlp-admin/recognizers", token="writer-token", payload=rec_b))
+        self.assertEqual((sa, sb), (200, 200))
+        self.assertEqual(overlap["max"], 1)
+        names = [r["name"] for r in self._read_json(self.recognizers_path)["recognizers"]]
+        self.assertIn("rec_a", names)
+        self.assertIn("rec_b", names)
+
+    def test_settings_put_serialized_no_lost_update(self):
+        """并发双 PUT settings（整体替换语义）：串行化后落盘=后写者版本；l1 不变不触发联动。"""
+        new_a = json.loads(json.dumps(_SETTINGS_FIXTURE))
+        new_a["pg"]["threshold"] = 0.61
+        new_b = json.loads(json.dumps(_SETTINGS_FIXTURE))
+        new_b["pg"]["threshold"] = 0.62
+        (sa, _), (sb, _), overlap = self._concurrent_pair(
+            lambda: _request("PUT", "/dlp-admin/settings", token="writer-token", payload=new_a),
+            lambda: _request("PUT", "/dlp-admin/settings", token="writer-token", payload=new_b))
+        self.assertEqual((sa, sb), (200, 200))
+        self.assertEqual(overlap["max"], 1)
+        self.assertEqual(self._read_json(self.settings_path)["pg"]["threshold"], 0.62)
+
+    def test_edm_ingest_serialized_no_lost_update(self):
+        """并发双 POST EDM 语料（不同名文档）：两篇指纹都必须入库（无锁时 stale 快照
+        互覆盖=先入库的文档指纹被丢，corpus 原文成孤儿）。"""
+        text_a = "甲方文档内容足够长 abcdefghijklmnop"
+        text_b = "乙方文档内容足够长 qrstuvwxyz123456"
+        (sa, _), (sb, _), overlap = self._concurrent_pair(
+            lambda: _request("POST", "/dlp-admin/edm/corpus", token="writer-token",
+                             payload={"name": "doca", "text": text_a}),
+            lambda: _request("POST", "/dlp-admin/edm/corpus", token="writer-token",
+                             payload={"name": "docb", "text": text_b}))
+        self.assertEqual((sa, sb), (200, 200))
+        self.assertEqual(overlap["max"], 1)
+        docs = self._read_json(self.fp_path)["docs"]
+        self.assertIn("doca", docs)
+        self.assertIn("docb", docs)
+        self.assertTrue(os.path.exists(os.path.join(self.corpus_dir, "doca.txt")))
+        self.assertTrue(os.path.exists(os.path.join(self.corpus_dir, "docb.txt")))
+
+
+class AdminContentLengthTest(unittest.TestCase):
+    """issue #139：admin 平面声明体长解析 fail-closed——非法/负值 Content-Length 干净 400，
+    不读流至 EOF 悬挂（对照 app.py _body_length 的检测路径 fail-open 语义：那边非法值当 0
+    防 5xx 全层放行；admin 平面不适用 fail-open，非法即拒）。"""
+
+    def setUp(self):
+        _FAKE_STATE["mode"] = "ok"
+        _FAKE_STATE["tokens"] = {
+            "writer-token": {"id": "7", "isOwner": False,
+                             "scopes": ["read_channels", "write_channels"]},
+        }
+
+    def _post_with_length(self, length_header):
+        """绕过 urllib（它自动算 Content-Length），用 http.client 发非法声明体长。
+        用已路由的写端点 PUT /dlp-admin/wordlist——未路由路径 404 在鉴权后先行返回，
+        根本轮不到读 body（测不到 Content-Length 分支）。"""
+        conn = http.client.HTTPConnection("127.0.0.1", _SHIM.server_address[1], timeout=5)
+        conn.putrequest("PUT", "/dlp-admin/wordlist")
+        conn.putheader("Authorization", "Bearer writer-token")
+        conn.putheader("Content-Type", "application/json")
+        conn.putheader("Content-Length", length_header)
+        conn.endheaders()  # 不发 body：服务端应不读流直接 400
+        try:
+            resp = conn.getresponse()
+            return resp.status, resp.read()
+        finally:
+            conn.close()
+
+    def test_invalid_content_length_400(self):
+        status, body = self._post_with_length("abc")
+        self.assertEqual(status, 400)
+        self.assertIn(b"Content-Length", body)
+
+    def test_negative_content_length_400_no_hang(self):
+        # 负值：修复前 rfile.read(负值) 读流至 EOF——客户端等响应、服务端等 body，悬挂至死
+        started = time.time()
+        status, body = self._post_with_length("-5")
+        self.assertLess(time.time() - started, 4)  # 干净 400 而非悬挂到客户端超时
+        self.assertEqual(status, 400)
 
 
 if __name__ == "__main__":

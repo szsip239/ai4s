@@ -79,6 +79,10 @@ services:
     depends_on:
       axonhub:
         condition: service_healthy
+      # issue #139：shim 启动先把守卫 token 渲染进本目录 config.yaml（SHIM-LOCAL-TOKEN
+      # 标记段），网关读配置须排在渲染之后；service_started 即可（渲染在 shim bind 前完成）
+      shim:
+        condition: service_started
     restart: unless-stopped
     # 镜像为 chainguard 最小底座，无 wget/curl，容器内无法做 exec 式 healthcheck；
     # 健康判定用宿主机 curl http://localhost:15001/healthz/ready（smoke-test.sh 内含）。
@@ -132,6 +136,13 @@ services:
       # issue #17：axonhub webhook → 飞书适配器（签名+重试）；值在 .env，不落库
       FEISHU_ALERT_WEBHOOK: ${FEISHU_ALERT_WEBHOOK:-}
       FEISHU_ALERT_SECRET: ${FEISHU_ALERT_SECRET:-}
+      # issue #139 本地端点共享密钥守卫：/judge-test /feishu-alert /classify 要求请求头
+      # X-Shim-Local-Token 匹配本值；空值=fail-closed 三端点恒 403。
+      # 配套（缺一即破链）：agentgateway /classify extAuthz 的同值头由 shim 启动自动渲染进
+      # ./agentgateway/config.yaml 的 SHIM-LOCAL-TOKEN 标记段（addRequestHeaders；渲染失败
+      # shim 启动日志大声报错），agentgateway depends_on shim 保证先渲染后读配置；
+      # axonhub → /feishu-alert 的 webhook 来源同样须带该头；本地脚本从 deploy/.env 读同值。
+      SHIM_LOCAL_TOKEN: ${SHIM_LOCAL_TOKEN:-}
       # issue #21 语义层 shadow：judge 经 axonhub 直连调 deepseek-flash（测试期，合成样本）；
       # issue #93 起确定外部 API 路线（无内网机型）——judge 输入先经 L1/L2 掩码脱敏再外发，
       # settings 加 sample_rate/max_concurrency 采样与并发预算。issue #35 起开关/模型/超时/prompt
@@ -181,6 +192,8 @@ services:
       FEISHU_ADMIN_OPEN_ID: ${FEISHU_ADMIN_OPEN_ID:-}
       KEY_REQUEST_CONSOLE_URL: ${KEY_REQUEST_CONSOLE_URL:-}
       KEY_REQUEST_TTL: ${KEY_REQUEST_TTL:-}
+      # issue #139：隔离项目 gid 直比（#128 邀请流程迁出来源）；置空则不自动迁出（fail-closed）
+      QUARANTINE_PROJECT_GID: ${QUARANTINE_PROJECT_GID:-}
       POLL_INTERVAL: "30"
     volumes:
       - ./dlp:/dlp:rw # 词表/format-rules/settings.json 挂载（issue #31 起 rw：admin API 写回）；shim 每请求重读热更新

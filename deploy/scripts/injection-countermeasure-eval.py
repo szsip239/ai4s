@@ -377,17 +377,41 @@ def route_judge(limit=None, out=None):
 SHIM_URL = os.environ.get("SHIM_URL", "http://localhost:18080")  # 同 semantic-eval 口径
 
 
+def _shim_local_headers():
+    """issue #139：/judge-test 挂共享密钥守卫（fail-closed）——token 取 env
+    SHIM_LOCAL_TOKEN，缺省读 deploy/.env（解析口径同 dlp_testkit.load_env）。"""
+    tok = os.environ.get("SHIM_LOCAL_TOKEN")
+    if not tok:
+        try:
+            with open(os.path.join(DEPLOY_DIR, ".env"), encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        if k == "SHIM_LOCAL_TOKEN":
+                            tok = v
+                            break
+        except OSError:
+            pass
+    return {"X-Shim-Local-Token": tok} if tok else {}
+
+
 def judge_inject_prod(text):
     """shim /judge-test duty="inject" 直测。返回 (verdict dict|None, 延迟 ms, error str|None)；
     verdict=None 且 error=None 表示端点正常但判定不可用（inject 关/prompt 缺/API 异常——
     shim fail-open 返回 null）。"""
     body = json.dumps({"text": text, "duty": "inject"}, ensure_ascii=False).encode()
     req = urllib.request.Request(SHIM_URL + "/judge-test", data=body,
-                                 headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json",
+                                          **_shim_local_headers()})
     t0 = time.time()
     try:
         with urllib.request.urlopen(req, timeout=JUDGE_TIMEOUT + 10) as r:
             d = json.load(r)
+    except urllib.error.HTTPError as e:
+        if e.code == 403:  # issue #139 守卫拦截：token 缺失/不匹配——显式提示
+            print("hint: /judge-test 403——配置 SHIM_LOCAL_TOKEN（env 或 deploy/.env）后重跑", file=sys.stderr)
+        return None, round((time.time() - t0) * 1000), type(e).__name__
     except Exception as e:
         return None, round((time.time() - t0) * 1000), type(e).__name__
     return d.get("verdict"), int(d.get("latency_ms") or 0), None

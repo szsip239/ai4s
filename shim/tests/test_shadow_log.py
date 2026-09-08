@@ -5,9 +5,13 @@ seam 纪律：shadow_log 为纯模块 seam（record/tail/stats 公开函数，pa
 不触内部行格式——断言只走 tail/stats 读回的字段语义。
 issue #101 增补：judge warn 事件字段（warned）round-trip 与 stats 聚合。
 """
+import contextlib
+import io
+import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 
 # 让测试可 import shim 目录下的 shadow_log（discover 从 shim/tests 启动）
@@ -209,6 +213,95 @@ class TestTrim(unittest.TestCase):
         # 截尾后留存的是最新一段；全部记录仍是合法形状（tail 可读、无坏行混入）
         self.assertTrue(0 < len(recs) < 20)
         self.assertTrue(all(r["layer"] == "judge" for r in recs))
+
+
+class TestTrimConcurrency(unittest.TestCase):
+    """issue #139：record 追加与 _trim_if_oversize 截尾竞态——修复前 tmp 名按 pid 单名
+    （并发截尾互踩：os.replace 落空 FileNotFoundError/内容交错）且 append 可插入 trim 的
+    readlines→replace 之间丢行。修复：tmp 名补线程 id + 模块级锁串行化 record/trim。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.path = os.path.join(self.tmp.name, "shadow.jsonl")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_trim_tmp_name_includes_thread_ident(self):
+        """截尾 tmp 名带线程 id（并发不撞名）——从子线程触发截尾，截获 os.replace 源路径断言。"""
+        import threading
+        from unittest import mock
+        os.environ["SHADOW_LOG_MAX_BYTES"] = "300"
+        captured = []
+        orig_replace = os.replace
+
+        def spy(src, dst):
+            captured.append((threading.get_ident(), os.path.basename(src)))
+            return orig_replace(src, dst)
+
+        try:
+            with open(self.path, "w", encoding="utf-8") as f:  # 直接预填超限（绕开 record 免预截尾）
+                for i in range(6):
+                    f.write(json.dumps({"ts": i, "layer": "judge", "hit": True,
+                                        "confidence": 0.8, "latency_ms": 100}) + "\n")
+            with mock.patch("os.replace", side_effect=spy):
+                t = threading.Thread(target=shadow_log._trim_if_oversize, args=(self.path,))
+                t.start()
+                t.join(5)
+        finally:
+            del os.environ["SHADOW_LOG_MAX_BYTES"]
+        self.assertTrue(captured)
+        for ident, name in captured:
+            self.assertIn(str(ident), name)  # tmp 名含调用线程 id（修复前只有 pid）
+
+    def test_record_trim_serialized_no_overlap(self):
+        """append+trim 同临界区：门控 os.replace 阻塞首个截尾期间，并发 record 不得进入
+        第二个截尾（无锁时重入=同 tmp 名互踩/append 插入 readlines→replace 之间丢行）。"""
+        import threading
+        from unittest import mock
+        os.environ["SHADOW_LOG_MAX_BYTES"] = "300"
+        entered = threading.Event()
+        release = threading.Event()
+        overlap = {"cur": 0, "max": 0}
+        orig_replace = os.replace
+
+        def gated_replace(src, dst):
+            overlap["cur"] += 1
+            overlap["max"] = max(overlap["max"], overlap["cur"])
+            entered.set()
+            release.wait(5)
+            try:
+                return orig_replace(src, dst)
+            finally:
+                overlap["cur"] -= 1
+
+        buf = io.StringIO()
+        try:
+            with open(self.path, "w", encoding="utf-8") as f:  # 直接预填逼近阈值（绕开 record 免预截尾）
+                for i in range(4):
+                    f.write(json.dumps({"ts": i, "layer": "judge", "hit": True,
+                                        "confidence": 0.8, "latency_ms": 100}) + "\n")
+            with mock.patch("os.replace", side_effect=gated_replace), \
+                 contextlib.redirect_stdout(buf):
+                t1 = threading.Thread(target=shadow_log.record,
+                                      kwargs={"layer": "judge", "hit": True, "path": self.path})
+                t1.start()
+                self.assertTrue(entered.wait(5))  # t1 已进入截尾（持锁/持闸）
+                t2 = threading.Thread(target=shadow_log.record,
+                                      kwargs={"layer": "pg", "hit": False, "path": self.path})
+                t2.start()
+                time.sleep(0.3)  # 窗口期：无锁时 t2 重入截尾（max→2），有锁时卡在锁外
+                release.set()
+                t1.join(5)
+                t2.join(5)
+        finally:
+            del os.environ["SHADOW_LOG_MAX_BYTES"]
+        self.assertEqual(overlap["max"], 1)  # 截尾零重入
+        self.assertNotIn("截尾失败", buf.getvalue())
+        # 无 tmp 残留、文件保持合法 JSONL
+        self.assertEqual([f for f in os.listdir(self.tmp.name) if ".tmp." in f], [])
+        for line in open(self.path, encoding="utf-8"):
+            self.assertIn("layer", json.loads(line))
 
 
 if __name__ == "__main__":

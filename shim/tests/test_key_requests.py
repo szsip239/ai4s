@@ -94,6 +94,19 @@ class TestValidate(_Base):
     def test_new_requires_purpose(self):
         self.assertIn("purpose", kr.validate_payload({"kind": "new"})[4])
 
+    def test_new_tier_whitelist(self):
+        # issue #139：新建申请的 tier 过 ALLOWED_TIERS 白名单——非法值 400 不落库；
+        # 空 tier 合法（缺省=执行落体验档默认语义，前端新建表单不带 tier）；
+        # 存量垃圾值不迁移（只挡新增）
+        err = kr.validate_payload({"kind": "new", "purpose": "联调", "tier": "无敌档"})[4]
+        self.assertIsNotNone(err)
+        self.assertIn("tier", err)
+        self.assertIsNone(kr.validate_payload({"kind": "new", "purpose": "联调", "tier": ""})[4])
+        self.assertIsNone(kr.validate_payload({"kind": "new", "purpose": "联调"})[4])
+        for t in kr.ALLOWED_TIERS:
+            self.assertIsNone(
+                kr.validate_payload({"kind": "new", "purpose": "联调", "tier": t})[4], t)
+
     def test_upgrade_tier_whitelist(self):
         self.assertIn("标准档", kr.validate_payload({"kind": "upgrade", "tier": "无敌档"})[4])
         self.assertIsNone(kr.validate_payload({"kind": "upgrade", "tier": "高档", "keyIds": ["k1"]})[4])
@@ -417,6 +430,79 @@ class TestResolveConcurrency(_Base):
         out, err = box["result"]
         self.assertIsNone(err)
         self.assertEqual(out["status"], "approved")
+
+    def test_reject_between_locks_while_approve_executing_409(self):
+        # issue #139（reject/approve TOCTOU）：reject 首段锁通过后、第二段锁落 rejected 前，
+        # 并发 approve 登记 _executing 并开始执行——第二段锁必须复查 _executing 并 409，
+        # 否则「已拒绝」单上建出 Key 并私信交付明文。
+        # 确定性交错（仪表化 _lock，非 _load 调用计数——reject 两段锁紧邻，计数法无法把
+        # approve 首段锁确定性插进两段之间）：首个持锁者认定为 reject 线程；reject 第二次
+        # 入场（第二段锁）前等 approve 首段锁完成（_executing 已登记）；approve 首段之后
+        # 的各段等 reject 第二段锁收尾，保证 reject 复查命中 _executing 时单子仍 pending。
+        req = self._create(_ME_FEISHU)
+        box = {}
+
+        class _GatedLock:
+            def __init__(self):
+                self._l = threading.Lock()
+                self.reject_ident = None
+                self.reject_entries = 0
+                self.reject_started = threading.Event()
+                self.approve_s1_done = threading.Event()
+                self.reject_s2_done = threading.Event()
+
+            def __enter__(self):
+                ident = threading.get_ident()
+                if self.reject_ident is None:
+                    self.reject_ident = ident
+                    self.reject_started.set()
+                if ident == self.reject_ident:
+                    self.reject_entries += 1
+                    if self.reject_entries == 2 and not self.approve_s1_done.wait(5):
+                        raise AssertionError("门控超时：approve 首段锁未完成")
+                elif self.approve_s1_done.is_set() and not self.reject_s2_done.wait(5):
+                    raise AssertionError("门控超时：reject 第二段锁未收尾")
+                self._l.acquire()
+                return self
+
+            def __exit__(self, *exc):
+                ident = threading.get_ident()
+                self._l.release()
+                if ident == self.reject_ident:
+                    if self.reject_entries == 2:
+                        self.reject_s2_done.set()
+                else:
+                    self.approve_s1_done.set()  # approve 首段锁收尾=_executing 已登记
+                return False
+
+        gated = _GatedLock()
+
+        def _reject():
+            box["reject"] = kr.resolve_request(req["id"], "reject", "竞态拒绝")
+
+        def _approve():
+            box["approve"] = kr.resolve_request(req["id"], "approve")
+
+        with mock.patch.object(kr, "_lock", gated), \
+             mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_FEISHU), \
+             mock.patch.object(kr.alert_poller, "ensure_emp_key", return_value=("emp-x", "ah-x", "")), \
+             mock.patch.object(kr, "_get_ax", return_value=object()):
+            t_reject = threading.Thread(target=_reject)
+            t_reject.start()
+            self.assertTrue(gated.reject_started.wait(5))  # 保证 reject 首段锁先行
+            t_approve = threading.Thread(target=_approve)
+            t_approve.start()
+            t_reject.join(5)
+            t_approve.join(5)
+        out, err = box["reject"]
+        self.assertIsNotNone(err)
+        self.assertEqual(err[0], 409)  # 第二段锁复查 _executing 命中
+        self.assertEqual(out["status"], "pending")  # reject 未把执行中的单子改终态
+        aout, aerr = box["approve"]
+        self.assertIsNone(aerr)
+        self.assertEqual(aout["status"], "approved")
+        stored = [r for r in kr._load() if r["id"] == req["id"]][0]
+        self.assertEqual(stored["status"], "approved")  # 最终态由 approve 落定（非 rejected）
 
 
 class TestCancel(_Base):
@@ -873,6 +959,7 @@ class TestProjectScope(_Base):
     def test_execute_upgrade_passes_project_id(self):
         req = self._create_p2(kind="upgrade", tier="标准档", key_ids=["gid://axonhub/APIKey/101"])
         with mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_FEISHU), \
+             self._member_of_p2(), \
              mock.patch.object(kr.alert_poller, "apply_tier_to_user",
                                return_value="已将 1 个 Key 换挂 标准档") as at, \
              mock.patch.object(kr, "_get_ax", return_value=object()):
@@ -880,6 +967,21 @@ class TestProjectScope(_Base):
         self.assertIsNone(err)
         self.assertEqual(at.call_args.kwargs["project_id"], _P2)
         self.assertEqual(at.call_args.kwargs["key_ids"], ["gid://axonhub/APIKey/101"])
+
+    def test_execute_upgrade_member_removed_no_apply(self):
+        # issue #139：提额执行侧补成员复查（与 kind=new 的 #89 复查同语义）——审批期间被
+        # 移出项目 → 不换挂，申请照常 approved 落「未执行」结果（执行侧兜底，方向守卫在
+        # 申请侧）。_Base 默认成员 mock 只剩 Default → 执行复查不命中 P2
+        req = self._create_p2(kind="upgrade", tier="标准档", key_ids=["gid://axonhub/APIKey/101"])
+        with mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_FEISHU), \
+             mock.patch.object(kr.alert_poller, "apply_tier_to_user") as at, \
+             mock.patch.object(kr, "_get_ax", return_value=object()):
+            out, err = kr.resolve_request(req["id"], "approve")
+        self.assertIsNone(err)
+        self.assertEqual(out["status"], "approved")
+        self.assertIn("已不在项目", out["result"])
+        self.assertIn("P-Test2", out["result"])
+        at.assert_not_called()
 
     def test_list_requests_project_filter(self):
         req_default = self._create(_ME_LOCAL)          # Default 项目
@@ -1111,9 +1213,11 @@ _QUAR_NAME = "External-Quarantine"
 
 
 class TestQuarantineExit(_Base):
-    """批准迁入正式项目 = 转正：执行成功后将申请人迁出隔离区（External-Quarantine，按名解析
-    gid，与前端邀请对话同名契约）。仅当申请源项目=隔离区且落点≠隔离区时触发；best-effort——
-    Key 已建不回滚，迁出失败只记日志并在结果摘要注明可人工移除。"""
+    """批准迁入正式项目 = 转正：执行成功后将申请人迁出隔离区。issue #139：隔离区由按名解析
+    改为按 gid（模块级 QUARANTINE_PROJECT_GID，env 同名注入）——项目可改名，按名解析失配即
+    永不迁出/误配即误迁；未配置 fail-closed 不动作（绝不回退按名猜测）。
+    仅当申请源项目=隔离区且落点≠隔离区时触发；best-effort——Key 已建不回滚，迁出失败只记
+    日志并在结果摘要注明可人工移除。"""
 
     def _ax_mock(self, events, remove_raises=None):
         """假 Axonhub：myProjects 含隔离区+P-Formal；add/remove 记录事件；remove 可配抛错。"""
@@ -1149,7 +1253,8 @@ class TestQuarantineExit(_Base):
         req = self._create_quar_req()
         events = []
         ax = self._ax_mock(events)
-        with mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_LOCAL), \
+        with mock.patch.object(kr, "QUARANTINE_PROJECT_GID", _QUAR), \
+             mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_LOCAL), \
              mock.patch.object(kr.alert_poller, "ensure_emp_key",
                                side_effect=lambda *_a, **kw: events.append(("key", kw.get("project_id"))) or ("emp-x", "ah-x", "")), \
              mock.patch.object(kr, "_get_ax", return_value=ax):
@@ -1165,7 +1270,8 @@ class TestQuarantineExit(_Base):
         req = self._create(_ME_LOCAL)
         events = []
         ax = self._ax_mock(events)
-        with mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_LOCAL), \
+        with mock.patch.object(kr, "QUARANTINE_PROJECT_GID", _QUAR), \
+             mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_LOCAL), \
              mock.patch.object(kr.alert_poller, "ensure_emp_key",
                                side_effect=lambda *_a, **kw: events.append(("key", kw.get("project_id"))) or ("emp-x", "ah-x", "")), \
              mock.patch.object(kr, "_get_ax", return_value=ax):
@@ -1179,7 +1285,8 @@ class TestQuarantineExit(_Base):
         req = self._create_quar_req()
         events = []
         ax = self._ax_mock(events, remove_raises=RuntimeError("gql down"))
-        with mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_LOCAL), \
+        with mock.patch.object(kr, "QUARANTINE_PROJECT_GID", _QUAR), \
+             mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_LOCAL), \
              mock.patch.object(kr.alert_poller, "ensure_emp_key",
                                side_effect=lambda *_a, **kw: ("emp-x", "ah-x", "")), \
              mock.patch.object(kr, "_get_ax", return_value=ax):
@@ -1187,6 +1294,90 @@ class TestQuarantineExit(_Base):
         self.assertIsNone(err)
         self.assertEqual(out["status"], "approved")
         self.assertIn("迁出隔离项目失败", out["result"])
+
+    def test_unconfigured_gid_fail_closed_no_removal(self):
+        # ④issue #139：QUARANTINE_PROJECT_GID 未配置 → fail-closed 不动作（绝不按名猜测）：
+        # 批准照常（入项→建 Key），但不发 removeUserFromProject，记日志提示配置
+        req = self._create_quar_req()
+        events = []
+        ax = self._ax_mock(events)
+        buf = io.StringIO()
+        with mock.patch.object(kr, "QUARANTINE_PROJECT_GID", ""), \
+             mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_LOCAL), \
+             mock.patch.object(kr.alert_poller, "ensure_emp_key",
+                               side_effect=lambda *_a, **kw: events.append(("key", kw.get("project_id"))) or ("emp-x", "ah-x", "")), \
+             mock.patch.object(kr, "_get_ax", return_value=ax), \
+             contextlib.redirect_stdout(buf):
+            out, err = kr.resolve_request(req["id"], "approve", project_override=_P3)
+        self.assertIsNone(err)
+        self.assertEqual(out["status"], "approved")
+        self.assertEqual([e[0] for e in events], ["add", "key"])  # 无 remove 事件
+        self.assertIn("QUARANTINE_PROJECT_GID", buf.getvalue())
+
+    def test_configured_gid_mismatch_no_removal(self):
+        # ⑤配置的 gid 与申请源项目不符（隔离区已被重建/改 gid）→ 不匹配即不迁出，无 remove
+        req = self._create_quar_req()
+        events = []
+        ax = self._ax_mock(events)
+        with mock.patch.object(kr, "QUARANTINE_PROJECT_GID", "gid://axonhub/Project/999"), \
+             mock.patch.object(kr.alert_poller, "find_user_by_email", return_value=_USER_LOCAL), \
+             mock.patch.object(kr.alert_poller, "ensure_emp_key",
+                               side_effect=lambda *_a, **kw: events.append(("key", kw.get("project_id"))) or ("emp-x", "ah-x", "")), \
+             mock.patch.object(kr, "_get_ax", return_value=ax):
+            out, err = kr.resolve_request(req["id"], "approve", project_override=_P3)
+        self.assertIsNone(err)
+        self.assertEqual([e[0] for e in events], ["add", "key"])
+        self.assertNotIn("迁出", out["result"])
+
+
+class TestStateTrim(_Base):
+    """issue #139：状态文件滚动截断只淘汰最旧终态条目——pending（含 approve 执行中）豁免，
+    不被 MAX_REQUESTS 上限逐出（逐出 pending = 员工列表丢单/审批卡永不回执/sweep 丢超时）。
+    修复前 reqs[-200:] 不分状态：后灌入的终态会把在先的 pending 顶出文件。"""
+
+    def _fill_terminal(self, n, status="rejected"):
+        """向状态文件尾部灌 n 条终态申请（绕过 create_request——dup 门不许同项目同 kind 多条）。"""
+        with kr._lock:
+            reqs = kr._load()
+            base = time.time() - 100000
+            for i in range(n):
+                reqs.append({
+                    "id": f"kr-old-{i:04d}", "kind": "new", "purpose": "历史",
+                    "tier": "", "applicant": {"id": "u", "email": f"old{i}@x", "openId": None},
+                    "status": status, "createdAt": kr._iso(base + i), "ts": base + i,
+                    "resolvedAt": kr._iso(base + i), "result": "x", "keyName": None,
+                    "keyIds": None, "keyNames": None,
+                    "projectId": kr.alert_poller.KEY_PROJECT_ID, "projectName": "Default",
+                    "projectOverride": None, "projectNameOverride": None, "cardMessageId": None,
+                })
+            kr._save(reqs)
+
+    def test_terminal_overflow_never_evicts_pending(self):
+        req = self._create(_ME_FEISHU)         # pending 在先
+        self._fill_terminal(kr.MAX_REQUESTS)   # 后灌满 200 条终态（修复前把 pending 顶出）
+        stored = kr._load()
+        ids = [r["id"] for r in stored]
+        self.assertIn(req["id"], ids)          # pending 豁免逐出
+        self.assertNotIn("kr-old-0000", ids)   # 最旧终态被淘汰
+        self.assertIn(f"kr-old-{kr.MAX_REQUESTS - 1:04d}", ids)  # 最新终态保留
+        # 员工列表仍见该 pending 申请（丢单=审批卡永不回执、用户干等）
+        self.assertIn(req["id"], [r["id"] for r in kr.list_requests(email=_ME_FEISHU["email"])])
+
+    def test_all_pending_never_trimmed(self):
+        # 极端：pending 总量超上限也不淘汰（正确性优先于体积纪律——dup 规则天然限流，
+        # 超上限只能靠多申请人构造）
+        made = []
+        for i in range(kr.MAX_REQUESTS + 5):
+            me = {"id": f"gid://axonhub/User/9{i:03d}", "email": f"u{i}@example.com",
+                  "isOwner": False, "scopes": []}
+            req, err = kr.create_request(me, "new", "联调", "")
+            self.assertIsNone(err)
+            made.append(req["id"])
+        stored = kr._load()
+        self.assertGreater(len(stored), kr.MAX_REQUESTS)  # pending 豁免使总量可超上限
+        ids = {r["id"] for r in stored}
+        for rid in made:
+            self.assertIn(rid, ids)
 
 
 if __name__ == "__main__":

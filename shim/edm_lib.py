@@ -3,6 +3,10 @@
 契约 dlp-webhook-shim.md L3 铁律：归一化/指纹算法改动须同步两侧——两侧统一收编进本模块即单一事实源。
 以检测侧 shim/app.py 实现为准绳提取（原 deploy/scripts/edm-add.py 与之一致，收编前实测无 drift）。
 纯 stdlib，无 I/O（算法库；文件读写归 admin_api/app 各自纪律）。
+
+已知缺口（issue #139 记账，2026-09-08 对抗性审查）：分片投喂绕过——app.py 按请求独立判定，
+攻击者把商密文档拆成多轮 <50 字符段投喂时，单请求 shingle 通道凑不齐 min_hits≥2（行级通道
+同理按行截断失效）。修复需会话级滑窗聚合（跨请求状态），属新功能立项，不属本卫生包。
 """
 import hashlib
 

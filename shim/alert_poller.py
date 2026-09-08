@@ -157,6 +157,10 @@ APPROVAL_KEY_CODE = os.environ.get("APPROVAL_KEY_CODE", "")
 AXONHUB_DB_DSN = os.environ.get("AXONHUB_DB_DSN", "")
 # 新建 key 落在的项目（axonhub 默认项目；GID 格式与 users 查询返回一致，2026-08-20 实证）
 KEY_PROJECT_ID = os.environ.get("APPROVAL_KEY_PROJECT_ID", "gid://axonhub/Project/1")
+# 审批实例回拉窗口（秒）：_sync_kind 列表拉取窗口与 approval_done 淘汰共用同一口径
+# （issue #139：淘汰只清窗口外旧条目——窗口内条目被逐出会在下轮回拉「重现」为未处理
+# 实例被重复执行=重复私信投递 key 明文；窗口内不设数量上限，正确性优先于状态文件体积）
+APPROVAL_WINDOW_SEC = 7 * 24 * 3600
 
 # issue #70 #6：enabled Key 列表查询单份（原 apply_tier / check_cycle 各写一遍同样的查询）。
 # 约束：first:100 硬上限——查询无 projectID 过滤，全局 enabled Key 超 100 即漏判；当前规模（十余个）远不及，
@@ -638,7 +642,7 @@ def _process_approved(ax: Axonhub, kind: str, ic: str, inst: dict) -> bool:
 def _sync_kind(ax: Axonhub, done: list, kind: str, code: str):
     """单审批定义一轮：拉实例列表 → 逐实例按状态分支处理 → 标记 done（就地追加）。"""
     now_ms = int(time.time() * 1000)
-    start_ms = now_ms - 7 * 24 * 3600 * 1000
+    start_ms = now_ms - APPROVAL_WINDOW_SEC * 1000
     try:
         data = feishu_get(
             f"/approval/v4/instances?approval_code={code}&start_time={start_ms}&end_time={now_ms}"
@@ -676,6 +680,10 @@ def _sync_kind(ax: Axonhub, done: list, kind: str, code: str):
 def approval_sync(ax: Axonhub, state: dict):
     """轮询审批单（issue #19 提额 + issue #72 新建并存，共享 done 列表——实例 code 全局唯一）。
     拒绝/撤回回执后标记；执行异常不标记下轮重试。
+    issue #139：approval_done 淘汰按回拉窗口（APPROVAL_WINDOW_SEC）而非旧的数量截断
+    （done[-200:] 会把窗口内已处理实例逐出 → 下轮回拉「重现」为未处理被重复执行=
+    重复私信投递 key 明文）；时间戳存 state["approval_done_ts"]（存量无时间戳条目
+    升级当轮按当前时刻起算迁移，窗口后自然出清）。
     FEISHU_APP_ID/FEISHU_APP_SECRET 缺失或两个 code 都未配置即整体跳过——只巡检不审批。"""
     if not (FEISHU_APP_ID and FEISHU_APP_SECRET and (APPROVAL_QUOTA_CODE or APPROVAL_KEY_CODE)):
         return
@@ -688,7 +696,14 @@ def approval_sync(ax: Axonhub, state: dict):
         except Exception as e:
             # 单类异常不影响另一类（隔离纪律与单轮异常同款）
             print(f"[alert] 审批同步异常({kind}): {type(e).__name__}: {e}", flush=True)
-    state["approval_done"] = done[-200:]
+    now = time.time()
+    done_ts = state.setdefault("approval_done_ts", {})
+    for ic in done:
+        done_ts.setdefault(ic, now)  # 存量无时间戳条目按当前时刻起算（迁移；窗口后自然出清）
+    cutoff = now - APPROVAL_WINDOW_SEC
+    kept = [ic for ic in done if done_ts.get(ic, now) > cutoff]
+    state["approval_done"] = kept
+    state["approval_done_ts"] = {ic: done_ts[ic] for ic in kept}
 
 
 # ---- 新用户自动入 Default 项目（issue #73）----
@@ -709,7 +724,10 @@ REMOVE_USER_FROM_PROJECT_MUTATION = (
     # 返回 Boolean（无子字段，内省实证 2026-09）
     "mutation($input: RemoveUserFromProjectInput!) { removeUserFromProject(input: $input) }"
 )
-# 隔离项目名（issue #128 邀请注册落点；与前端 users-invite-dialog 同名契约，按名解析 gid）
+# 隔离项目名（issue #128 邀请注册落点；与前端 users-invite-dialog 同名契约）。
+# issue #139：shim 侧迁出隔离区不再按名解析（改名即失配/同名仿冒即误迁）——
+# key_requests._exit_quarantine 改按 QUARANTINE_PROJECT_GID env 直比；本常量仅留作
+# 前端契约的名字记录，shim 代码不再消费
 QUARANTINE_PROJECT_NAME = "External-Quarantine"
 # 项目级能力（issue #68 定案，与 assign-default-project.sh SCOPES 一致）：
 # read_api_keys/write_api_keys 刻意不发（项目级无属主过滤，下发即重开明文凭读与自助提额）

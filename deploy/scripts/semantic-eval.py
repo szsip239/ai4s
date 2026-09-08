@@ -19,10 +19,30 @@ import json
 import os
 import sys
 import time
+import urllib.error
 import urllib.request
 
 DEPLOY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SHIM = os.environ.get("SHIM_URL", "http://localhost:18080")
+
+
+def _shim_local_headers():
+    """issue #139：/judge-test 挂共享密钥守卫（fail-closed）——token 取 env
+    SHIM_LOCAL_TOKEN，缺省读 deploy/.env（解析口径同 dlp_testkit.load_env）。"""
+    tok = os.environ.get("SHIM_LOCAL_TOKEN")
+    if not tok:
+        try:
+            with open(os.path.join(DEPLOY_DIR, ".env"), encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#") and "=" in line:
+                        k, v = line.split("=", 1)
+                        if k == "SHIM_LOCAL_TOKEN":
+                            tok = v
+                            break
+        except OSError:
+            pass
+    return {"X-Shim-Local-Token": tok} if tok else {}
 
 # 水位门禁（issue #99）：基线见 docs/tests/2026-08-24-semantic-baseline.md，取略低于实测水位的保守值
 # novel 实测 14/14 → 线 12（留 2 条余量）；bypass 组 4 条（issue #110 修正合并口径：layer=negative
@@ -40,11 +60,16 @@ GATE_MAX_ERR_RATE = 0.2
 def judge(text):
     body = json.dumps({"text": text}).encode()
     req = urllib.request.Request(SHIM + "/judge-test", data=body,
-                                 headers={"Content-Type": "application/json"})
+                                 headers={"Content-Type": "application/json",
+                                          **_shim_local_headers()})
     try:
         with urllib.request.urlopen(req, timeout=30) as r:
             d = json.load(r)
         return d.get("verdict"), d.get("latency_ms", 0)
+    except urllib.error.HTTPError as e:
+        if e.code == 403:  # issue #139 守卫拦截：token 缺失/不匹配——显式提示，不混入 judge 异常率口径
+            print("hint: /judge-test 403——配置 SHIM_LOCAL_TOKEN（env 或 deploy/.env）后重跑", file=sys.stderr)
+        return None, 0
     except Exception:
         return None, 0
 
