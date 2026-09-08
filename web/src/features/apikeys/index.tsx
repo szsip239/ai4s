@@ -300,13 +300,13 @@ export default function ApiKeysManagement() {
   return (
     <ApiKeysProvider>
       <Header fixed>
-        <div className='flex flex-1 items-center justify-between'>
+        <div className='flex w-full flex-1 flex-col gap-2 md:flex-row md:items-center md:justify-between md:gap-0'>
           <div>
             <h2 className='text-xl font-bold tracking-tight'>{t('apikeys.title')}</h2>
             <p className='text-sm text-muted-foreground'>{t('apikeys.description')}</p>
           </div>
           {/* ai4s 挂载（issue #64 批量换档入口，内部按 write_api_keys 权限自隐藏）；与既有按钮同组右对齐 */}
-          <div className='flex items-center gap-2'>
+          <div className='flex flex-wrap items-center gap-2'>
             <ApiKeysPrimaryButtons />
             <Ai4sBatchTierDialog />
           </div>

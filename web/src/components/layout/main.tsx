@@ -11,6 +11,8 @@ export const Main = ({ fixed, className, ...props }: MainProps) => {
     <main
       className={cn(
         'peer-[.header-fixed]/header:mt-16',
+        // 移动端页头改静态自适应高（header.tsx max-sm:static），不再补偿 64px 固定高度
+        'max-sm:peer-[.header-fixed]/header:mt-0',
         'px-4 py-6',
         fixed && 'fixed-main flex min-h-0 min-w-0 grow flex-col overflow-hidden',
         className

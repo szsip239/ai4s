@@ -118,7 +118,7 @@ export default function Ai4sSmartRoutingPage() {
     <>
       <Header />
       <Main>
-        <div className='mb-6 flex items-start justify-between gap-4'>
+        <div className='mb-6 flex items-start justify-between gap-4 max-sm:flex-col max-sm:gap-3'>
           <div>
             <h2 className='flex items-center gap-2 text-xl font-semibold tracking-tight'>
               <IconArrowsShuffle className='size-5' />

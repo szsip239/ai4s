@@ -382,7 +382,7 @@ export default function RequestsManagement() {
   return (
     <RequestsProvider>
       <Header fixed>
-        <div className='flex flex-1 items-center justify-between'>
+        <div className='flex w-full flex-1 flex-col gap-2 md:flex-row md:items-center md:justify-between md:gap-0'>
           <div>
             <h2 className='text-xl font-bold tracking-tight'>{t('requests.title')}</h2>
             <p className='text-muted-foreground text-sm'>{t('requests.description')}</p>

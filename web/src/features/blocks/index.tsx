@@ -61,7 +61,7 @@ export default function BlocksPage() {
   return (
     <>
       <Header fixed>
-        <div className='flex flex-1 items-center justify-between'>
+        <div className='flex w-full flex-1 flex-col gap-2 md:flex-row md:items-center md:justify-between md:gap-0'>
           <div>
             <h2 className='text-xl font-bold tracking-tight'>{t('ai4s.blocks.title')}</h2>
             <p className='text-sm text-muted-foreground'>{t('ai4s.blocks.description')}</p>

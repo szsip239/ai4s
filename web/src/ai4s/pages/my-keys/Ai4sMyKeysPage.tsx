@@ -302,7 +302,7 @@ export default function Ai4sMyKeysPage() {
                   {t('ai4s.myKeys.title')}
                 </CardTitle>
               </div>
-              <div className='flex gap-2'>
+              <div className='flex flex-wrap gap-2'>
                 <Button size='sm' disabled={!projectId} onClick={() => openDialog('new')}>
                   <IconPlus className='mr-1 h-4 w-4' />
                   {t('ai4s.myKeys.applyNew')}

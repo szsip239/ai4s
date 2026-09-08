@@ -86,12 +86,10 @@ export function AppHeader() {
 
         {/* 右侧控件 */}
         <div className='flex items-center gap-2 pr-3 md:pr-6'>
-          {/* Quota Badges - only visible to users with channel read permission（桌面端展示，移动端让位核心路径） */}
-          {!isMobile && (
-            <PermissionGuard requiredSystemScope='read_channels'>
-              <QuotaBadges onRefresh={handleRefresh} isRefreshing={isRefreshing} />
-            </PermissionGuard>
-          )}
+          {/* Quota Badges - only visible to users with channel read permission（移动端同样展示：上游额度是核心状态，2026-09-08 用户反馈） */}
+          <PermissionGuard requiredSystemScope='read_channels'>
+            <QuotaBadges onRefresh={handleRefresh} isRefreshing={isRefreshing} />
+          </PermissionGuard>
 
           {/* Desktop-only controls - hidden on mobile */}
           {!isMobile && (
