@@ -113,9 +113,7 @@ export function CommandMenu() {
   if (
     currentPath.startsWith('/sign-in') ||
     currentPath.startsWith('/sign-up') ||
-    currentPath.startsWith('/initialization') ||
-    currentPath.startsWith('/forgot-password') ||
-    currentPath.startsWith('/otp')
+    currentPath.startsWith('/initialization')
   ) {
     return null;
   }

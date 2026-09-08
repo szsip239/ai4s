@@ -64,8 +64,8 @@ const queryClient = new QueryClient({
       if (status === 401) {
         toast.error(i18n.t('common.errors.sessionExpired'));
         useAuthStore.getState().auth.reset();
-        const redirect = `${router.history.location.href}`;
-        router.navigate({ to: '/sign-in', search: { redirect } });
+        // issue #139：不再携带 ?redirect=（无人消费，且避免开放重定向面）
+        router.navigate({ to: '/sign-in' });
       }
       if (status === 500) {
         toast.error(i18n.t('common.errors.internalServerError'));

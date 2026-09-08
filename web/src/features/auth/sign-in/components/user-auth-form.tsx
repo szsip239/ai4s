@@ -1,4 +1,4 @@
-import { HTMLAttributes, useState } from 'react';
+import { HTMLAttributes } from 'react';
 import { z } from 'zod';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -25,7 +25,6 @@ const createFormSchema = (t: (key: string) => string) =>
 export function UserAuthForm({ className, ...props }: UserAuthFormProps) {
   const { t } = useTranslation();
   const signInMutation = useSignIn();
-  const [rememberMe, setRememberMe] = useState(false);
   const { data: oidcProviders } = useOIDCProviders();
   const oidcAuthorizeMutation = useOIDCAuthorize();
 
@@ -73,15 +72,7 @@ export function UserAuthForm({ className, ...props }: UserAuthFormProps) {
             name='password'
             render={({ field }) => (
               <FormItem className='relative'>
-                <div className='flex items-center justify-between'>
-                  <FormLabel className='text-sm font-medium text-slate-700'>{t('auth.signIn.form.password.label')}</FormLabel>
-                  <Link
-                    to='/forgot-password'
-                    className='text-sm font-medium text-slate-500 transition-colors hover:text-slate-700 hover:underline'
-                  >
-                    {t('auth.signIn.links.forgotPassword')}
-                  </Link>
-                </div>
+                <FormLabel className='text-sm font-medium text-slate-700'>{t('auth.signIn.form.password.label')}</FormLabel>
                 <FormControl>
                   <PasswordInput
                     placeholder={t('auth.signIn.form.password.placeholder')}
@@ -94,23 +85,6 @@ export function UserAuthForm({ className, ...props }: UserAuthFormProps) {
               </FormItem>
             )}
           />
-
-          {/* Remember Me Toggle */}
-          <div className='flex items-center justify-between'>
-            <label className='flex cursor-pointer items-center space-x-3'>
-              <div className='relative'>
-                <input type='checkbox' checked={rememberMe} onChange={(e) => setRememberMe(e.target.checked)} className='sr-only' />
-                <div
-                  className={`h-6 w-12 rounded-full border-2 transition-all duration-300 ${rememberMe ? 'border-slate-600 bg-slate-600' : 'border-slate-300 bg-slate-100'}`}
-                >
-                  <div
-                    className={`mt-0.5 h-4 w-4 rounded-full bg-white shadow-sm transition-transform duration-300 ${rememberMe ? 'ml-0.5 translate-x-6' : 'translate-x-0.5'}`}
-                  ></div>
-                </div>
-              </div>
-              <span className='text-sm text-slate-700'>{t('auth.signIn.form.rememberMe')}</span>
-            </label>
-          </div>
 
           {/* Submit Button */}
           <Button

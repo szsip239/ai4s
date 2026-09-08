@@ -84,6 +84,9 @@ export function EditDataStorageDialog() {
   // Reset form when dialog opens
   useEffect(() => {
     if (isEditDialogOpen && editingDataStorage) {
+      // issue #139：凭据字段（s3 access/secret、gcs credential、webdav password）不明文回填——
+      // 留空=不修改（提交侧空值不携带该字段；服务端 mergeSettings 对空凭据保留原值，
+      // 见 axonhub biz/data_storage.go）。placeholder 已提示「留空表示不更新」
       reset({
         name: editingDataStorage.name,
         description: editingDataStorage.description,
@@ -92,14 +95,14 @@ export function EditDataStorageDialog() {
         s3BucketName: editingDataStorage.settings.s3?.bucketName || '',
         s3Endpoint: editingDataStorage.settings.s3?.endpoint || '',
         s3Region: editingDataStorage.settings.s3?.region || '',
-        s3AccessKey: editingDataStorage.settings.s3?.accessKey || '',
-        s3SecretKey: editingDataStorage.settings.s3?.secretKey || '',
+        s3AccessKey: '',
+        s3SecretKey: '',
         s3PathStyle: editingDataStorage.settings.s3?.pathStyle || false,
         gcsBucketName: editingDataStorage.settings.gcs?.bucketName || '',
-        gcsCredential: editingDataStorage.settings.gcs?.credential || '',
+        gcsCredential: '',
         webdavURL: editingDataStorage.settings.webdav?.url || '',
         webdavUsername: editingDataStorage.settings.webdav?.username || '',
-        webdavPassword: editingDataStorage.settings.webdav?.password || '',
+        webdavPassword: '',
         webdavPath: editingDataStorage.settings.webdav?.path || '',
         webdavInsecureSkipTLS: editingDataStorage.settings.webdav?.insecure_skip_tls || false,
       });

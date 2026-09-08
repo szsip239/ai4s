@@ -6,6 +6,7 @@ import { useRouter } from '@tanstack/react-router';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { passwordSchema } from '@/lib/validation';
 import { authApi } from '@/lib/api-client';
 import { useAuthStore } from '@/stores/authStore';
 import { useProjectStore } from '@/stores/projectStore';
@@ -17,29 +18,39 @@ import { PasswordInput } from '@/components/password-input';
 
 type SignUpFormProps = HTMLAttributes<HTMLFormElement>;
 
-const formSchema = z
-  .object({
-    email: z.string().email(),
-    firstName: z.string().min(1),
-    lastName: z.string().min(1),
-    password: z.string().min(7),
-    confirmPassword: z.string(),
-  })
-  .refine((data) => data.password === data.confirmPassword, {
-    message: "Passwords don't match.",
-    path: ['confirmPassword'],
-  });
+// issue #139：注册密码与登录统一走共享 passwordSchema（min 8），消除 min(7) 注册成功后无法登录的死锁
+const createFormSchema = (t: (key: string) => string) =>
+  z
+    .object({
+      email: z.string().email(),
+      firstName: z.string().min(1),
+      lastName: z.string().min(1),
+      password: passwordSchema(t),
+      confirmPassword: z.string(),
+    })
+    .refine((data) => data.password === data.confirmPassword, {
+      message: t('users.validation.passwordsNotMatch'),
+      path: ['confirmPassword'],
+    });
 
 export function SignUpForm({ className, ...props }: SignUpFormProps) {
   const { t } = useTranslation();
   const router = useRouter();
   const { setUser, setAccessToken } = useAuthStore((state) => state.auth);
   const { setSelectedProjectId } = useProjectStore();
-  const invitationToken = new URLSearchParams(window.location.search).get('invite');
+  // issue #139：invite token 读取成功后立即从 URL 抹掉（不留驻地址栏/历史/书签，防凭据外泄）
+  const [invitationToken] = useState(() => {
+    const token = new URLSearchParams(window.location.search).get('invite');
+    if (token) {
+      window.history.replaceState(null, '', window.location.pathname);
+    }
+    return token;
+  });
   const [projectName, setProjectName] = useState('');
   const [invitationError, setInvitationError] = useState(!invitationToken ? t('users.invitation.required') : '');
   const [isLoadingInvitation, setIsLoadingInvitation] = useState(Boolean(invitationToken));
 
+  const formSchema = createFormSchema(t);
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
     defaultValues: { email: '', firstName: '', lastName: '', password: '', confirmPassword: '' },

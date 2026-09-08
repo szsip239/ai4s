@@ -77,18 +77,9 @@ export const routeConfigs: RouteGroup[] = [
         mode: 'hidden',
       },
       {
-        path: '/api-keys',
-        requiredScopes: ['read_api_keys'],
-        mode: 'hidden',
-      },
-      {
         path: '/system',
         requiredScopes: ['read_settings'],
         mode: 'hidden',
-      },
-      {
-        path: '/permission-demo',
-        // 权限演示页面所有用户都可以访问
       },
     ],
   },
@@ -118,15 +109,18 @@ export const routeConfigs: RouteGroup[] = [
         mode: 'hidden',
       },
       {
-        path: '/project/usage-logs',
-        requiredScopes: ['read_requests'],
-        mode: 'hidden',
-      },
-      {
         path: '/project/usage-stats',
         requiredScopes: ['read_requests'],
         mode: 'hidden',
         requireProjectOwner: true,
+      },
+      {
+        path: '/project/blocks',
+        // 拦截审计页（issue #139 补登记）：路由实际 RouteGuard 为 system 级 read_channels
+        // （routes/_authenticated/project/blocks/index.tsx），无权限用户隐藏「拦截」tab 而非点了 403
+        requiredScopes: ['read_channels'],
+        scopeLevel: 'system',
+        mode: 'hidden',
       },
       {
         path: '/project/threads',

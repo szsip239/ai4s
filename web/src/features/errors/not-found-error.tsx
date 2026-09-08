@@ -10,7 +10,6 @@ import {
   IconChartBar,
   IconShield,
   IconPlayerPlay,
-  IconHelpCircle,
   IconArrowLeft,
   IconExternalLink,
 } from '@tabler/icons-react';
@@ -64,7 +63,7 @@ export default function NotFoundError() {
     {
       title: 'API Keys',
       description: 'Generate and manage API authentication keys',
-      path: '/api-keys',
+      path: '/project/api-keys',
       icon: <IconKey className='h-5 w-5' />,
       keywords: ['api', 'keys', 'authentication', 'tokens', 'access'],
     },
@@ -89,13 +88,6 @@ export default function NotFoundError() {
       icon: <IconSettings className='h-5 w-5' />,
       keywords: ['settings', 'configuration', 'preferences', 'system'],
     },
-    {
-      title: 'Help Center',
-      description: 'Documentation and support resources',
-      path: '/help-center',
-      icon: <IconHelpCircle className='h-5 w-5' />,
-      keywords: ['help', 'documentation', 'support', 'guide', 'docs'],
-    },
   ];
 
   // Smart suggestions based on current URL and search query
@@ -109,7 +101,6 @@ export default function NotFoundError() {
 
       // URL path similarity
       const pathSegments = currentPath.split('/').filter(Boolean);
-      const pageSegments = page.path.split('/').filter(Boolean);
 
       pathSegments.forEach((segment) => {
         if (page.path.includes(segment) || page.keywords.some((k) => k.includes(segment))) {
@@ -217,8 +208,9 @@ export default function NotFoundError() {
           {/* Additional Help */}
           <div className='mt-12 text-center'>
             <p className='text-muted-foreground mb-4 text-sm'>Still can't find what you're looking for?</p>
-            <Button variant='ghost' onClick={() => navigate({ to: '/help-center' })} className='text-primary hover:text-primary/80'>
-              Visit Help Center →
+            {/* issue #139：原指向占位页 /help-center，改为回首页 */}
+            <Button variant='ghost' onClick={() => navigate({ to: '/' })} className='text-primary hover:text-primary/80'>
+              Back to Home →
             </Button>
           </div>
         </div>

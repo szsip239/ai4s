@@ -14,6 +14,7 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
+import { usePermissions } from '@/hooks/usePermissions';
 import { Ai4sNodeBadges } from '../rules/PipelineBar';
 import { useSettings } from '../rules/api';
 import { createDirtyRegistry } from '../rules/dirty-registry';
@@ -33,6 +34,10 @@ export default function Ai4sSmartRoutingPage() {
   const putSettings = usePutRoutingSettings();
   const [selected, setSelected] = useState<SmartRoutingNavKey>('classify');
   const dirtyRegistry = useMemo(createDirtyRegistry, []);
+  // 写控件按 canWrite 禁用（issue #139）：总开关/面板保存是写操作（shim 端 write_channels 鉴权），
+  // 只读管理员可见页面但不可改，对齐 key-requests 页 canResolve 先例
+  const { channelPermissions } = usePermissions();
+  const canWrite = channelPermissions.canWrite;
 
   const enabled = routingEnabledState(settings.data ?? null, settings.isError);
   // routing 缺席=关态合法（shim #117）：展示基线经 normalizeRouting 补默认（仅展示/徽标用，不落盘）
@@ -40,6 +45,7 @@ export default function Ai4sSmartRoutingPage() {
 
   /** 总开关即改即存：独占 enabled 键，与面板草稿键集不相交（不覆盖未保存编辑） */
   const toggleEnabled = (c: boolean) => {
+    if (!canWrite) return; // issue #139：只读账号不发起写请求（控件已禁用，此为兜底）
     if (!settings.data) return;
     putSettings.mutate(buildSettingsWithRouting(settings.data, { ...normalizeRouting(settings.data.routing), enabled: c }));
   };
@@ -125,11 +131,12 @@ export default function Ai4sSmartRoutingPage() {
             <Switch
               id='smart-routing-enabled'
               checked={enabled ?? false}
-              disabled={!settings.data || putSettings.isPending}
+              disabled={!settings.data || putSettings.isPending || !canWrite}
               onCheckedChange={toggleEnabled}
             />
           </div>
         </div>
+        {!canWrite && <p className='mb-4 text-xs text-amber-600'>{t('ai4s.smartRouting.readonlyHint')}</p>}
 
         <Ai4sRoutingPipelineBar
           nodes={nodes}

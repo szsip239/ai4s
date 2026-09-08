@@ -15,6 +15,8 @@ export interface Ai4sPipelineNodeToggle {
   checked: boolean;
   /** 保存进行中（防抖；父级 mutation isPending） */
   pending?: boolean;
+  /** 只读账号（无 write_channels）禁用开关（issue #139，对齐 key-requests 页 canResolve 先例） */
+  disabled?: boolean;
 }
 
 export interface Ai4sPipelineNodeView {
@@ -74,11 +76,17 @@ function NodeCard({
           <span
             onClick={(e) => e.stopPropagation()}
             onKeyDown={(e) => e.stopPropagation()}
-            title={node.toggle.checked ? '点击关闭该层（保存即热生效）' : '点击开启该层（保存即热生效）'}
+            title={
+              node.toggle.disabled
+                ? '当前账号为只读权限（缺 write_channels），开关不可用'
+                : node.toggle.checked
+                  ? '点击关闭该层（保存即热生效）'
+                  : '点击开启该层（保存即热生效）'
+            }
           >
             <Switch
               checked={node.toggle.checked}
-              disabled={node.toggle.pending}
+              disabled={node.toggle.pending || node.toggle.disabled}
               onCheckedChange={(next) => onToggle(node.key, next)}
             />
           </span>

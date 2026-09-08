@@ -13,6 +13,7 @@ import { useMemo, useState } from 'react';
 import { Check, ChevronsUpDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { usePermissions } from '@/hooks/usePermissions';
 import { useRequestPermissions } from '@/hooks/useRequestPermissions';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -54,7 +55,7 @@ interface KeyOption {
   name: string;
 }
 
-function AddForm() {
+function AddForm({ canWrite }: { canWrite: boolean }) {
   const add = useAddBypassKey();
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<KeyOption | null>(null);
@@ -199,7 +200,10 @@ function AddForm() {
       <div>
         <Button
           size='sm'
-          disabled={add.isPending || fetchingToken || !selected || !label.trim() || (scope === 'layers' && layers.length === 0)}
+          disabled={
+            !canWrite || add.isPending || fetchingToken || !selected || !label.trim() || (scope === 'layers' && layers.length === 0)
+          }
+          title={!canWrite ? '当前账号为只读权限（缺 write_channels），无法登记' : undefined}
           onClick={submit}
         >
           登记白名单 Key
@@ -209,7 +213,7 @@ function AddForm() {
   );
 }
 
-function KeyRow({ k }: { k: BypassKey }) {
+function KeyRow({ k, canWrite }: { k: BypassKey; canWrite: boolean }) {
   const update = useUpdateBypassKey();
   const del = useDeleteBypassKey();
   return (
@@ -238,13 +242,15 @@ function KeyRow({ k }: { k: BypassKey }) {
       <div className='flex shrink-0 items-center gap-2'>
         <Switch
           checked={k.enabled}
-          disabled={update.isPending}
+          disabled={update.isPending || !canWrite}
+          title={!canWrite ? '当前账号为只读权限（缺 write_channels）' : undefined}
           onCheckedChange={(c) => update.mutate({ id: k.id, enabled: c })}
         />
         <Button
           size='sm'
           variant='ghost'
-          disabled={del.isPending}
+          disabled={del.isPending || !canWrite}
+          title={!canWrite ? '当前账号为只读权限（缺 write_channels）' : undefined}
           onClick={() => {
             if (window.confirm(`删除白名单条目「${k.label}」？该 Key 立即恢复全量检测。`)) del.mutate(k.id);
           }}
@@ -280,6 +286,9 @@ export function Ai4sBypassPanel() {
 
 function BypassPanelContent() {
   const { data, isError } = useBypassKeys();
+  // 写控件按 canWrite 禁用（issue #139）：登记/启停/删除均写 shim /dlp-admin/bypass-keys（write_channels 鉴权）
+  const { channelPermissions } = usePermissions();
+  const canWrite = channelPermissions.canWrite;
   return (
     <Card>
       <CardHeader>
@@ -291,11 +300,14 @@ function BypassPanelContent() {
         </CardDescription>
       </CardHeader>
       <CardContent className='space-y-4'>
-        <AddForm />
+        {!canWrite && (
+          <p className='text-xs text-amber-600'>当前账号缺 write_channels 权限，为只读视图：登记、启停与删除不可用</p>
+        )}
+        <AddForm canWrite={canWrite} />
         {isError && <p className='text-sm text-destructive'>名单加载失败</p>}
         <div className='space-y-2'>
           {(data?.keys ?? []).map((k) => (
-            <KeyRow key={k.id} k={k} />
+            <KeyRow key={k.id} k={k} canWrite={canWrite} />
           ))}
           {data && data.keys.length === 0 && (
             <p className='text-sm text-muted-foreground'>名单为空——所有 Key 均接受全量检测。</p>

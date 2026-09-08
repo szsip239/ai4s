@@ -22,19 +22,20 @@ export default defineConfig({
     // }),
     tailwindcss(),
     // PWA：manifest 手写于 public/manifest.webmanifest；SW 仅做静态资源预缓存 + SPA 离线壳，
-    // API（/admin /v1 /self /dlp-admin /oauth）一律走网络，不做缓存——管理后台数据必须实时。
+    // API（/admin /v1 /bv1 /self /dlp-admin /oauth）一律走网络，不做缓存——管理后台数据必须实时。
+    // （/bv1=Key 全量绕行入口，issue #129/#139 补登）
     VitePWA({
       registerType: 'autoUpdate',
       manifest: false,
       includeAssets: ['favicon.ico', 'logo.svg', 'manifest.webmanifest'],
       workbox: {
         navigateFallback: '/index.html',
-        navigateFallbackDenylist: [/^\/(admin|v1|self|dlp-admin|oauth)\//],
+        navigateFallbackDenylist: [/^\/(admin|v1|bv1|self|dlp-admin|oauth)\//],
         globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
         maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
         runtimeCaching: [
           {
-            urlPattern: /\/(admin|v1|self|dlp-admin|oauth)\//,
+            urlPattern: /\/(admin|v1|bv1|self|dlp-admin|oauth)\//,
             handler: 'NetworkOnly',
           },
           {

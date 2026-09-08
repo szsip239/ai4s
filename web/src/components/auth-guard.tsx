@@ -24,9 +24,7 @@ export function AuthGuard({ children }: AuthGuardProps) {
       if (
         !currentPath.startsWith('/sign-in') &&
         !currentPath.startsWith('/sign-up') &&
-        !currentPath.startsWith('/initialization') &&
-        !currentPath.startsWith('/forgot-password') &&
-        !currentPath.startsWith('/otp')
+        !currentPath.startsWith('/initialization')
       ) {
         router.navigate({ to: '/sign-in' });
       }
@@ -48,9 +46,7 @@ export function AuthGuard({ children }: AuthGuardProps) {
     if (
       currentPath.startsWith('/sign-in') ||
       currentPath.startsWith('/sign-up') ||
-      currentPath.startsWith('/initialization') ||
-      currentPath.startsWith('/forgot-password') ||
-      currentPath.startsWith('/otp')
+      currentPath.startsWith('/initialization')
     ) {
       return <>{children}</>;
     }

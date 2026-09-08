@@ -107,11 +107,6 @@ export function useSidebarData(): SidebarData {
           url: '/data-storages',
           icon: IconDatabase,
         } as NavLink,
-        // {
-        //   title: 'Permission Demo',
-        //   url: '/permission-demo',
-        //   icon: IconSettings,
-        // } as NavLink,
       ],
     },
     {
@@ -144,11 +139,6 @@ export function useSidebarData(): SidebarData {
           url: '/project/playground',
           icon: IconRobot,
         } as NavLink,
-        // {
-        //   title: t('sidebar.items.usageLogs'),
-        //   url: '/project/usage-logs',
-        //   icon: IconActivityHeartbeat,
-        // } as NavLink,
       ],
     },
     {

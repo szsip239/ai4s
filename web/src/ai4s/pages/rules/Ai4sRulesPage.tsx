@@ -17,6 +17,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Header } from '@/components/layout/header';
 import { Main } from '@/components/layout/main';
 import { cn } from '@/lib/utils';
+import { usePermissions } from '@/hooks/usePermissions';
 import {
   useEdmCorpus,
   useFormatRules,
@@ -82,6 +83,10 @@ function Ai4sResponseSideCard() {
 
 export default function Ai4sRulesPage() {
   const [selected, setSelected] = useState<PanelKey>('l2');
+  // 写控件按 canWrite 禁用（issue #139）：分层开关是写操作（shim 端 write_channels 鉴权），
+  // 只读管理员可见页面但开关禁用，对齐 key-requests 页 canResolve=channelPermissions.canWrite 先例
+  const { channelPermissions } = usePermissions();
+  const canWrite = channelPermissions.canWrite;
   // dirty 按上报方分 key 记账（issue #69 P2-C）：同层多面板/对话框（如 L2 词表+PII）共用单个 boolean 会互相覆盖，
   // 词表弄脏后开关一次 PII 对话框即丢 dirty；注册表互不复位，面板卸载时自行上报 false 注销
   const dirtyRegistry = useMemo(createDirtyRegistry, []);
@@ -110,7 +115,7 @@ export default function Ai4sRulesPage() {
     const nodeToggle = (key: ToggleableLayerKey) =>
       settings.isError || !settingsDoc
         ? undefined
-        : { checked: layerEnabled(settingsDoc, key), pending: putSettings.isPending };
+        : { checked: layerEnabled(settingsDoc, key), pending: putSettings.isPending, disabled: !canWrite };
     // l1/l2/response 徽标=分层总开关真实态（issue #40，settings 驱动；旧 settings.json 缺段按服务端语义回退 true）
     return {
       l1: {
@@ -196,6 +201,7 @@ export default function Ai4sRulesPage() {
     settings.isError,
     settingsDoc,
     putSettings.isPending,
+    canWrite,
   ]);
 
   /** 切换选中层（管线点击与左导航联动同一 state）；任一上报方有未保存修改先 confirm */
@@ -209,6 +215,7 @@ export default function Ai4sRulesPage() {
 
   /** 分层开关（issue #133 方案 A：节点即唯一控制入口）：确认后即改即存（合并 PUT 全文档，热生效） */
   const handleToggle = (key: string, next: boolean) => {
+    if (!canWrite) return; // issue #139：只读账号不发起写请求（控件已禁用，此为兜底）
     if (!settingsDoc || !TOGGLEABLE_LAYER_KEYS.includes(key as ToggleableLayerKey)) return;
     const label = LAYER_LABEL[key as PanelKey];
     const warn = next
@@ -245,6 +252,9 @@ export default function Ai4sRulesPage() {
           <h2 className='text-xl font-semibold tracking-tight'>脱敏规则 · DLP 统一配置中心</h2>
           <p className='text-sm text-muted-foreground'>请求链各层的词表、规则、语料与开关在此集中维护，保存即热生效</p>
           <p className='mt-1 text-xs text-muted-foreground'>维护方法见 docs/guides/dlp-config-guide.md</p>
+          {!canWrite && (
+            <p className='mt-1 text-xs text-amber-600'>当前账号缺 write_channels 权限，为只读视图：各层开关与面板保存不可用</p>
+          )}
         </div>
 
         <Ai4sPipelineBar
