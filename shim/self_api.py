@@ -18,6 +18,9 @@ UserPersonalAPIKeyReadRule 对 type≠personal 的 key 不做属主隔离，read
 多项目隔离（issue #89）：/self/keys 与 /self/key-requests（GET/POST）要求 X-Project-ID 头
 （admin_api.read_project_header 校验，缺失/非法 400）；key 列表按 userID+projectID 过滤，
 申请列表按项目过滤（存量无项目字段视为 Default）；POST 非项目成员 403（key_requests 校验）。
+issue #139：读端点同过成员闸门（key_requests.check_membership，fail-closed 同写路径口径）
+——被移出项目后不可再读本项目内本人 key 明文/申请列表/用量；撤回端点故意不挂该闸门
+（离项后撤回本人 pending 申请属清理动作，无害且必要）。
 本模块不进检测路径；单请求失败只影响本请求。
 """
 import urllib.parse
@@ -149,6 +152,10 @@ def _self_keys(handler, me: dict):
     pid = _project_or_400(handler)
     if not pid:
         return
+    merr = key_requests.check_membership(me, pid)  # issue #139：读侧同过成员闸门（fail-closed）
+    if merr:
+        admin_api._respond(handler, merr[0], {"error": merr[1]})
+        return
     try:
         keys = query_own_keys(me["id"], pid)
     except Exception as e:
@@ -169,6 +176,10 @@ def _self_key_requests_get(handler, me: dict):
         return
     pid = _project_or_400(handler)
     if not pid:
+        return
+    merr = key_requests.check_membership(me, pid)  # issue #139：读侧成员闸门
+    if merr:
+        admin_api._respond(handler, merr[0], {"error": merr[1]})
         return
     try:
         reqs = key_requests.list_requests(email=email, project_id=pid)
@@ -245,6 +256,10 @@ def _self_key_usage_stats(handler, me: dict):
         return
     pid = _project_or_400(handler)
     if not pid:
+        return
+    merr = key_requests.check_membership(me, pid)  # issue #139：读侧成员闸门（先于属主判定）
+    if merr:
+        admin_api._respond(handler, merr[0], {"error": merr[1]})
         return
     try:
         ids = query_own_key_ids(me["id"], pid)

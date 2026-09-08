@@ -29,7 +29,6 @@ import { Route as AuthenticatedPromptProtectionRulesIndexRouteImport } from './r
 import { Route as AuthenticatedProjectsIndexRouteImport } from './routes/_authenticated/projects/index'
 import { Route as AuthenticatedModelsIndexRouteImport } from './routes/_authenticated/models/index'
 import { Route as AuthenticatedKeyRequestsIndexRouteImport } from './routes/_authenticated/key-requests/index'
-import { Route as AuthenticatedHelpCenterIndexRouteImport } from './routes/_authenticated/help-center/index'
 import { Route as AuthenticatedDataStoragesIndexRouteImport } from './routes/_authenticated/data-storages/index'
 import { Route as AuthenticatedChannelsIndexRouteImport } from './routes/_authenticated/channels/index'
 import { Route as AuthenticatedAnalyticsIndexRouteImport } from './routes/_authenticated/analytics/index'
@@ -157,12 +156,6 @@ const AuthenticatedKeyRequestsIndexRoute =
   AuthenticatedKeyRequestsIndexRouteImport.update({
     id: '/key-requests/',
     path: '/key-requests/',
-    getParentRoute: () => AuthenticatedRouteRoute,
-  } as any)
-const AuthenticatedHelpCenterIndexRoute =
-  AuthenticatedHelpCenterIndexRouteImport.update({
-    id: '/help-center/',
-    path: '/help-center/',
     getParentRoute: () => AuthenticatedRouteRoute,
   } as any)
 const AuthenticatedDataStoragesIndexRoute =
@@ -312,7 +305,6 @@ export interface FileRoutesByFullPath {
   '/analytics/': typeof AuthenticatedAnalyticsIndexRoute
   '/channels/': typeof AuthenticatedChannelsIndexRoute
   '/data-storages/': typeof AuthenticatedDataStoragesIndexRoute
-  '/help-center/': typeof AuthenticatedHelpCenterIndexRoute
   '/key-requests/': typeof AuthenticatedKeyRequestsIndexRoute
   '/models/': typeof AuthenticatedModelsIndexRoute
   '/projects/': typeof AuthenticatedProjectsIndexRoute
@@ -354,7 +346,6 @@ export interface FileRoutesByTo {
   '/analytics': typeof AuthenticatedAnalyticsIndexRoute
   '/channels': typeof AuthenticatedChannelsIndexRoute
   '/data-storages': typeof AuthenticatedDataStoragesIndexRoute
-  '/help-center': typeof AuthenticatedHelpCenterIndexRoute
   '/key-requests': typeof AuthenticatedKeyRequestsIndexRoute
   '/models': typeof AuthenticatedModelsIndexRoute
   '/projects': typeof AuthenticatedProjectsIndexRoute
@@ -399,7 +390,6 @@ export interface FileRoutesById {
   '/_authenticated/analytics/': typeof AuthenticatedAnalyticsIndexRoute
   '/_authenticated/channels/': typeof AuthenticatedChannelsIndexRoute
   '/_authenticated/data-storages/': typeof AuthenticatedDataStoragesIndexRoute
-  '/_authenticated/help-center/': typeof AuthenticatedHelpCenterIndexRoute
   '/_authenticated/key-requests/': typeof AuthenticatedKeyRequestsIndexRoute
   '/_authenticated/models/': typeof AuthenticatedModelsIndexRoute
   '/_authenticated/projects/': typeof AuthenticatedProjectsIndexRoute
@@ -444,7 +434,6 @@ export interface FileRouteTypes {
     | '/analytics/'
     | '/channels/'
     | '/data-storages/'
-    | '/help-center/'
     | '/key-requests/'
     | '/models/'
     | '/projects/'
@@ -486,7 +475,6 @@ export interface FileRouteTypes {
     | '/analytics'
     | '/channels'
     | '/data-storages'
-    | '/help-center'
     | '/key-requests'
     | '/models'
     | '/projects'
@@ -530,7 +518,6 @@ export interface FileRouteTypes {
     | '/_authenticated/analytics/'
     | '/_authenticated/channels/'
     | '/_authenticated/data-storages/'
-    | '/_authenticated/help-center/'
     | '/_authenticated/key-requests/'
     | '/_authenticated/models/'
     | '/_authenticated/projects/'
@@ -706,13 +693,6 @@ declare module '@tanstack/react-router' {
       path: '/key-requests'
       fullPath: '/key-requests/'
       preLoaderRoute: typeof AuthenticatedKeyRequestsIndexRouteImport
-      parentRoute: typeof AuthenticatedRouteRoute
-    }
-    '/_authenticated/help-center/': {
-      id: '/_authenticated/help-center/'
-      path: '/help-center'
-      fullPath: '/help-center/'
-      preLoaderRoute: typeof AuthenticatedHelpCenterIndexRouteImport
       parentRoute: typeof AuthenticatedRouteRoute
     }
     '/_authenticated/data-storages/': {
@@ -896,7 +876,6 @@ interface AuthenticatedRouteRouteChildren {
   AuthenticatedAnalyticsIndexRoute: typeof AuthenticatedAnalyticsIndexRoute
   AuthenticatedChannelsIndexRoute: typeof AuthenticatedChannelsIndexRoute
   AuthenticatedDataStoragesIndexRoute: typeof AuthenticatedDataStoragesIndexRoute
-  AuthenticatedHelpCenterIndexRoute: typeof AuthenticatedHelpCenterIndexRoute
   AuthenticatedKeyRequestsIndexRoute: typeof AuthenticatedKeyRequestsIndexRoute
   AuthenticatedModelsIndexRoute: typeof AuthenticatedModelsIndexRoute
   AuthenticatedProjectsIndexRoute: typeof AuthenticatedProjectsIndexRoute
@@ -927,7 +906,6 @@ const AuthenticatedRouteRouteChildren: AuthenticatedRouteRouteChildren = {
   AuthenticatedAnalyticsIndexRoute: AuthenticatedAnalyticsIndexRoute,
   AuthenticatedChannelsIndexRoute: AuthenticatedChannelsIndexRoute,
   AuthenticatedDataStoragesIndexRoute: AuthenticatedDataStoragesIndexRoute,
-  AuthenticatedHelpCenterIndexRoute: AuthenticatedHelpCenterIndexRoute,
   AuthenticatedKeyRequestsIndexRoute: AuthenticatedKeyRequestsIndexRoute,
   AuthenticatedModelsIndexRoute: AuthenticatedModelsIndexRoute,
   AuthenticatedProjectsIndexRoute: AuthenticatedProjectsIndexRoute,

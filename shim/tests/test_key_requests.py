@@ -1071,6 +1071,38 @@ class TestProjectScope(_Base):
 _P3 = "gid://axonhub/Project/3"
 
 
+class TestCheckMembership(unittest.TestCase):
+    """issue #139：check_membership 读侧成员闸门（self_api 三个读端点共用）——
+    与 create_request 写路径同一 fail-closed 口径。seam：mock query_user_projects。"""
+
+    def _run(self, me, projs=None, exc=None):
+        with mock.patch.object(kr, "_get_ax"), \
+             mock.patch.object(kr.alert_poller, "query_user_projects",
+                               side_effect=exc if exc else (lambda ax, uid: projs)) as qup:
+            return kr.check_membership(me, _P2), qup
+
+    def test_member_none(self):
+        err, qup = self._run({"id": "u2"}, [{"id": kr.alert_poller.KEY_PROJECT_ID, "name": "Default"},
+                                            {"id": _P2, "name": "P-Test2"}])
+        self.assertIsNone(err)
+        qup.assert_called_once()  # 成员关系查询确已发起（非短路放行）
+
+    def test_non_member_403(self):
+        err, _ = self._run({"id": "u2"}, [{"id": kr.alert_poller.KEY_PROJECT_ID, "name": "Default"}])
+        self.assertEqual(err[0], 403)
+        self.assertIn("不是该项目成员", err[1])
+
+    def test_query_error_502(self):
+        err, _ = self._run({"id": "u2"}, exc=RuntimeError("gql down"))
+        self.assertEqual(err[0], 502)
+        self.assertIn("成员校验", err[1])
+
+    def test_no_uid_502(self):
+        err, qup = self._run({"email": "nouid@x"}, [])
+        self.assertEqual(err[0], 502)
+        qup.assert_not_called()  # 无 id 不发起查询
+
+
 class TestProjectOverride(_Base):
     """issue #128：管理员批准新建申请时指定正式项目（project_override）。
     锁外 myProjects 存在性校验（不存在 400 / 查询异常 502，均保持 pending 可重试）→ 落

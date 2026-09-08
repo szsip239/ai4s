@@ -120,6 +120,7 @@ class TestSelfKeysQuery(unittest.TestCase):
     def _run(self, keys, me_id="gid://axonhub/User/2"):
         h = _FakeHandler(auth="Bearer emp-token")
         with mock.patch.object(self_api.admin_api, "_introspect", return_value=({"id": me_id}, None)), \
+             mock.patch.object(self_api.key_requests, "check_membership", return_value=None), \
              mock.patch.object(self_api, "query_own_keys", return_value=keys) as qok:
             self.assertTrue(self_api.handle(h, "GET"))
         return h, qok
@@ -146,6 +147,7 @@ class TestSelfKeysQuery(unittest.TestCase):
     def test_query_failure_503(self):
         h = _FakeHandler(auth="Bearer t")
         with mock.patch.object(self_api.admin_api, "_introspect", return_value=({"id": "u"}, None)), \
+             mock.patch.object(self_api.key_requests, "check_membership", return_value=None), \
              mock.patch.object(self_api, "query_own_keys", side_effect=RuntimeError("gql down")):
             self.assertTrue(self_api.handle(h, "GET"))
         self.assertEqual(h.status, 503)
@@ -155,9 +157,11 @@ class TestSelfKeysQuery(unittest.TestCase):
         for bad in (None, "2", "gid://axonhub/User/2"):
             h = _FakeHandler(auth="Bearer t", project=bad)
             with mock.patch.object(self_api.admin_api, "_introspect", return_value=({"id": "u"}, None)), \
+                 mock.patch.object(self_api.key_requests, "check_membership") as cm, \
                  mock.patch.object(self_api, "query_own_keys") as qok:
                 self.assertTrue(self_api.handle(h, "GET"))
             self.assertEqual(h.status, 400, bad)
+            cm.assert_not_called()  # issue #139：400 在成员闸门之前
             qok.assert_not_called()
 
 
@@ -179,6 +183,7 @@ class TestSelfKeyRequests(unittest.TestCase):
         h = self._handler()
         me = {"id": "u2", "email": "e@x.com"}
         with mock.patch.object(self_api.admin_api, "_introspect", return_value=(me, None)), \
+             mock.patch.object(self_api.key_requests, "check_membership", return_value=None), \
              mock.patch.object(self_api.key_requests, "list_requests", return_value=[{"id": "kr-1"}]) as lr:
             self.assertTrue(self_api.handle(h, "GET"))
         self.assertEqual(h.status, 200)
@@ -191,9 +196,11 @@ class TestSelfKeyRequests(unittest.TestCase):
         h.headers.pop("X-Project-ID")
         with mock.patch.object(self_api.admin_api, "_introspect",
                                return_value=({"id": "u2", "email": "e@x.com"}, None)), \
+             mock.patch.object(self_api.key_requests, "check_membership") as cm, \
              mock.patch.object(self_api.key_requests, "list_requests") as lr:
             self.assertTrue(self_api.handle(h, "GET"))
         self.assertEqual(h.status, 400)
+        cm.assert_not_called()  # 400 在成员闸门之前
         lr.assert_not_called()
 
     def test_get_no_email_502(self):
@@ -201,9 +208,11 @@ class TestSelfKeyRequests(unittest.TestCase):
         # 全部申请（属主隔离失效）；必须 502 且 list_requests 不被调用
         h = self._handler()
         with mock.patch.object(self_api.admin_api, "_introspect", return_value=({"id": "u2"}, None)), \
+             mock.patch.object(self_api.key_requests, "check_membership") as cm, \
              mock.patch.object(self_api.key_requests, "list_requests") as lr:
             self.assertTrue(self_api.handle(h, "GET"))
         self.assertEqual(h.status, 502)
+        cm.assert_not_called()  # 502 在成员闸门之前
         lr.assert_not_called()
 
     def test_post_created_201(self):
@@ -290,9 +299,81 @@ class TestSelfKeyRequests(unittest.TestCase):
         self.assertEqual(h.status, 401)
 
 
+class TestSelfReadMembershipGate(unittest.TestCase):
+    """issue #139：自助读端点成员闸门——被移出项目后不可再读本人 key 明文/申请列表/用量，
+    与写路径 create_request 同一 fail-closed 口径：非成员 403、成员校验查询异常 502。
+    闸门函数 key_requests.check_membership 在模块边界 mock。"""
+
+    def _handler(self, path="/self/keys"):
+        return _FakeHandler(path=path, auth="Bearer t")
+
+    def test_keys_non_member_403(self):
+        h = self._handler()
+        with mock.patch.object(self_api.admin_api, "_introspect", return_value=({"id": "u2"}, None)), \
+             mock.patch.object(self_api.key_requests, "check_membership",
+                               return_value=(403, "你不是该项目成员")) as cm, \
+             mock.patch.object(self_api, "query_own_keys") as qok:
+            self.assertTrue(self_api.handle(h, "GET"))
+        self.assertEqual(h.status, 403)
+        cm.assert_called_once_with({"id": "u2"}, _PID)
+        qok.assert_not_called()  # 闸门不过不发起本人 key 查询
+
+    def test_keys_membership_query_error_502(self):
+        h = self._handler()
+        with mock.patch.object(self_api.admin_api, "_introspect", return_value=({"id": "u2"}, None)), \
+             mock.patch.object(self_api.key_requests, "check_membership",
+                               return_value=(502, "项目成员校验暂不可用")), \
+             mock.patch.object(self_api, "query_own_keys") as qok:
+            self.assertTrue(self_api.handle(h, "GET"))
+        self.assertEqual(h.status, 502)
+        qok.assert_not_called()
+
+    def test_requests_get_non_member_403(self):
+        h = self._handler("/self/key-requests")
+        with mock.patch.object(self_api.admin_api, "_introspect",
+                               return_value=({"id": "u2", "email": "e@x.com"}, None)), \
+             mock.patch.object(self_api.key_requests, "check_membership",
+                               return_value=(403, "你不是该项目成员")), \
+             mock.patch.object(self_api.key_requests, "list_requests") as lr:
+            self.assertTrue(self_api.handle(h, "GET"))
+        self.assertEqual(h.status, 403)
+        lr.assert_not_called()
+
+    def test_requests_get_membership_query_error_502(self):
+        h = self._handler("/self/key-requests")
+        with mock.patch.object(self_api.admin_api, "_introspect",
+                               return_value=({"id": "u2", "email": "e@x.com"}, None)), \
+             mock.patch.object(self_api.key_requests, "check_membership",
+                               return_value=(502, "项目成员校验暂不可用")), \
+             mock.patch.object(self_api.key_requests, "list_requests") as lr:
+            self.assertTrue(self_api.handle(h, "GET"))
+        self.assertEqual(h.status, 502)
+        lr.assert_not_called()
+
+    def test_usage_stats_non_member_403(self):
+        h = self._handler("/self/key-usage-stats?key=gid://axonhub/APIKey/9&window=day")
+        with mock.patch.object(self_api.admin_api, "_introspect", return_value=({"id": "u2"}, None)), \
+             mock.patch.object(self_api.key_requests, "check_membership",
+                               return_value=(403, "你不是该项目成员")), \
+             mock.patch.object(self_api, "query_own_key_ids") as qids:
+            self.assertTrue(self_api.handle(h, "GET"))
+        self.assertEqual(h.status, 403)
+        qids.assert_not_called()
+
+    def test_usage_stats_membership_query_error_502(self):
+        h = self._handler("/self/key-usage-stats?key=gid://axonhub/APIKey/9&window=day")
+        with mock.patch.object(self_api.admin_api, "_introspect", return_value=({"id": "u2"}, None)), \
+             mock.patch.object(self_api.key_requests, "check_membership",
+                               return_value=(502, "项目成员校验暂不可用")), \
+             mock.patch.object(self_api, "query_own_key_ids") as qids:
+            self.assertTrue(self_api.handle(h, "GET"))
+        self.assertEqual(h.status, 502)
+        qids.assert_not_called()
+
+
 class TestShapeKey(unittest.TestCase):
     """白名单塑形（issue #81 反转）：key 明文对本人保留下发；其余多余字段（userID/scopes 等）
-    仍一律剥掉——属主隔离唯一闸门=查询的 userID=me.id 服务端过滤。"""
+    仍一律剥掉——属主隔离闸门=查询的 userID=me.id 服务端过滤 + #139 读侧项目成员闸门。"""
 
     def test_keeps_plaintext_strips_extra(self):
         node = {"id": "gid://axonhub/APIKey/5", "name": "k1", "status": "enabled", "createdAt": "t",
@@ -318,7 +399,7 @@ class TestShapeKey(unittest.TestCase):
         with mock.patch.object(self_api, "_get_ax", return_value=FakeAx()):
             self.assertEqual(self_api.query_own_keys("gid://axonhub/User/9"), [])
         self.assertEqual(captured["v"], {"uid": "gid://axonhub/User/9", "projectID": _PID})
-        self.assertIn("userID", captured["q"])  # 明文下发的唯一闸门：服务端本人过滤
+        self.assertIn("userID", captured["q"])  # 明文下发的属主闸门：服务端本人过滤（另有 #139 成员闸门在端点层）
         self.assertIn("projectID", captured["q"])  # issue #89：项目过滤同入服务端查询
         self.assertIn(" key ", captured["q"])  # issue #81：查询取明文字段，本人可见
 
@@ -400,6 +481,7 @@ class TestSelfKeyUsageStats(unittest.TestCase):
         if ids is None:
             ids = [self._KID]
         with mock.patch.object(self_api.admin_api, "_introspect", return_value=({"id": me_id}, None)), \
+             mock.patch.object(self_api.key_requests, "check_membership", return_value=None), \
              mock.patch.object(self_api, "query_own_key_ids", return_value=ids) as qids, \
              mock.patch.object(self_api, "query_usage_stats",
                                return_value=stats if stats is not None else self._STATS) as qus:
@@ -452,9 +534,11 @@ class TestSelfKeyUsageStats(unittest.TestCase):
         h = _FakeHandler(path=f"/self/key-usage-stats?key={self._KID}&window=day",
                          auth="Bearer t", project=None)
         with mock.patch.object(self_api.admin_api, "_introspect", return_value=({"id": "u"}, None)), \
+             mock.patch.object(self_api.key_requests, "check_membership") as cm, \
              mock.patch.object(self_api, "query_own_key_ids") as qids:
             self.assertTrue(self_api.handle(h, "GET"))
         self.assertEqual(h.status, 400)
+        cm.assert_not_called()  # 400 在成员闸门之前
         qids.assert_not_called()
 
     def test_stats_failure_503(self):

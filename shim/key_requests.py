@@ -434,6 +434,25 @@ def _upgrade_direction_guard(me: dict, tier: str, key_ids: list, project_id: str
     return None, selected
 
 
+def check_membership(me: dict, pid: str):
+    """issue #139：自助读端点成员闸门（self_api /self/keys、/self/key-requests GET、
+    /self/key-usage-stats 共用）——被移出项目后不可再读本项目内本人 key 明文/申请/用量，
+    与写路径 create_request 同一 fail-closed 口径：非成员 403、成员关系查询异常 502。
+    是成员返回 None，否则 (status, 文案)。
+    （create_request 写侧校验另带项目名快照需求，保留内联不复用本函数。）"""
+    uid = me.get("id")
+    if not uid:
+        return (502, "caller 身份无 id，无法校验项目成员")
+    try:
+        projs = alert_poller.query_user_projects(_get_ax(), uid)
+    except Exception as e:
+        print(f"[keyreq] 读侧成员校验查询异常: {type(e).__name__}: {e}", flush=True)
+        return (502, "项目成员校验暂不可用，请稍后重试")
+    if not any(p.get("id") == pid for p in projs):
+        return (403, "你不是该项目成员，请切换到所属项目后再查看")
+    return None
+
+
 def create_request(me: dict, kind: str, purpose: str, tier: str, key_ids=None, project_id: str = None):
     """落一条待办申请 + 通知管理员。返回 (req_public, err)；err 形如 (status, 文案)。
     反 spam：同申请人同 kind 已有 pending → 409。
