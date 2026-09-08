@@ -112,6 +112,15 @@ cd deploy && python3 scripts/dlp-regression.py
 cd web && npx tsc --noEmit && npm run test:unit
 ```
 
+依赖安全维护：优先处理严重/高危的同版本线补丁，在隔离副本通过单测、类型检查、
+生产构建和实际锁文件复扫后合入。`web/package.json` 的定向安全 overrides 与
+`web/pnpm-lock.yaml` 同步维护；使用 pnpm 10.28.2 和
+`pnpm install --frozen-lockfile --ignore-scripts` 验证安装。`allowBuilds` 中
+`@swc/core`、`esbuild` 明确设为 false，已验证当前平台无需执行其安装脚本即可构建。
+跨主版本和验证失败项另行排期；锁文件更新不代表线上已部署。
+
+Faker 已从开发依赖中移除：全库仅残留未使用的导入，删除后 105 项单元测试、类型检查和生产构建通过，前端锁文件严重/高危为 0。测试所需的定价与配额契约仍以项目原文件为准。
+
 额度说明以 `docs/contracts/quota-tiers.md` 最新决策为准：2026-09-06 新模板为
 50/300/1000 点，存量 Key 保留已分配快照；前端双语说明已同步，不修改线上额度。
 
