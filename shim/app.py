@@ -1739,9 +1739,9 @@ def render_local_token_block(token: str) -> str:
 
 
 def splice_local_token(config_text: str, block: str) -> str:
-    """替换 SHIM-LOCAL-TOKEN BEGIN/END 标记行之间的内容（标记行保留）——语义同
-    admin_api.splice_rendered，但标记独立参数化（#33 的绑死 format-rules 标记，不通用）。
-    标记缺失/顺序错 → ValueError。"""
+    """替换 SHIM-LOCAL-TOKEN BEGIN/END 标记行之间的内容（标记行保留）。
+    标记参数化（issue #139）——#33 的 format-rules 渲染/拼接已随 #140 撤除，
+    本函数是现存唯一的标记区块拼接实现。标记缺失/顺序错 → ValueError。"""
     lines = config_text.splitlines(keepends=True)
     marks = [i for i, l in enumerate(lines)
              if l.strip().startswith(LOCAL_TOKEN_BEGIN_MARK) or l.strip().startswith(LOCAL_TOKEN_END_MARK)]
@@ -1762,7 +1762,7 @@ def render_local_token_to_gateway() -> str | None:
         with open(admin_api.AGENTGW_CONFIG_PATH, encoding="utf-8") as f:
             config_text = f.read()
         new_config = splice_local_token(config_text, render_local_token_block(token))
-        # 渲染后校验（同 #33 _verify_spliced 纪律）：标记完整 + 注入头当且仅当 token 非空时在文本
+        # 渲染后校验（同 #33 渲染后校验纪律）：标记完整 + 注入头当且仅当 token 非空时在文本
         if LOCAL_TOKEN_BEGIN_MARK not in new_config or LOCAL_TOKEN_END_MARK not in new_config:
             raise ValueError("渲染后校验失败: SHIM-LOCAL-TOKEN 标记缺失")
         needle = f"x-shim-local-token: '\"{token}\"'"

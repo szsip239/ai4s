@@ -7,7 +7,7 @@
 ### DLP 分层
 
 **全局层（Global Layer）**:
-管理员持有的强制脱敏/阻断规则，对所有员工与项目生效，无例外。含 agentgateway L1 Secrets regex、shim 商密词表、PII recognizer。
+管理员持有的强制脱敏/阻断规则，对所有员工与项目生效，无例外。issue #140 起 L1 Secrets regex / PII mask / 商密词表 / PII recognizer 判定全部在 shim 单点（agentgateway 仅作 webhook 传输，不再渲染格式规则）。
 _Avoid_: 管理员规则、公司规则
 
 **个人层（Personal Layer）**:
@@ -85,7 +85,7 @@ shim 内员工自助面 `/self/*`（issue #74 `GET /self/keys` 查本人 Key；i
 _Avoid_: 员工 API、自助接口
 
 **单一源（Single Source of Truth）**:
-每类配置只有一个权威存储（词表/规则/settings JSON、EDM 指纹库），渲染产物（agentgateway config.yaml 标记区块）由它派生；EDM 入库与检测同一算法（`shim/edm_lib.py`）亦属此纪律。
+每类配置只有一个权威存储（词表/规则/settings JSON、EDM 指纹库）。issue #140 起格式规则不再派生网关渲染产物（判定收回 shim 单点，format-rules.json 保存即热生效）；config.yaml 仅存的 `SHIM-LOCAL-TOKEN` 标记段是 #139 独立机制（shim 启动渲染注入，非格式规则）。EDM 入库与检测同一算法（`shim/edm_lib.py`）亦属此纪律。
 _Avoid_: 双写、多处维护
 
 ### 额度与计价

@@ -58,6 +58,12 @@ read_api_keys 档，携调用方 Bearer 按 idIn 批量取明文算 SHA-256 比�
 issue #139：写端点读-改-写串行化——模块级 _RMW_LOCK 保护 wordlist PUT / settings PUT /
 recognizers POST·PUT·DELETE / EDM ingest·delete（并发管理写互持 stale 快照覆盖会丢更新）；
 Content-Length 非法/负值干净 400（_body_length fail-closed，不再进 read() 异常分支）。
+issue #140：L1 格式规则判定收回 shim 单点——format-rules PUT 只写 JSON 不再渲染
+config.yaml（render_gateway_block/splice_rendered/_render_to_config 及 DLP-FORMAT-RULES
+标记区块随网关侧规则一并撤除），POST /dlp-admin/format-rules/render 端点撤除；
+settings PUT 的 l1 联动渲染/回滚同步撤除（l1.enabled 只门控 shim 检测侧，app.py
+每请求热读）。format-rules schema 的 gateway_patterns/gateway_scope 字段保留为 no-op
+（历史文件兼容；#140 起仅 shim_patterns 被 shim 消费）。
 
 与检测路径（/request /response 调用链）完全隔离：admin 平面 fail-closed——
 内省不可达回 503，不适用检测链的 fail-open 分级（契约 docs/contracts/dlp-webhook-shim.md）。
@@ -214,7 +220,7 @@ def graphql_authz_allowed(me: dict, required) -> bool:
 WORDLIST_PATH = os.environ.get("WORDLIST_PATH", "/dlp/confidential-terms.json")
 PII_RECOGNIZERS_PATH = os.environ.get("PII_RECOGNIZERS_PATH", "/recognizers/pii-zh.json")
 FORMAT_RULES_PATH = os.environ.get("FORMAT_RULES_PATH", "/dlp/format-rules.json")
-AGENTGW_CONFIG_PATH = os.environ.get("AGENTGW_CONFIG_PATH", "/agentgateway/config.yaml")
+AGENTGW_CONFIG_PATH = os.environ.get("AGENTGW_CONFIG_PATH", "/agentgateway/config.yaml")  # issue #139 token 渲染引用（app.py）；#140 起本模块不再写 config.yaml
 EDM_FP_PATH = os.environ.get("EDM_FP_PATH", "/edm/fingerprints.json")  # 与 app.py 同 env/默认
 EDM_CORPUS_DIR = os.environ.get("EDM_CORPUS_DIR", "/edm/corpus")
 SETTINGS_PATH = os.environ.get("SETTINGS_PATH", "/dlp/settings.json")  # 与 app.py 同 env/默认（issue #35）
@@ -650,25 +656,6 @@ def _validate_settings(data) -> str | None:
     return None
 
 
-# 分层总开关 env 名（issue #40，与 app.py setting_value 调用点一致）
-_LAYER_ENV = {"l1": "L1_ENABLED", "l2": "L2_ENABLED", "response": "RESPONSE_ENABLED"}
-
-
-def _layer_enabled(section: str) -> bool:
-    """分层总开关读取（issue #40）：settings.json[section].enabled > env > 默认 True。
-    与 app.py setting_value 同三级语义（admin_api 自包含不 import app，按 bool 单键简化实现）；
-    文件缺失/损坏/键类型不符 → env/默认 True（保现网行为方向，admin 平面读配置用）。"""
-    data = _load_json_file(SETTINGS_PATH)
-    if isinstance(data, dict):
-        sec = data.get(section)
-        if isinstance(sec, dict) and isinstance(sec.get("enabled"), bool):
-            return sec["enabled"]
-    v = os.environ.get(_LAYER_ENV[section], "")
-    if v != "":
-        return v == "1"
-    return True
-
-
 def _audit(me, op, changed=None):
     """配置面写操作审计（layer=admin，shadow_log 同槽）：actor=email（缺省 id，再缺 unknown），
     changed=变更键路径注解列表。配置值不落盘（settings 含 prompt 半敏感文本、词表值即机密词），
@@ -701,11 +688,9 @@ def _diff_settings(old, new) -> list:
 def _settings_put(handler, _me):
     """PUT 整体替换 settings（issue #35）：校验 → write_json_atomic。
     shim 检测路径每请求重读 settings.json，写入即热生效，无需重启。
-    l1 总开关联动（issue #40）：l1.enabled 翻转时按新状态重渲染 config.yaml 标记区块
-    （关=区块渲染为空，网关层同步撤掉格式规则）；渲染失败从 .bak 回滚 settings 并 500，
-    两侧不留半更新（对称 format-rules PUT 纪律）。手改 settings.json 不触发联动，
-    漂移时用 POST /dlp-admin/format-rules/render 兜底修复。
-    读旧→写入→联动渲染/回滚整体持 _RMW_LOCK（issue #139，并发 PUT 串行不丢更新）。"""
+    issue #140：l1.enabled 只门控 shim 检测侧（app.py 每请求热读），不再联动渲染
+    config.yaml——原 l1 翻转重渲染/回滚联动（issue #40）随网关侧格式规则一并撤除。
+    读旧→写入整体持 _RMW_LOCK（issue #139，并发 PUT 串行不丢更新）。"""
     payload = _read_body(handler)
     if payload is None:
         return
@@ -713,36 +698,15 @@ def _settings_put(handler, _me):
     if err:
         _respond(handler, 400, {"error": err})
         return
-    with _RMW_LOCK:  # issue #139：读旧→写入→l1 联动渲染/回滚整体串行（并发 PUT 丢更新/半更新）
-        old_l1 = _layer_enabled("l1")  # 写前读旧状态（文件缺失/env 兜底均按默认 True 语义）
+    with _RMW_LOCK:  # issue #139：读旧→写入整体串行（并发 PUT 丢更新）
         old_settings = _load_json_file(SETTINGS_PATH)  # 审计 diff 基准（缺失 → None 记全量新建）
         try:
             write_json_atomic(SETTINGS_PATH, payload)
         except OSError as e:
             _respond(handler, 500, {"error": f"settings 写入失败: {e}"})
             return
-        new_l1 = _layer_enabled("l1")  # 写后读新状态：文件级优先于 env，PUT 整体替换后必读到 payload 新值
-        if old_l1 != new_l1:
-            data = _load_json_file(FORMAT_RULES_PATH)
-            if not isinstance(data, dict) or not isinstance(data.get("rules"), list):
-                _rollback_settings_json()
-                _respond(handler, 500, {"error": "format-rules unreadable，无法联动渲染（settings 已回滚）"})
-                return
-            rerr = _render_to_config(data["rules"], include_l1=new_l1)
-            if rerr:
-                _rollback_settings_json()
-                _respond(handler, 500, {"error": f"{rerr}（settings 已回滚）"})
-                return
-    _audit(_me, "put_settings", _diff_settings(old_settings, payload))  # 回滚路径不落条（操作整体失败）
+    _audit(_me, "put_settings", _diff_settings(old_settings, payload))
     _respond(handler, 200, payload)
-
-
-def _rollback_settings_json() -> None:
-    """settings 已写但 l1 联动渲染失败时回滚：.bak 恢复（无 .bak 说明此前无文件，直接删除），两侧不留半更新。"""
-    if os.path.exists(SETTINGS_PATH + ".bak"):
-        shutil.copyfile(SETTINGS_PATH + ".bak", SETTINGS_PATH)
-    elif os.path.exists(SETTINGS_PATH):
-        os.unlink(SETTINGS_PATH)
 
 
 # gateway_patterns 禁用的 Rust regex 不支持构造（lookaround；backreference 另行 \1~\9 扫描）
@@ -764,7 +728,9 @@ def _check_pattern(p, label: str) -> str | None:
 def _validate_format_rules(data) -> str | None:
     """format-rules JSON 校验（issue #33）：合法返回 None，非法返回具体原因。
     schema：每条 code/layer/action/enabled 必填，action∈{reject,mask}，layer∈{L1,L1.5}；
-    全部 patterns 过 re.compile；gateway_patterns 禁 Rust regex 不支持构造（lookaround/backreference）。"""
+    全部 patterns 过 re.compile；gateway_patterns 禁 Rust regex 不支持构造（lookaround/backreference）。
+    issue #140：gateway_patterns/gateway_scope 已无消费方（不再渲染 config.yaml），保留为
+    历史文件兼容字段；校验原样保留（防脏数据落盘），仅 gateway_scope 撤掉枚举白名单。"""
     if not isinstance(data, dict):
         return "format-rules 必须是对象"
     rules = data.get("rules")
@@ -808,21 +774,20 @@ def _validate_format_rules(data) -> str | None:
             err = _check_pattern(p, f"rules[{i}].shim_patterns[{j}]")
             if err:
                 return err
-        # issue #126 review：gateway_scope 白名单校验（可选字段；坏值会静默渲染进 config.yaml，
-        # 网关热载才报解析错——把防线前移到 PUT）
+        # issue #140：gateway_scope 已无消费方（不再渲染 config.yaml），仅保留类型校验
+        # 防脏数据落盘；原 _VALID_SCOPES 枚举白名单（issue #126）随渲染链路一并撤除。
         gs = r.get("gateway_scope")
         if gs is not None:
             if not isinstance(gs, list) or any(not isinstance(s, str) for s in gs):
                 return f"rules[{i}].gateway_scope 必须是字符串数组"
-            for s in gs:
-                if s not in _VALID_SCOPES:
-                    return f"rules[{i}].gateway_scope 含非法 scope: {s}（可选 {sorted(_VALID_SCOPES)}）"
     return None
 
 
 def _format_rules_put(handler, _me):
-    """PUT 整体替换 format-rules（issue #33）：校验 → 写 JSON → 渲染 splice 进 config.yaml。
-    config 渲染/写失败时 JSON 从 .bak 回滚，两侧不留半更新。"""
+    """PUT 整体替换 format-rules（issue #33）：校验 → 写 JSON。
+    shim 检测路径每请求重读 format-rules.json，写入即热生效，无需重启。
+    issue #140：判定收回 shim 单点，不再渲染 config.yaml（原 splice/渲染后校验/回滚
+    联动随网关侧格式规则一并撤除）——写入失败以外的故障面只剩校验 400。"""
     payload = _read_body(handler)
     if payload is None:
         return
@@ -833,153 +798,10 @@ def _format_rules_put(handler, _me):
     try:
         write_json_atomic(FORMAT_RULES_PATH, payload)
     except OSError as e:
-        # JSON 写失败（review #2）：与 YAML 写失败对称 500；此处 config.yaml 尚未触碰
         _respond(handler, 500, {"error": f"format-rules 写入失败: {e}"})
-        return
-    rerr = _render_to_config(payload["rules"], include_l1=_layer_enabled("l1"))
-    if rerr:
-        _rollback_format_rules_json()
-        _respond(handler, 500, {"error": f"{rerr}（JSON 已回滚）"})
         return
     _audit(_me, "put_format_rules", [f"rules({len(payload['rules'])})"])
     _respond(handler, 200, payload)
-
-
-def _yaml_single_quote(s: str) -> str:
-    """YAML 单引号标量（内嵌单引号翻倍）。"""
-    return "'" + s.replace("'", "''") + "'"
-
-
-# issue #126：v1.5.0 promptGuard ContentScope（camelCase 序列化）。reject 规则缺省全量四目标
-# ——tool 调用参数/结果常携带文件内容，是 Secrets 泄漏通道；mask 规则缺省不渲染 scope
-# （网关默认 systemPrompt+messages），规避 mask 把 tool arguments 改写成非法 JSON 的官方警告；
-# 规则可用 gateway_scope 显式覆盖（reject 收窄 / mask 显式开启）。
-_DEFAULT_REJECT_SCOPE = ["systemPrompt", "messages", "toolInput", "toolOutput"]
-_VALID_SCOPES = frozenset(_DEFAULT_REJECT_SCOPE)  # 四值即全枚举，校验白名单复用
-
-
-def render_gateway_block(rules: list, include_l1: bool = True) -> str:
-    """渲染 promptGuard request 段的 - regex 条目文本（issue #33）。
-    缩进对齐现网（条目 12 空格级，模板化确定性构造兜底 stdlib 无 YAML 解析器）；
-    enabled=false 或 gateway_patterns 为空（shim-only）的规则不渲染进网关。
-    scope（issue #126）：reject 规则缺省渲染 _DEFAULT_REJECT_SCOPE 四目标；mask 规则缺省
-    不渲染（保网关默认 systemPrompt+messages）；规则级 gateway_scope 显式覆盖——
-    空数组 = 不渲染 scope 键（显式收窄回网关默认），非"扫描零目标"。
-    l1 总开关（issue #40）：include_l1=False 时格式规则全族不渲染（返回空串，标记区块渲染为空，
-    网关层同步撤防——l1 管辖 format-rules.json 全族，含 L1 reject 与 L1.5 格式 mask）。"""
-    lines = []
-    for r in rules:
-        patterns = r.get("gateway_patterns") or []
-        if not include_l1 or not r.get("enabled") or not patterns:
-            continue
-        lines.append("            - regex:")
-        lines.append(f"                action: {r['action']}")
-        lines.append("                rules:")
-        for p in patterns:
-            lines.append(f"                  - pattern: {_yaml_single_quote(p)}")
-        # scope（issue #126）：reject 缺省四目标；gateway_scope=[] 显式收窄=不渲染 scope 键
-        # （回网关默认 systemPrompt+messages），非"扫描零目标"
-        scope = r.get("gateway_scope")
-        if scope is None and r["action"] == "reject":
-            scope = _DEFAULT_REJECT_SCOPE
-        if scope:
-            lines.append("              scope:")
-            for s in scope:
-                lines.append(f"                - {s}")
-        if r["action"] == "reject":
-            body = json.dumps(
-                {"error": {"message": f"Blocked by ai4s DLP: {r['message']}",
-                           "type": "content_policy_violation", "code": r["code"]}},
-                ensure_ascii=False, separators=(",", ":"))
-            lines.append("              rejection:")
-            lines.append("                status: 451")
-            lines.append("                headers:")
-            lines.append("                  set:")
-            lines.append('                    content-type: "application/json"')
-            lines.append("                body: |")
-            lines.append(f"                  {body}")
-    return ("\n".join(lines) + "\n") if lines else ""
-
-
-# config.yaml 一次性标记区块（issue #33）：渲染内容替换 BEGIN/END 之间，区块外手改不动
-_BEGIN_MARK = "# >>> DLP-FORMAT-RULES BEGIN"
-_END_MARK = "# <<< DLP-FORMAT-RULES END"
-
-
-def splice_rendered(config_text: str, block: str) -> str:
-    """用渲染文本替换 BEGIN/END 标记行之间的内容（标记行保留）。标记缺失/顺序错 → ValueError。"""
-    lines = config_text.splitlines(keepends=True)
-    marks = [i for i, l in enumerate(lines)
-             if l.strip().startswith(_BEGIN_MARK) or l.strip().startswith(_END_MARK)]
-    if len(marks) != 2 or not lines[marks[0]].strip().startswith(_BEGIN_MARK):
-        raise ValueError("config.yaml 缺少 DLP-FORMAT-RULES BEGIN/END 标记（或顺序错误）")
-    b, e = marks
-    return "".join(lines[:b + 1]) + block + "".join(lines[e:])
-
-
-def _verify_spliced(text: str, rules: list, include_l1: bool = True) -> None:
-    """渲染后校验（issue #33）：标记完整 + 每条启用规则的 gateway_patterns 与 reject code 均在文本中。
-    l1 总开关（issue #40）：include_l1=False 时整族规则被排除在渲染外，逐规则校验同步跳过
-    （否则恒 500）；标记完整性校验仍保留。"""
-    if _BEGIN_MARK not in text or _END_MARK not in text:
-        raise ValueError("渲染后校验失败: 标记缺失")
-    if not include_l1:
-        return
-    for r in rules:
-        if not r.get("enabled"):
-            continue
-        for p in r.get("gateway_patterns") or []:
-            # pattern 原文含 ' 时渲染进 YAML 单引号标量会翻倍（review #3）：比对转义后形态，否则恒假误 500
-            if p.replace("'", "''") not in text:
-                raise ValueError(f"渲染后校验失败: pattern 未落文本 ({r.get('code')})")
-        if r.get("action") == "reject" and f'"code":"{r["code"]}"' not in text:
-            raise ValueError(f"渲染后校验失败: rejection code 未落文本 ({r.get('code')})")
-
-
-def _render_to_config(rules, include_l1: bool = True) -> str | None:
-    """读 config.yaml → 渲染 splice 标记区块 → 渲染后校验 → 原子写盘（PUT/render 共用，review #6）。
-    成功返回 None；渲染/校验失败或写盘失败返回错误消息（渲染失败时未落盘）。
-    include_l1 透传 l1 总开关（issue #40）：False 时标记区块渲染为空。"""
-    try:
-        with open(AGENTGW_CONFIG_PATH, encoding="utf-8") as f:
-            config_text = f.read()
-        new_config = splice_rendered(config_text, render_gateway_block(rules, include_l1))
-        _verify_spliced(new_config, rules, include_l1)
-    except (OSError, ValueError) as e:
-        return f"渲染失败: {e}"
-    try:
-        write_text_atomic(AGENTGW_CONFIG_PATH, new_config)
-    except OSError as e:
-        return f"config.yaml 写入失败: {e}"
-    return None
-
-
-def _rollback_format_rules_json() -> None:
-    """JSON 已写但 config 渲染/写盘失败时回滚：.bak 恢复（无 .bak 说明此前无文件，直接删除），两侧不留半更新。"""
-    if os.path.exists(FORMAT_RULES_PATH + ".bak"):
-        shutil.copyfile(FORMAT_RULES_PATH + ".bak", FORMAT_RULES_PATH)
-    elif os.path.exists(FORMAT_RULES_PATH):
-        os.unlink(FORMAT_RULES_PATH)
-
-
-def _format_rules_render_post(handler, _me):
-    """POST 幂等重渲染（issue #33）：按 JSON 当前内容重渲染 config.yaml 标记区块。
-    用于区块被手改漂移后的修复；JSON 损坏/缺标记拒绝渲染，不落盘。
-    l1 总开关（issue #40）：l1.enabled=false 时标记区块渲染为空（rendered=0），
-    也是手改 settings.json 后同步网关层的兜底入口。"""
-    data = _load_json_file(FORMAT_RULES_PATH)
-    if not isinstance(data, dict) or not isinstance(data.get("rules"), list):
-        _respond(handler, 500, {"error": "format-rules unreadable，拒绝渲染"})
-        return
-    rules = data["rules"]
-    include_l1 = _layer_enabled("l1")
-    rerr = _render_to_config(rules, include_l1=include_l1)
-    if rerr:
-        _respond(handler, 500, {"error": rerr})
-        return
-    rendered = sum(1 for r in rules if include_l1 and r.get("enabled") and r.get("gateway_patterns"))
-    _audit(_me, "render_format_rules", [f"rendered={rendered}", f"include_l1={include_l1}"])
-    _respond(handler, 200, {"rendered": rendered})
 
 
 def _edm_doc_summary(name: str, doc) -> dict:
@@ -1563,7 +1385,6 @@ _ROUTES = {
     ("POST", "/dlp-admin/recognizers"): ("write", _recognizers_post),
     ("GET", "/dlp-admin/format-rules"): ("read", _format_rules_get),
     ("PUT", "/dlp-admin/format-rules"): ("write", _format_rules_put),
-    ("POST", "/dlp-admin/format-rules/render"): ("write", _format_rules_render_post),
     ("GET", "/dlp-admin/edm/corpus"): ("read", _edm_corpus_get),
     ("POST", "/dlp-admin/edm/corpus"): ("write", _edm_corpus_post),
     ("POST", "/dlp-admin/edm/corpus/upload"): ("write", _edm_corpus_upload_post),
@@ -1655,5 +1476,6 @@ def write_json_atomic(path: str, obj) -> None:
 
 
 def write_text_atomic(path: str, text: str) -> None:
-    """原子写文本配置（issue #33：config.yaml 渲染落盘），与 write_json_atomic 共用 .bak 纪律。"""
+    """原子写文本配置，与 write_json_atomic 共用 .bak 纪律。
+    现消费方：EDM 语料落盘（本模块）、#139 SHIM-LOCAL-TOKEN 启动渲染（app.py）。"""
     _write_atomic(path, lambda f: f.write(text))

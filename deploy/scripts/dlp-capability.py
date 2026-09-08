@@ -7,8 +7,9 @@
 九类样本（设计见 docs/plans/2026-08-08-dlp-capability-test-plan.md）：
   1-6  vectors JSON（tests/dlp-capability-vectors.json）：
        secrets/pii/wordlist 覆盖矩阵、evasion 对抗电池、negative 误报电池、response 响应侧
-  7    六层开关矩阵（runner 过程段）：l1 关=config.yaml 标记区块渲染为空+restart 后放行、
-       l2/response 关=shim 热生效放行；judge/pg 是 shadow 无网关行为差异（断言双向放行+读回）；
+  7    六层开关矩阵（runner 过程段）：l1/l2/response 关=shim 热生效放行（issue #140 起 l1
+       判定收回 shim 单点，settings 每请求热读，与 l2/response 同型，无 config.yaml 联动/restart）；
+       judge/pg 是 shadow 无网关行为差异（断言双向放行+读回）；
        edm 开关在 EDM 段内验证（语料已入库，关=粘贴放行/开=451）
   8    纵深层（runner 段）：同一 sk-proj 样本经 shim 容器内网直连 axonhub:8090 断言原生 PP 400，
        经网关 451 对照（宿主调试口已收，issue #60）
@@ -30,7 +31,6 @@ import dlp_testkit as tk
 
 DEPLOY_DIR = tk.DEPLOY_DIR
 VECTORS_PATH = os.path.join(DEPLOY_DIR, "tests", "dlp-capability-vectors.json")
-CONFIG_PATH = os.path.join(DEPLOY_DIR, "agentgateway", "config.yaml")
 
 # 开关矩阵代表样本（l1 用 ghp_：axonhub 原生 prompt protection 不拦，L1 关闭后才能看到 200 放行）
 SWITCH_SAMPLES = {
@@ -114,50 +114,17 @@ def send_direct(content, api_key):
         return 0
 
 
-def l1_block_line_count():
-    """config.yaml 标记区块内非空行数；标记缺失返回 -1。"""
-    try:
-        text = open(CONFIG_PATH, encoding="utf-8").read()
-    except OSError:
-        return -1
-    begin = "# >>> DLP-FORMAT-RULES BEGIN"
-    end = "# <<< DLP-FORMAT-RULES END"
-    if begin not in text or end not in text:
-        return -1
-    # 按行切（与 shim splice_rendered 同语义）：BEGIN/END 标记行上的行尾注释不计入区块内容
-    lines = text.splitlines()
-    marks = [i for i, l in enumerate(lines)
-             if l.strip().startswith(begin) or l.strip().startswith(end)]
-    if len(marks) != 2 or not lines[marks[0]].strip().startswith(begin):
-        return -1
-    return sum(1 for l in lines[marks[0] + 1:marks[1]] if l.strip())
-
-
-def restart_agentgateway(api_key):
-    """macOS watcher 只响应首个写事件（#40 实测），l1 渲染翻转后 restart 兜底并等网关就绪。"""
-    subprocess.run(["docker", "compose", "restart", "agentgateway"],
-                   cwd=DEPLOY_DIR, check=True, capture_output=True)
-    t0 = time.time()
-    while time.time() - t0 < 90:
-        st, _ = tk.send("ping", api_key)
-        if st == 200:
-            return True
-        time.sleep(2)
-    return False
-
-
 def run_switch_section(api_key, admin_token):
-    """六层开关矩阵（category=switch）：l1/l2/response 关=链路放行、开=即恢复；
+    """六层开关矩阵（category=switch）：l1/l2/response 关=链路放行、开=即恢复（均 shim 热生效）；
     judge/pg 为 shadow——断言双向放行+GET 读回（不装出能测拦截的样子）；
     edm 开关在 EDM 段验证。整段 finally 恢复原始 settings。"""
-    print("\n==> 六层开关矩阵段（l1 含 config.yaml 联动断言与 agentgateway restart）")
+    print("\n==> 六层开关矩阵段（l1 自 issue #140 起 shim 单点判定，热生效无 restart）")
     results = []
     st, original = tk._admin_api("GET", "/dlp-admin/settings", admin_token)
     if st != 200 or not isinstance(original, dict):
         record(results, "switch: GET settings 可读", "switch", "switch", 200, st, True,
                "admin 面故障即 fail（对齐 regression admin 段记 FAIL 纪律）")
         return results
-    l1_touched = False
 
     def put_flip(section, enabled):
         doc = json.loads(json.dumps(original))
@@ -184,21 +151,12 @@ def run_switch_section(api_key, admin_token):
         got = tk.classify(*tk.send(SWITCH_SAMPLES["response"], api_key), None)
         record(results, "switch: response 开=泄漏应答重拦", "switch", "switch", "reject", got, True)
 
-        # l1（config.yaml 标记区块联动 + restart 兜底）
+        # l1（issue #140 起 shim 单点判定：settings 每请求热读，与 l2/response 同型，无需 restart）
         if record(results, "switch: l1 PUT 关闭", "switch", "switch", True,
                   put_flip("l1", False), True)["ok"]:
-            l1_touched = True
-            record(results, "switch: l1 关=config.yaml 标记区块已撤空", "switch", "switch", 0,
-                   l1_block_line_count(), True)
-            record(results, "switch: l1 关=restart agentgateway 就绪", "switch", "switch", True,
-                   restart_agentgateway(api_key), True)
             got = tk.classify(*tk.send(SWITCH_SAMPLES["l1"], api_key), None)
             record(results, "switch: l1 关=ghp_ 样本放行", "switch", "switch", "pass", got, True)
         record(results, "switch: l1 PUT 恢复", "switch", "switch", True, put_flip("l1", True), True)
-        record(results, "switch: l1 开=config.yaml 标记区块已重渲染", "switch", "switch", True,
-               l1_block_line_count() > 0, True)
-        record(results, "switch: l1 开=restart agentgateway 就绪", "switch", "switch", True,
-               restart_agentgateway(api_key), True)
         got = tk.classify(*tk.send(SWITCH_SAMPLES["l1"], api_key), None)
         record(results, "switch: l1 开=ghp_ 样本重拦", "switch", "switch", "reject", got, True)
 
@@ -222,8 +180,6 @@ def run_switch_section(api_key, admin_token):
                    "shadow 层无网关行为差异（计划口径）")
     finally:
         tk._admin_api("PUT", "/dlp-admin/settings", admin_token, original)
-        if l1_touched:
-            restart_agentgateway(api_key)
         st, doc = tk._admin_api("GET", "/dlp-admin/settings", admin_token)
         restored = st == 200 and all(
             doc.get(s, {}).get("enabled") == original[s]["enabled"] for s in ("judge", "edm", "pg", "l1", "l2", "response"))

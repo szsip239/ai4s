@@ -199,7 +199,7 @@ services:
       - ./dlp:/dlp:rw # 词表/format-rules/settings.json 挂载（issue #31 起 rw：admin API 写回）；shim 每请求重读热更新
       - ../recognizers:/recognizers:rw # PII recognizer 定义（issue #15），issue #31 起 rw
       - ./edm:/edm:rw # EDM 指纹库（issue #29），issue #31 起 rw
-      - ./agentgateway:/agentgateway:rw # L1 规则渲染写回（issue #33 用，#31 预挂）
+      - ./agentgateway:/agentgateway:rw # SHIM-LOCAL-TOKEN 渲染写回（issue #139；#140 起 #33 规则渲染已撤）
       - ./.local/alert-state:/state # 告警防抖状态（issue #56 平移自 alert-poller，gitignored）
       - ./.local/promptguard-model:/models/promptguard:ro # PromptGuard 2 模型（issue #67 平移自 promptguard 服务，gitignored）
     networks:

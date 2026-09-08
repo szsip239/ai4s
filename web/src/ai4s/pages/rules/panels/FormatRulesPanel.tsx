@@ -154,7 +154,7 @@ function Ai4sFormatRuleDialog({
             </div>
           )}
           <div className='space-y-1.5'>
-            <Label>gateway_patterns（逐行；渲染进网关，禁 Rust regex 不支持构造）</Label>
+            <Label>gateway_patterns（逐行；历史保留字段，#140 起不再渲染进网关）</Label>
             <Textarea rows={4} className='font-mono text-xs' value={gwText} onChange={(e) => setGwText(e.target.value)} />
           </div>
           <div className='space-y-1.5'>
@@ -169,7 +169,7 @@ function Ai4sFormatRuleDialog({
           </Button>
           <Button onClick={submit} disabled={putRules.isPending}>
             {putRules.isPending && <IconLoader2 className='animate-spin' />}
-            保存并渲染
+            保存
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -186,13 +186,13 @@ export function Ai4sFormatRulesPanel({ onDirtyChange }: { onDirtyChange?: (dirty
   const rules = data?.rules ?? [];
   const editingRule = dialogOpen === 'new' ? null : (rules.find((r) => r.code === dialogOpen) ?? null);
 
-  /** 行内 enabled 开关：即改即存（PUT 整个文档，保存即渲染热重载） */
+  /** 行内 enabled 开关：即改即存（PUT 整个文档，保存即热生效——shim 每请求重读） */
   const toggle = (rule: FormatRule, checked: boolean) => {
     if (!data) return;
     putRules.mutate({ ...data, rules: rules.map((r) => (r.code === rule.code ? { ...r, enabled: checked } : r)) });
   };
 
-  /** 删除：PUT 整个文档剔除该 code（保存即渲染，规则从网关配置移除） */
+  /** 删除：PUT 整个文档剔除该 code（保存即热生效，规则从 shim 判定中移除） */
   const remove = (rule: FormatRule) => {
     if (!data) return;
     putRules.mutate({ ...data, rules: rules.filter((r) => r.code !== rule.code) });
@@ -205,9 +205,9 @@ export function Ai4sFormatRulesPanel({ onDirtyChange }: { onDirtyChange?: (dirty
           <div>
             <CardTitle>格式规则</CardTitle>
             <CardDescription>
-              API 密钥、私钥等格式特征规则命中即在网关拦截（reject），手机号、身份证等 PII 格式规则命中即打码放行（mask）；本层总开关在顶部管线「L1
-              格式规则」节点上（关闭则整层撤防，密钥拦截全敞口，网关规则同步撤下）；<span className='font-medium text-foreground'>保存会重写网关配置并热重载</span>。改坏可用
-              render 端点重渲染或 .bak 回滚
+              API 密钥、私钥等格式特征规则命中即在 shim 拦截（reject），手机号、身份证等 PII 格式规则命中即打码放行（mask）；本层总开关在顶部管线「L1
+              格式规则」节点上（关闭则整层撤防，密钥拦截全敞口）；<span className='font-medium text-foreground'>保存即热生效</span>（shim
+              每请求重读，#140 起不再渲染网关配置）。改坏可从同目录 .bak 备份或 git 回滚
             </CardDescription>
           </div>
           <div className='flex items-center gap-3'>

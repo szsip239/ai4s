@@ -523,7 +523,9 @@ _CONFIG_FIXTURE = (
 
 
 class AdminFormatRulesTest(unittest.TestCase):
-    """L1/L1.5 格式规则统一源（issue #33）：format-rules CRUD + gateway YAML 渲染。
+    """L1/L1.5 格式规则统一源（issue #33）：format-rules CRUD。
+    issue #140：判定收回 shim 单点，PUT 只写 JSON 不再渲染 config.yaml——
+    本类断言重心从「渲染链路」翻转为「config.yaml 不被触碰」。
     fixture：每用例临时 format-rules.json / config.yaml，覆写 admin_api 模块级路径。"""
 
     def setUp(self):
@@ -543,16 +545,9 @@ class AdminFormatRulesTest(unittest.TestCase):
         self._saved_paths = (admin_api.FORMAT_RULES_PATH, admin_api.AGENTGW_CONFIG_PATH)
         admin_api.FORMAT_RULES_PATH = self.rules_path
         admin_api.AGENTGW_CONFIG_PATH = self.config_path
-        # env 隔离（对齐 AppSettingsTest 纪律）：开发机/CI 导出分层总开关 env 会改变渲染行为
-        # （本类 SETTINGS_PATH 未覆写，_layer_enabled 落不到文件时读 env），pop 防误失败
-        self._saved_env = {k: os.environ.pop(k, None)
-                           for k in ("L1_ENABLED", "L2_ENABLED", "RESPONSE_ENABLED")}
 
     def tearDown(self):
         admin_api.FORMAT_RULES_PATH, admin_api.AGENTGW_CONFIG_PATH = self._saved_paths
-        for k, v in self._saved_env.items():
-            if v is not None:
-                os.environ[k] = v
         self._tmp.cleanup()
 
     def _read_json(self, path):
@@ -565,121 +560,26 @@ class AdminFormatRulesTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body, _FR_FIXTURE)
 
-    def test_render_block_matches_current_gateway(self):
-        """渲染等价性（issue #33 核心）：首版 JSON 渲染文本含现网每条 pattern 与 rejection body。
-        期望值硬编码自 config.yaml 现网 promptGuard request 段（迁移裁判）。"""
-        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        with open(os.path.join(repo_root, "deploy", "dlp", "format-rules.json"), encoding="utf-8") as f:
-            rules = json.load(f)["rules"]
-        block = admin_api.render_gateway_block(rules)
-        # 现网每条 gateway pattern（逐条核自 config.yaml，不得 drift）
-        expected_patterns = [
-            r"sk-ant-[A-Za-z0-9_\-]{20,}",
-            r"sk-(proj-)?[A-Za-z0-9_\-]{20,}",
-            r"gh[pousr]_[A-Za-z0-9]{20,}",
-            r"github_pat_[A-Za-z0-9_]{20,}",
-            r"AKIA[0-9A-Z]{16}",
-            r"ASIA[0-9A-Z]{16}",
-            r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----",
-            r"LTAI[A-Za-z0-9]{12,}",
-            r"\b1[3-9]\d{9}\b",
-            r"\b\d{17}[\dXx]\b",
-        ]
-        for p in expected_patterns:
-            with self.subTest(pattern=p):
-                self.assertIn(f"- pattern: '{p}'", block)
-        # 现网每条 rejection body（紧凑 JSON，逐条核自 config.yaml）
-        expected_bodies = [
-            ('secrets.anthropic_sk', "Anthropic secret key detected"),
-            ('secrets.openai_sk', "OpenAI secret key detected"),
-            ('secrets.github_token', "GitHub token detected"),
-            ('secrets.aws_key', "AWS access key detected"),
-            ('secrets.private_key', "private key material detected"),
-            ('secrets.aliyun_ak', "Aliyun access key detected"),
-        ]
-        for code, message in expected_bodies:
-            with self.subTest(code=code):
-                body = ('{"error":{"message":"Blocked by ai4s DLP: ' + message +
-                        '","type":"content_policy_violation","code":"' + code + '"}}')
-                self.assertIn(body, block)
-        # 结构断言：6 条 rejection（mask 无）；顺序敏感（anthropic 在 openai 前）；shim-only 不渲染
-        self.assertEqual(block.count("rejection:"), 6)
-        self.assertLess(block.index("secrets.anthropic_sk"), block.index("secrets.openai_sk"))
-        self.assertNotIn("bank_card", block)
-
-    def test_render_reject_rules_emit_tool_call_scope(self):
-        """issue #126：reject 规则缺省渲染 scope 四目标（systemPrompt/messages/toolInput/toolOutput，
-        v1.5.0 ContentScope，camelCase 序列化）——tool 调用参数/结果纳入 Secrets 扫描；
-        mask 规则不显式配置 gateway_scope 时不渲染 scope（保留网关默认 systemPrompt+messages，
-        规避 mask 把 tool arguments 改写成非法 JSON 的官方警告风险）。"""
-        rules = [
-            {"code": "secrets.test", "layer": "L1", "action": "reject", "enabled": True,
-             "message": "test secret", "gateway_patterns": ["sk-test-[0-9]{4}"]},
-            {"code": "pii.test", "layer": "L1.5", "action": "mask", "enabled": True,
-             "gateway_patterns": ["\\b1[3-9]\\d{9}\\b"]},
-        ]
-        block = admin_api.render_gateway_block(rules)
-        # reject 条目带 scope（RequestGuard 级，与 rejection 同 14 空格缩进）
-        self.assertIn("              scope:\n", block)
-        for s in ("systemPrompt", "messages", "toolInput", "toolOutput"):
-            self.assertIn(f"                - {s}\n", block)
-        # scope 仅出现在 reject 条目；mask 条目不带
-        self.assertEqual(block.count("              scope:\n"), 1)
-        # scope 与 rejection 同 entry（rejection 仍渲染）
-        self.assertIn("              rejection:", block)
-
-    def test_render_gateway_scope_override(self):
-        """issue #126：规则级 gateway_scope 显式覆盖缺省（reject 可收窄、mask 可显式开启）。"""
-        rules = [
-            {"code": "secrets.custom", "layer": "L1", "action": "reject", "enabled": True,
-             "message": "x", "gateway_patterns": ["FOO[0-9]{4}"],
-             "gateway_scope": ["messages", "toolInput"]},
-            {"code": "pii.custom", "layer": "L1.5", "action": "mask", "enabled": True,
-             "gateway_patterns": ["BAR[0-9]{4}"],
-             "gateway_scope": ["messages"]},
-        ]
-        block = admin_api.render_gateway_block(rules)
-        self.assertEqual(block.count("              scope:\n"), 2)
-        # 覆盖生效：reject 收窄为两目标且无 toolOutput；mask 显式仅 messages
-        self.assertIn("                - toolInput\n", block)
-        self.assertNotIn("                - toolOutput\n", block)
-        # mask 条目的 scope 仅 messages 一项（其 scope 块内不得出现 systemPrompt）
-        mask_seg = block[block.index("BAR[0-9]{4}"):]
-        self.assertIn("              scope:\n                - messages\n", mask_seg)
-        self.assertNotIn("systemPrompt", mask_seg)
-
     def test_put_format_rules_bad_gateway_scope_400(self):
-        """issue #126 review：gateway_scope 枚举校验——非数组/非字符串元素/枚举外值
-        （如 toolinput 笔误）一律 400 不落盘（否则坏值静默渲染进 config.yaml，
-        网关热载才报错，防线太晚）。"""
+        """gateway_scope 类型校验（issue #126 review）：非数组/非字符串元素 400 不落盘。
+        issue #140：枚举白名单随渲染链路撤除——枚举外值（如 toolinput 笔误）不再 400，
+        字段整体变 no-op 合法落盘（无消费方）。"""
         import copy
-        for bad in ("messages", [123], ["toolinput"]):
+        for bad in ("messages", [123]):
             with self.subTest(bad=bad):
                 doc = copy.deepcopy(_FR_FIXTURE)
                 doc["rules"][0]["gateway_scope"] = bad
                 status, _ = _request("PUT", "/dlp-admin/format-rules", token="writer-token", payload=doc)
                 self.assertEqual(status, 400)
-
-    def test_splice_marker_block(self):
-        """splice：替换 BEGIN/END 标记间内容（标记行与区块外保留）；标记缺失 → ValueError（→500）。"""
-        block = "            - regex:\n                action: mask\n"
-        out = admin_api.splice_rendered(_CONFIG_FIXTURE, block)
-        # 标记行保留、渲染内容进入、区块外不动
-        self.assertIn("DLP-FORMAT-RULES BEGIN", out)
-        self.assertIn("DLP-FORMAT-RULES END", out)
-        self.assertIn(block, out)
-        self.assertTrue(out.startswith("routes:\n"))
-        self.assertTrue(out.endswith("host: shim:8080\n"))
-        # 标记缺失 → ValueError（端点转 500）
-        with self.assertRaises(ValueError):
-            admin_api.splice_rendered("routes: []\n", block)
-        # END 在 BEGIN 前 → ValueError
-        bad = "            # <<< DLP-FORMAT-RULES END <<<\n            # >>> DLP-FORMAT-RULES BEGIN >>>\n"
-        with self.assertRaises(ValueError):
-            admin_api.splice_rendered(bad, block)
+        # 枚举外值：#140 起 no-op，200 落盘
+        doc = copy.deepcopy(_FR_FIXTURE)
+        doc["rules"][0]["gateway_scope"] = ["toolinput"]
+        status, body = _request("PUT", "/dlp-admin/format-rules", token="writer-token", payload=doc)
+        self.assertEqual(status, 200, body)
+        self.assertEqual(self._read_json(self.rules_path)["rules"][0]["gateway_scope"], ["toolinput"])
 
     def test_put_format_rules_full_chain(self):
-        """PUT 全链路：校验过 → JSON 落盘 → config.yaml 标记区块渲染替换 → 200。"""
+        """PUT 全链路（issue #140 后形态）：校验过 → JSON 落盘 → 200；config.yaml 内容不变。"""
         import copy
         new_doc = copy.deepcopy(_FR_FIXTURE)
         new_doc["rules"].append({
@@ -690,29 +590,21 @@ class AdminFormatRulesTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(self._read_json(self.rules_path), new_doc)  # JSON 整体替换
         with open(self.config_path, encoding="utf-8") as f:
-            cfg = f.read()
-        # 区块内渲染了新规则（含 rejection body），原有规则也在；标记与区块外不动
-        self.assertIn("- pattern: 'NEWC[0-9]{4}'", cfg)
-        self.assertIn('"code":"secrets.new_c"', cfg)
-        self.assertIn("- pattern: 'TESTA[0-9]{4}'", cfg)
-        self.assertIn("DLP-FORMAT-RULES BEGIN", cfg)
-        self.assertIn("DLP-FORMAT-RULES END", cfg)
-        self.assertIn("host: shim:8080", cfg)
+            self.assertEqual(f.read(), _CONFIG_FIXTURE)  # issue #140：不再渲染，config.yaml 不动
 
-    def test_put_format_rules_missing_markers_500(self):
-        """config.yaml 缺标记 → 500（提示标记）且 JSON/config 均未落盘。"""
+    def test_put_format_rules_missing_markers_still_200(self):
+        """config.yaml 无 DLP-FORMAT-RULES 标记（issue #140 后常态）→ PUT 仍 200 落 JSON，config 不动。"""
         with open(self.config_path, "w", encoding="utf-8") as f:
             f.write("routes: []\n")
         status, body = _request("PUT", "/dlp-admin/format-rules", token="writer-token", payload=_FR_FIXTURE)
-        self.assertEqual(status, 500)
-        self.assertIn("标记", body.get("error", ""))
-        self.assertEqual(self._read_json(self.rules_path), _FR_FIXTURE)  # JSON 未动
+        self.assertEqual(status, 200, body)
+        self.assertEqual(self._read_json(self.rules_path), _FR_FIXTURE)
         with open(self.config_path, encoding="utf-8") as f:
             self.assertEqual(f.read(), "routes: []\n")
 
-    def test_put_format_rules_yaml_write_failure_rollback(self):
-        """config.yaml 写失败 → 500 且 JSON 回滚（.bak 恢复，防 JSON/YAML 双份漂移）。"""
-        # config 所在目录只读：文件可读但 tmp 创建必失败（PermissionError），读路径不受影响
+    def test_put_format_rules_never_writes_config_yaml(self):
+        """sentinel（issue #140）：config.yaml 所在目录只读，PUT 仍 200——证明写入路径不触碰
+        config.yaml（渲染链路若回潮，write_text_atomic 撞只读目录必 500）。"""
         import copy
         ro_dir = os.path.join(self._tmp.name, "ro")
         os.mkdir(ro_dir)
@@ -726,49 +618,19 @@ class AdminFormatRulesTest(unittest.TestCase):
             status, body = _request("PUT", "/dlp-admin/format-rules", token="writer-token", payload=new_doc)
         finally:
             os.chmod(ro_dir, 0o755)  # 恢复权限，否则 tearDown 清理不掉
-        self.assertEqual(status, 500)
-        self.assertIn("已回滚", body.get("error", ""))
-        self.assertEqual(self._read_json(self.rules_path), _FR_FIXTURE)  # JSON 回滚为写前内容
+        self.assertEqual(status, 200, body)
+        self.assertEqual(self._read_json(self.rules_path)["rules"], new_doc["rules"])  # JSON 已落盘
+        with open(admin_api.AGENTGW_CONFIG_PATH, encoding="utf-8") as f:
+            self.assertEqual(f.read(), _CONFIG_FIXTURE)  # config.yaml 未被触碰
 
-    def test_post_render_restores_drift_and_idempotent(self):
-        """POST render（issue #33）：按 JSON 重渲染 config.yaml 标记区块——漂移修复 + 幂等。"""
-        import copy
-        new_doc = copy.deepcopy(_FR_FIXTURE)
-        new_doc["rules"].append({
-            "code": "secrets.new_c", "layer": "L1", "action": "reject", "enabled": True,
-            "message": "new C key", "gateway_patterns": ["NEWC[0-9]{4}"],
-            "shim_patterns": ["NEWC[0-9]{4}"]})
-        status, _ = _request("PUT", "/dlp-admin/format-rules", token="writer-token", payload=new_doc)
-        self.assertEqual(status, 200)
-        with open(self.config_path, encoding="utf-8") as f:
-            baseline = f.read()
-        # 模拟手改漂移：删掉区块里一条渲染条目行
-        drifted = baseline.replace("                  - pattern: 'NEWC[0-9]{4}'\n", "")
-        self.assertNotEqual(drifted, baseline)
-        with open(self.config_path, "w", encoding="utf-8") as f:
-            f.write(drifted)
-        # POST render → 漂移修复（返回渲染进网关的条目数）
+    def test_post_render_endpoint_removed_404(self):
+        """issue #140：POST /dlp-admin/format-rules/render 端点已撤（渲染链路不存在），
+        命中路由兜底 → 404 unknown admin endpoint；config.yaml/JSON 均不动。"""
         status, body = _request("POST", "/dlp-admin/format-rules/render", token="writer-token")
-        self.assertEqual(status, 200)
-        self.assertEqual(body.get("rendered"), 3)
+        self.assertEqual(status, 404)
+        self.assertEqual(self._read_json(self.rules_path), _FR_FIXTURE)
         with open(self.config_path, encoding="utf-8") as f:
-            self.assertEqual(f.read(), baseline)
-        # 再调一次：字节相同（幂等）
-        status, _ = _request("POST", "/dlp-admin/format-rules/render", token="writer-token")
-        self.assertEqual(status, 200)
-        with open(self.config_path, encoding="utf-8") as f:
-            self.assertEqual(f.read(), baseline)
-
-    def test_post_render_bad_json_500(self):
-        """POST render：format-rules.json 损坏（非法 JSON）→ 500 拒绝渲染，config 不动。"""
-        with open(self.rules_path, "w", encoding="utf-8") as f:
-            f.write("{not json")
-        with open(self.config_path, encoding="utf-8") as f:
-            before = f.read()
-        status, _ = _request("POST", "/dlp-admin/format-rules/render", token="writer-token")
-        self.assertEqual(status, 500)
-        with open(self.config_path, encoding="utf-8") as f:
-            self.assertEqual(f.read(), before)
+            self.assertEqual(f.read(), _CONFIG_FIXTURE)
 
     def test_put_format_rules_invalid_400(self):
         """PUT 校验逐条 400：schema 必填、action/layer 枚举、regex 编译、gateway_patterns 禁 Rust 不支持构造。"""
@@ -819,7 +681,8 @@ class AdminFormatRulesTest(unittest.TestCase):
             self.assertEqual(f.read(), _CONFIG_FIXTURE)  # config.yaml 未被触碰
 
     def test_put_format_rules_single_quote_pattern_200(self):
-        """pattern 含单引号（review #3）：YAML 渲染单引号翻倍，渲染后校验不得误判未落文本。"""
+        """pattern 含单引号（review #3 用例保留）：issue #140 后无 YAML 渲染，单引号无需转义——
+        PUT 仅校验 + 落 JSON（200，原文无转义），config.yaml 不动。"""
         import copy
         new_doc = copy.deepcopy(_FR_FIXTURE)
         new_doc["rules"].append({
@@ -828,10 +691,9 @@ class AdminFormatRulesTest(unittest.TestCase):
             "shim_patterns": ["foo'bar[0-9]{3}"]})
         status, body = _request("PUT", "/dlp-admin/format-rules", token="writer-token", payload=new_doc)
         self.assertEqual(status, 200, body)
+        self.assertEqual(self._read_json(self.rules_path), new_doc)  # 原文落盘无转义
         with open(self.config_path, encoding="utf-8") as f:
-            cfg = f.read()
-        self.assertIn("- pattern: 'foo''bar[0-9]{3}'", cfg)  # YAML 单引号标量内 ' 翻倍
-        self.assertIn('"code":"secrets.quote"', cfg)
+            self.assertEqual(f.read(), _CONFIG_FIXTURE)  # config.yaml 不动
 
 
 class WriteJsonAtomicTest(unittest.TestCase):
@@ -982,8 +844,9 @@ class SecretBoundaryNormTest(unittest.TestCase):
     修复：openai_sk/github_token/anthropic_sk 的 shim_patterns 加前置断言 (?<![a-z0-9])（归一化文本上
     的"词首"边界；gateway_patterns 跑原文本无此问题，不动）。
     已知收窄（明示接受）：真 key 紧贴小写字母/数字词尾时（"task sk-abc" 归一化后前置是小写字母）
-    shim 归一化层不再命中（大写前置词仍命中，残余面更窄）——原文形态由网关 `sk-(proj-)?[A-Za-z0-9_\\-]{20,}`
-    兜底，仅"分隔符混淆 + 紧贴小写字母/数字词"的复合形态会漏（现向量集无此形态，见 issue #106 汇报）。
+    shim 归一化层不再命中（大写前置词仍命中，残余面更窄）——原由网关 `sk-(proj-)?[A-Za-z0-9_\\-]{20,}`
+    原文规则兜底；issue #140 起网关层撤除（shim 单点），"分隔符混淆 + 紧贴小写字母/数字词"的
+    复合形态即真实漏检面（现向量集无此形态，见 issue #106 汇报）。
 
     issue #108（全大写前缀三规则同面收口）：aws_key `(?:AKIA|ASIA)[0-9A-Z]{16}`、
     aliyun_ak `LTAI[A-Za-z0-9]{12,}`、private_key `BEGIN[A-Z0-9]*PRIVATEKEY` 前缀全大写，
@@ -995,12 +858,11 @@ class SecretBoundaryNormTest(unittest.TestCase):
     比 #106 收窄更小）。不加尾部断言：真 key 定长段后接大写英文词（"AKIA… IS OLD"）是常见形态，
     尾部断言会把真检出打没，代价不对称。两处钉档见下。
     已知收窄（对称 #106）：真 key 紧贴大写字母/数字词尾（"MY AWS KEY AKIA…"、"phase2 AKIA…"）
-    归一化层不命中，网关原文规则兜底。
+    归一化层不命中——原由网关原文规则兜底；issue #140 起网关层撤除（shim 单点），该形态即真实漏检面。
     残余面（明示接受）：归一化流串首/非大写标点后紧跟全大写拼接（"ASIA PACIFIC…" 串首、
     "REVIEW: A KIA…" 冒号后、"BEGIN PRIVATE KEY ROTATION…" 串首）仍误中——封堵需尾部断言
     （代价见上），概率已压至"全大写文本且前缀词恰在串首/标点后"，待真实误报再动。
-    直接读仓库 deploy/dlp/format-rules.json（同 test_render_block_matches_current_gateway 先例），
-    口径即现网口径。"""
+    直接读仓库 deploy/dlp/format-rules.json，口径即现网口径。"""
 
     @classmethod
     def setUpClass(cls):
@@ -1067,7 +929,8 @@ class SecretBoundaryNormTest(unittest.TestCase):
         self.assertIn("secrets.openai_sk", hits)
 
     def test_key_glued_after_letter_word_documented_gap(self):
-        """已知收窄钉档：key 紧贴字母词尾（"task sk-…"）归一化层不命中（网关原文规则兜底）。
+        """已知收窄钉档：key 紧贴字母词尾（"task sk-…"）归一化层不命中（原由网关原文规则兜底；
+        issue #140 起网关层撤除，shim 单点下该形态即真实漏检面）。
         若后续加强归一化层口径（如双口径管线），本用例需同步翻转到命中。"""
         hits = self._hits("check task sk-a1b2c3d4e5f6g7h8i9j0k1l2m3n4 please")
         self.assertNotIn("secrets.openai_sk", hits)
@@ -1109,8 +972,8 @@ class SecretBoundaryNormTest(unittest.TestCase):
     def test_uppercase_key_glued_after_uppercase_word_documented_gap(self):
         """已知收窄钉档（对称 #106）：真 key 紧贴大写词尾归一化层不命中——
         "MY AWS KEY AKIA…" 归一化后 AKIA 前置 "Y" 被 (?<![A-Z0-9]) 拦。原文形态（带空格/横线）
-        由网关 gateway_patterns 兜底（原文 "KEY AKIA…" 空格分隔直接命中）。若后续加强归一化层口径，
-        本用例需同步翻转到命中。"""
+        原由网关 gateway_patterns 兜底（"KEY AKIA…" 空格分隔直接命中）；issue #140 起网关层撤除，
+        shim 单点下该形态即真实漏检面。若后续加强归一化层口径，本用例需同步翻转到命中。"""
         cases = [
             ("MY AWS KEY AKIAIOSFODNN7EXAMPLE IS OLD", "secrets.aws_key"),
             ("MY ALIYUN AK LTAI5tQp8kN2xYwV7mZbA1Cd IS OLD", "secrets.aliyun_ak"),
@@ -2864,7 +2727,8 @@ class PgBlockTest(unittest.TestCase):
 
 
 class LayerSwitchTest(unittest.TestCase):
-    """分层总开关（issue #40）：l1/l2/response.enabled=false 的三条关闭路径 + l1 渲染联动。
+    """分层总开关（issue #40）：l1/l2/response.enabled=false 的三条关闭路径。
+    issue #140：l1 不再联动渲染 config.yaml（判定 shim 单点），相关断言翻转为「config 不动」。
     fixture：临时 settings/wordlist/format-rules/config.yaml；judge/pg/edm 关掉隔离。
     检测路径覆写 shim_app.*，admin 写路径覆写 admin_api.*（两个模块各自持有路径属性）。"""
 
@@ -2960,9 +2824,9 @@ class LayerSwitchTest(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body["action"].get("reason"), "pass")
 
-    def test_l1_off_secret_passes_and_render_empty(self):
-        """l1.enabled=false → shim 侧 L1 secrets 跳过（先验基线 451）；
-        渲染层 include_l1=False → 格式规则全族不渲染（空串，不含任何 pattern）。"""
+    def test_l1_off_secret_passes(self):
+        """l1.enabled=false → shim 侧 L1 secrets 跳过（先验基线 451）。issue #140：渲染层已撤，
+        l1 只门控 shim 检测侧，config.yaml 不参与。"""
         _, body = self._post_request("我的 key 是 TESTA1234 请收好")
         self.assertEqual(body["action"].get("status_code"), 451)  # 基线：secrets.test_a
         self._fixture["l1"]["enabled"] = False
@@ -2970,10 +2834,6 @@ class LayerSwitchTest(unittest.TestCase):
         status, body = self._post_request("我的 key 是 TESTA1234 请收好")
         self.assertEqual(status, 200)
         self.assertEqual(body["action"].get("reason"), "pass")
-        block = admin_api.render_gateway_block(_FR_FIXTURE["rules"], include_l1=False)
-        self.assertEqual(block, "")
-        self.assertNotIn("TESTA", block)
-        self.assertNotIn("TESTB", block)
 
     def test_missing_sections_default_on(self):
         """settings.json 缺 l1/l2/response 段（旧文件）→ 内置默认 True，三条路径行为不变。"""
@@ -3017,51 +2877,23 @@ class LayerSwitchTest(unittest.TestCase):
         self.assertEqual(out.count("[settings] l1.enabled=false，格式规则层已撤防（密钥拦截敞口）"), 1)
         self.assertEqual(out.count("[settings] l1.enabled=true，格式规则层恢复生效"), 1)
 
-    def test_settings_put_l1_flip_triggers_render(self):
-        """l1 翻转联动渲染（issue #40）：PUT settings 关 l1 → config.yaml 标记区块渲染为空；
-        再开 → 区块恢复渲染；settings 落盘值随之翻转。"""
+    def test_settings_put_l1_flip_no_gateway_render(self):
+        """l1 翻转（issue #140 后形态）：PUT settings 关 l1 → 200 + settings 落盘翻转 +
+        config.yaml 内容不变（不再联动渲染，渲染/回滚联动随 #140 撤除）。"""
+        with open(self.config_path, encoding="utf-8") as f:
+            before = f.read()
         doc = json.loads(json.dumps(self._fixture))
         doc["l1"]["enabled"] = False
         status, body = _request("PUT", "/dlp-admin/settings", token="writer-token", payload=doc)
         self.assertEqual(status, 200, body)
-        cfg = self._read_config()
-        self.assertIn("DLP-FORMAT-RULES BEGIN", cfg)
-        self.assertIn("DLP-FORMAT-RULES END", cfg)
-        self.assertNotIn("TESTA", cfg)              # 标记区块渲染为空
-        self.assertIn("host: shim:8080", cfg)       # 区块外不动
         with open(self.settings_path, encoding="utf-8") as f:
-            self.assertFalse(json.load(f)["l1"]["enabled"])
-        # 再开 → 恢复渲染
+            self.assertFalse(json.load(f)["l1"]["enabled"])  # 落盘翻转
+        self.assertEqual(self._read_config(), before)  # config.yaml 不动
+        # 再开 → 同样 200，config.yaml 仍不动
         doc["l1"]["enabled"] = True
         status, body = _request("PUT", "/dlp-admin/settings", token="writer-token", payload=doc)
         self.assertEqual(status, 200, body)
-        self.assertIn("- pattern: 'TESTA[0-9]{4}'", self._read_config())
-
-    def test_settings_put_l1_flip_render_failure_rollback(self):
-        """l1 翻转但 config.yaml 缺标记 → 500 且 settings 回滚（两侧不留半更新）。"""
-        with open(self.config_path, "w", encoding="utf-8") as f:
-            f.write("routes: []\n")
-        doc = json.loads(json.dumps(self._fixture))
-        doc["l1"]["enabled"] = False
-        status, body = _request("PUT", "/dlp-admin/settings", token="writer-token", payload=doc)
-        self.assertEqual(status, 500)
-        self.assertIn("已回滚", body.get("error", ""))
-        with open(self.settings_path, encoding="utf-8") as f:
-            self.assertTrue(json.load(f)["l1"]["enabled"])  # 回滚为写前 true
-
-    def test_render_endpoints_respect_l1_off(self):
-        """render 端点 + 格式规则保存路径（issue #40 AC）：l1 关时两者渲染均排除整族规则。"""
-        self._fixture["l1"]["enabled"] = False
-        self._write_settings()
-        status, body = _request("POST", "/dlp-admin/format-rules/render", token="writer-token")
-        self.assertEqual(status, 200, body)
-        self.assertEqual(body.get("rendered"), 0)
-        self.assertNotIn("TESTA", self._read_config())
-        # 格式规则保存路径（PUT format-rules）同样排除
-        status, body = _request("PUT", "/dlp-admin/format-rules",
-                                token="writer-token", payload=_FR_FIXTURE)
-        self.assertEqual(status, 200, body)
-        self.assertNotIn("TESTA", self._read_config())
+        self.assertEqual(self._read_config(), before)
 
 
 class KeyRequestResolveWiringTest(unittest.TestCase):

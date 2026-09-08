@@ -33,7 +33,7 @@ export function Ai4sDeepLayerRules() {
         <IconShieldCheck className='size-4' />
         <AlertTitle>纵深层规则（网关内核，只读）</AlertTitle>
         <AlertDescription>
-          主层在 agentgateway（Secrets regex + 商密词表 webhook → Presidio）；本表为网关内核纵深层规则（reject/mask）。
+          主层在 DLP shim（Secrets regex + PII mask + 商密词表 → Presidio，#140 起判定单点）；本表为网关内核纵深层规则（reject/mask）。
           类型与优先级为展示层派生，与主层评估顺序保持一致维护。
         </AlertDescription>
       </Alert>
@@ -41,7 +41,7 @@ export function Ai4sDeepLayerRules() {
       <Card>
         <CardHeader>
           <CardTitle>纵深层规则列表</CardTitle>
-          <CardDescription>命中即按动作处置；维护改词表请同步检查 agentgateway 主层</CardDescription>
+          <CardDescription>命中即按动作处置；维护改词表请同步检查 shim 主层</CardDescription>
         </CardHeader>
         <CardContent>
           {isLoading ? (

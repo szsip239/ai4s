@@ -94,7 +94,7 @@ def record(layer: str, hit=None, score=None, confidence=None, latency_ms=None,
     为管理员自配非用户敏感数据；secrets 命中掩码留头尾；绝无完整原文/上下文）。
     三键同「非 None 才写」纪律。
     admin 配置面审计（layer="admin"）：actor（操作者 email，缺省 id）、op（操作名
-    put_settings/put_wordlist/put_format_rules/render_format_rules/bypass_add/
+    put_settings/put_wordlist/put_format_rules/bypass_add/
     bypass_update/bypass_remove/edm_ingest）、changed（变更键路径注解列表，如
     ["judge.enabled","pg.threshold"]/["terms(3)"]——配置值不落盘：settings 可含
     prompt 等半敏感文本，词表值即机密词，只记「改了哪些键」不记「改成什么」）。

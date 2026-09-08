@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "_comment": "issue #126 promptGuard ContentScope（v1.5.0）tool 通道向量。secrets reject 规则渲染 scope=[systemPrompt, messages, toolInput, toolOutput] 后，tool 调用参数/结果回填/system prompt 内嵌密钥均应 451；messages 为完整消息数组由 dlp-regression toolscope 段直发。",
+  "_comment": "issue #126 promptGuard ContentScope（v1.5.0）tool 通道向量。tool 调用参数/结果回填/system prompt 内嵌密钥均应 451——#140 起判定在 shim webhook 单点（tool 载体扫描），不再依赖网关渲染 scope；messages 为完整消息数组由 dlp-regression toolscope 段直发。",
   "vectors": [
     {
       "name": "toolscope: tool_calls arguments 内嵌密钥",

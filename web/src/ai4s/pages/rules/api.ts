@@ -367,14 +367,14 @@ export function useDeleteRecognizer() {
   });
 }
 
-/** format-rules PUT 整体替换：服务端保存即渲染 agentgateway config 并热重载（失败回滚，两侧不留半更新） */
+/** format-rules PUT 整体替换：保存即热生效（shim 每请求重读 format-rules.json；#140 起不再渲染 agentgateway config） */
 export function usePutFormatRules() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (doc: FormatRulesDoc) => put<FormatRulesDoc>('/format-rules', doc),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: QK.formatRules });
-      toast.success('格式规则已保存，网关配置已渲染并热重载');
+      toast.success('格式规则已保存并热生效');
     },
     onError: onMutError('格式规则保存'),
   });
