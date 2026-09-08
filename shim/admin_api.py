@@ -62,8 +62,9 @@ issue #140：L1 格式规则判定收回 shim 单点——format-rules PUT 只�
 config.yaml（render_gateway_block/splice_rendered/_render_to_config 及 DLP-FORMAT-RULES
 标记区块随网关侧规则一并撤除），POST /dlp-admin/format-rules/render 端点撤除；
 settings PUT 的 l1 联动渲染/回滚同步撤除（l1.enabled 只门控 shim 检测侧，app.py
-每请求热读）。format-rules schema 的 gateway_patterns/gateway_scope 字段保留为 no-op
-（历史文件兼容；#140 起仅 shim_patterns 被 shim 消费）。
+每请求热读）。format-rules schema 的 gateway_scope 字段保留为 no-op（历史文件兼容）；
+gateway_patterns 由 shim 原文直扫通道消费（issue #140 补漏：归一化粘连漏检面兜底，
+见 app.py norm_secret_hits raw 通道）。
 
 与检测路径（/request /response 调用链）完全隔离：admin 平面 fail-closed——
 内省不可达回 503，不适用检测链的 fail-open 分级（契约 docs/contracts/dlp-webhook-shim.md）。
@@ -729,8 +730,9 @@ def _validate_format_rules(data) -> str | None:
     """format-rules JSON 校验（issue #33）：合法返回 None，非法返回具体原因。
     schema：每条 code/layer/action/enabled 必填，action∈{reject,mask}，layer∈{L1,L1.5}；
     全部 patterns 过 re.compile；gateway_patterns 禁 Rust regex 不支持构造（lookaround/backreference）。
-    issue #140：gateway_patterns/gateway_scope 已无消费方（不再渲染 config.yaml），保留为
-    历史文件兼容字段；校验原样保留（防脏数据落盘），仅 gateway_scope 撤掉枚举白名单。"""
+    issue #140：gateway_scope 已无消费方（不再渲染 config.yaml），保留为历史文件兼容字段；
+    gateway_patterns 改由 shim 原文直扫通道消费（app.py norm_secret_hits raw 通道）——Rust 构造
+    禁令原样保留（约束更严无害，且兼容未来任何 RE2 消费方回归），校验整体原样防脏数据落盘。"""
     if not isinstance(data, dict):
         return "format-rules 必须是对象"
     rules = data.get("rules")

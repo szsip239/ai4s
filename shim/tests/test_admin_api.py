@@ -822,11 +822,14 @@ class FormatRulesLoaderTest(unittest.TestCase):
         self.assertIn("JSONDecodeError", out)
 
     def test_rule_without_shim_patterns_not_matched(self):
-        """无 shim_patterns 的规则不参与归一化检测（review #5：删 gateway_patterns 静默回退，漏检面显式可见）。"""
+        """无 shim_patterns 的规则不参与归一化检测（review #5：删 gateway_patterns 静默回退，漏检面显式可见）。
+        issue #140 补漏对称面：仅 gateway_patterns 的规则在 raw 原文直扫通道参与检测（raw 缺省=通道关闭）。"""
         gw_only = [{"code": "secrets.gw_only", "enabled": True, "action": "reject",
                     "gateway_patterns": ["GWONLY[0-9]{4}"]}]  # 无 shim_patterns 键
         norm, _ = shim_app.normalize_hard("token GWONLY1234 here")
         self.assertEqual(shim_app.norm_secret_hits(norm, gw_only), [])
+        self.assertEqual(shim_app.norm_secret_hits(norm, gw_only, raw="token GWONLY1234 here"),
+                         ["secrets.gw_only"])
         gw_mask = [{"code": "pii.gw_only", "enabled": True, "action": "mask",
                     "entity": "ZH_X", "gateway_patterns": ["GWONLY[0-9]{4}"]}]
         self.assertEqual(shim_app.norm_pii_mask_in_text("GWONLY1234", gw_mask), ("GWONLY1234", []))
@@ -843,10 +846,10 @@ class SecretBoundaryNormTest(unittest.TestCase):
     "asking how…"→"…askinghow…" 同命中 github_token `gh[pousr]…`（"gho" 跨词拼接）。
     修复：openai_sk/github_token/anthropic_sk 的 shim_patterns 加前置断言 (?<![a-z0-9])（归一化文本上
     的"词首"边界；gateway_patterns 跑原文本无此问题，不动）。
-    已知收窄（明示接受）：真 key 紧贴小写字母/数字词尾时（"task sk-abc" 归一化后前置是小写字母）
-    shim 归一化层不再命中（大写前置词仍命中，残余面更窄）——原由网关 `sk-(proj-)?[A-Za-z0-9_\\-]{20,}`
-    原文规则兜底；issue #140 起网关层撤除（shim 单点），"分隔符混淆 + 紧贴小写字母/数字词"的
-    复合形态即真实漏检面（现向量集无此形态，见 issue #106 汇报）。
+    已知收窄（issue #140 补漏已兜回）：真 key 紧贴小写字母/数字词尾时（"task sk-abc" 归一化后
+    前置是小写字母）归一化层不再命中——网关层撤除（shim 单点）后该漏检面由 norm_secret_hits
+    的 raw 原文直扫通道（gateway_patterns）兜回（活栈实证 "这个 key sk-ant-…" 200 放行后修复，
+    见 test_raw_channel_cjk_adjacent_glued_keys_hit）；归一化单通道钉档保留作病因记录。
 
     issue #108（全大写前缀三规则同面收口）：aws_key `(?:AKIA|ASIA)[0-9A-Z]{16}`、
     aliyun_ak `LTAI[A-Za-z0-9]{12,}`、private_key `BEGIN[A-Z0-9]*PRIVATEKEY` 前缀全大写，
@@ -857,8 +860,9 @@ class SecretBoundaryNormTest(unittest.TestCase):
     危险粘接只来自大写前驱；小写前驱放行保真 key 检出（"aws key AKIA…" 归一化后前置 "y" 仍命中，
     比 #106 收窄更小）。不加尾部断言：真 key 定长段后接大写英文词（"AKIA… IS OLD"）是常见形态，
     尾部断言会把真检出打没，代价不对称。两处钉档见下。
-    已知收窄（对称 #106）：真 key 紧贴大写字母/数字词尾（"MY AWS KEY AKIA…"、"phase2 AKIA…"）
-    归一化层不命中——原由网关原文规则兜底；issue #140 起网关层撤除（shim 单点），该形态即真实漏检面。
+    已知收窄（对称 #106，issue #140 补漏已兜回）：真 key 紧贴大写字母/数字词尾
+    （"MY AWS KEY AKIA…"、"phase2 AKIA…"）归一化层不命中——同由 raw 原文直扫通道兜回
+    （见 test_uppercase_key_glued_after_uppercase_word_hits_via_raw_channel）。
     残余面（明示接受）：归一化流串首/非大写标点后紧跟全大写拼接（"ASIA PACIFIC…" 串首、
     "REVIEW: A KIA…" 冒号后、"BEGIN PRIVATE KEY ROTATION…" 串首）仍误中——封堵需尾部断言
     （代价见上），概率已压至"全大写文本且前缀词恰在串首/标点后"，待真实误报再动。
@@ -873,6 +877,11 @@ class SecretBoundaryNormTest(unittest.TestCase):
     def _hits(self, text):
         norm, _ = shim_app.normalize_hard(text)
         return shim_app.norm_secret_hits(norm, self.rules)
+
+    def _hits_dual(self, text):
+        """双通道口径（=现网请求路径）：hard 归一化 + raw 原文直扫。"""
+        norm, _ = shim_app.normalize_hard(text)
+        return shim_app.norm_secret_hits(norm, self.rules, raw=text)
 
     def test_long_english_splice_mines_pass(self):
         """5 条拼接雷负例（与 deploy/tests/dlp-vectors.json #106 负例同文）归一化后零命中。"""
@@ -928,12 +937,46 @@ class SecretBoundaryNormTest(unittest.TestCase):
         hits = self._hits("密钥：sk-a1b2c3d4e5f6g7h8i9j0k1l2m3n4")
         self.assertIn("secrets.openai_sk", hits)
 
-    def test_key_glued_after_letter_word_documented_gap(self):
-        """已知收窄钉档：key 紧贴字母词尾（"task sk-…"）归一化层不命中（原由网关原文规则兜底；
-        issue #140 起网关层撤除，shim 单点下该形态即真实漏检面）。
-        若后续加强归一化层口径（如双口径管线），本用例需同步翻转到命中。"""
-        hits = self._hits("check task sk-a1b2c3d4e5f6g7h8i9j0k1l2m3n4 please")
-        self.assertNotIn("secrets.openai_sk", hits)
+    def test_key_glued_after_letter_word_hits_via_raw_channel(self):
+        """issue #140 补漏：key 紧贴字母词尾（"task sk-…"）hard 归一化粘连废掉词首
+        lookbehind（归一化单通道仍漏，作病因钉档保留），raw 原文直扫通道
+        （gateway_patterns，原网关检测面）兜回——shim 单点下检测面不窄于旧网关层。"""
+        text = "check task sk-a1b2c3d4e5f6g7h8i9j0k1l2m3n4 please"
+        self.assertNotIn("secrets.openai_sk", self._hits(text))  # 归一化单通道仍漏（病因钉档）
+        self.assertIn("secrets.openai_sk", self._hits_dual(text))
+
+    def test_raw_channel_cjk_adjacent_glued_keys_hit(self):
+        """issue #140 补漏：中文语境日常粘贴形态——"这个 key sk-ant-…"里英文词 key 的
+        词尾 y 紧邻 skant，归一化通道全漏（活栈实证 200 放行）；raw 通道全兜回。"""
+        cases = [
+            ("这个 key sk-ant-api03-a1b2c3d4e5f6g7h8i9j0 帮我看看", "secrets.anthropic_sk"),
+            ("我的 token ghp_AbCdEfGhIjKlMnOpQrStUvWx 还有效吗", "secrets.github_token"),
+            ("把我的 key sk-ant-api03-x1x2x3x4x5x6x7x8x9x0y1y2y3y4y5y6y7y8y9y 发过去", "secrets.anthropic_sk"),
+        ]
+        for text, code in cases:
+            with self.subTest(code=code, text=text[:16]):
+                self.assertEqual(self._hits(text), [])  # 归一化通道确认漏（病因钉档）
+                self.assertIn(code, self._hits_dual(text))
+
+    def test_raw_channel_negatives_still_pass(self):
+        """raw 直扫不放大误报面：拼接雷/sk 英文词/短占位串/19 位文档占位串（<{20,}）原文均不命中。"""
+        mines = [
+            "The risks include data breaches, compliance failures, and operational disruptions across regions",
+            "skills and tools and workflows are useful for agents",
+            "export SK=sk-test 这样写对吗",
+            "官方文档让把 sk-your-openai-api-key 替换成自己的 key",
+            "今天天气不错，帮我写个周报大纲",
+        ]
+        for text in mines:
+            with self.subTest(text=text[:30]):
+                self.assertEqual(self._hits_dual(text), [])
+
+    def test_raw_channel_digitless_placeholder_hits(self):
+        """raw 通道恢复「密钥形态即涉密」口径：sk- + 24 位纯字母文档占位串命中
+        （gateway_patterns 无数字断言——对齐 judge prompt「占位符形态同样涉密」策略；
+        归一化单通道的数字断言豁免仅属该通道，见 test_digitless_long_tail_no_longer_hits）。"""
+        text = "sk-" + "x" * 24
+        self.assertIn("secrets.openai_sk", self._hits_dual(text))
 
     def test_uppercase_splice_mines_pass(self):
         """8 条全大写拼接雷负例（与 deploy/tests/dlp-vectors.json #108 负例同文）归一化后零命中。
@@ -969,11 +1012,10 @@ class SecretBoundaryNormTest(unittest.TestCase):
             with self.subTest(code=code, text=text[:20]):
                 self.assertIn(code, self._hits(text))
 
-    def test_uppercase_key_glued_after_uppercase_word_documented_gap(self):
-        """已知收窄钉档（对称 #106）：真 key 紧贴大写词尾归一化层不命中——
-        "MY AWS KEY AKIA…" 归一化后 AKIA 前置 "Y" 被 (?<![A-Z0-9]) 拦。原文形态（带空格/横线）
-        原由网关 gateway_patterns 兜底（"KEY AKIA…" 空格分隔直接命中）；issue #140 起网关层撤除，
-        shim 单点下该形态即真实漏检面。若后续加强归一化层口径，本用例需同步翻转到命中。"""
+    def test_uppercase_key_glued_after_uppercase_word_hits_via_raw_channel(self):
+        """对称 #106 收窄由 raw 通道兜回（issue #140 补漏）：真 key 紧贴大写词尾
+        归一化层不命中（"MY AWS KEY AKIA…" 归一化后 AKIA 前置 "Y" 被 (?<![A-Z0-9]) 拦，
+        作病因钉档保留），raw 原文直扫（gateway_patterns，原网关检测面）命中。"""
         cases = [
             ("MY AWS KEY AKIAIOSFODNN7EXAMPLE IS OLD", "secrets.aws_key"),
             ("MY ALIYUN AK LTAI5tQp8kN2xYwV7mZbA1Cd IS OLD", "secrets.aliyun_ak"),
@@ -981,7 +1023,8 @@ class SecretBoundaryNormTest(unittest.TestCase):
         ]
         for text, code in cases:
             with self.subTest(code=code):
-                self.assertNotIn(code, self._hits(text))
+                self.assertNotIn(code, self._hits(text))  # 归一化单通道仍漏（病因钉档）
+                self.assertIn(code, self._hits_dual(text))
 
     def test_uppercase_splice_at_string_start_residual(self):
         """残余误报面钉档（明示接受）：归一化流串首/非大写标点后无大写前驱，(?<![A-Z0-9]) 天然通过，

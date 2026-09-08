@@ -1189,6 +1189,20 @@ def _norm_compiled(rule: dict) -> list:
     return out
 
 
+def _raw_compiled(rule: dict) -> list:
+    """编译单条规则的原文直扫 pattern（gateway_patterns）。坏 pattern 跳过。
+    历史背景（issue #140）：gateway_patterns 原渲染进 agentgateway config.yaml 由网关
+    在原文上直扫；#140 起网关层撤除、判定收回 shim 单点，本字段改由 shim 原文直扫通道
+    消费（归一化通道的 lookbehind 边界会被粘连废掉，原文通道兜回该漏检面）。"""
+    out = []
+    for p in rule.get("gateway_patterns") or []:
+        try:
+            out.append(re.compile(p))
+        except re.error:
+            continue
+    return out
+
+
 def normalize_hard(s: str):
     """返回 (归一化文本, idx_map)：idx_map[归一化下标] = 原文下标。
     逐字符 NFKC（全角→半角/兼容象形字→统一汉字/连字展开）→ 繁→简 → 同形字折叠，
@@ -1207,9 +1221,15 @@ def normalize_hard(s: str):
     return "".join(out), idx
 
 
-def norm_secret_hits(norm: str, rules: list = None) -> list:
-    """归一化文本上的 L1 reject 命中（issue #33 起读 format-rules.json）。
-    逐 pattern 命中逐条 append（同规则多 pattern 全中会出现多次，下游 set 化，行为同原硬编码表）。
+def norm_secret_hits(norm: str, rules: list = None, raw: str = None) -> list:
+    """L1 reject 双通道命中（issue #33 起读 format-rules.json；issue #140 补漏加 raw 通道）。
+    - norm 通道：shim_patterns 跑归一化文本（抗分隔符/全角/繁简变形）；
+    - raw 通道：raw 提供时 gateway_patterns 跑原文直扫——hard 归一化剔除分隔符后
+      相邻词粘连（"这个 key sk-ant-…"→"keyskant…"），shim_patterns 的词首 lookbehind
+      (?<![a-z0-9]) 被前置词尾废掉（活栈实证日常粘贴形态 200 放行）；原文直扫恢复
+      旧网关检测面兜回该漏检。两通道语义不同互不代打：shim_patterns 不会回退去跑原文
+      （review #5），gateway_patterns 也只跑原文（raw 缺省=通道关闭，行为同旧签名）。
+    逐 pattern 命中逐条 append（同规则多通道/多 pattern 全中会重复，下游 set 化）。
     rules 缺省内部加载；调用方在循环中使用时传入一次加载的结果（review #4）。"""
     if rules is None:
         rules = load_format_rules()
@@ -1220,6 +1240,10 @@ def norm_secret_hits(norm: str, rules: list = None) -> list:
         for rgx in _norm_compiled(rule):
             if rgx.search(norm):
                 hits.append(rule["code"])
+        if raw is not None:
+            for rgx in _raw_compiled(rule):
+                if rgx.search(raw):
+                    hits.append(rule["code"])
     return hits
 
 
@@ -1369,7 +1393,7 @@ def mask_response_body(body, l1_enabled: bool = True, l2_enabled: bool = True):
             return found
         norm, _ = normalize_hard(text)
         if l1_enabled:
-            found += norm_secret_hits(norm, rules)
+            found += norm_secret_hits(norm, rules, raw=text)
             _, _, ents = norm_mask_messages([{"role": "assistant", "content": text}], rules)
             found += ents
         if l2_enabled:
@@ -2163,7 +2187,7 @@ class Handler(BaseHTTPRequestHandler):
             _secret_codes = []
             if text:
                 if l1_on:
-                    _secret_codes = norm_secret_hits(norm)
+                    _secret_codes = norm_secret_hits(norm, raw=text)
                     pre_rules += _secret_codes
                 if l2_on:
                     _term_hits = norm_term_hits(norm.lower(), terms)
@@ -2189,7 +2213,7 @@ class Handler(BaseHTTPRequestHandler):
                 for _dt in _decoded:
                     _dnorm, _ = normalize_hard(_dt)
                     if l1_on:
-                        _codes = norm_secret_hits(_dnorm, _rules)
+                        _codes = norm_secret_hits(_dnorm, _rules, raw=_dt)
                         _secret_codes += _codes
                         pre_rules += _codes
                     if l2_on:
