@@ -889,6 +889,26 @@ def _tool_carrier_texts(m: dict) -> list:
     return texts
 
 
+def tool_carrier_secret_hits(messages) -> list:
+    """tool 载体 L1 红线命中（issue #140 补漏）：agentgateway promptGuard webhook 恒默认
+    scope（systemPrompt+messages）——assistant tool_calls arguments（toolInput）不进
+    webhook body，/request 链路结构性看不到该载体（上游硬限制）；/classify extAuthz
+    includeRequestBody 收完整原始 body，是栈内唯一可见位置，由该端点调本函数兜底。
+    只扫载体字段（_tool_carrier_texts），content 正文归 webhook 面不重复扫。
+    每载体文本双通道（hard 归一化 + raw 原文直扫），返回去重排序的规则码列表。"""
+    rules = load_format_rules()
+    hits = set()
+    for m in messages or []:
+        if not isinstance(m, dict):
+            continue
+        for t in _tool_carrier_texts(m):
+            if not t:
+                continue
+            norm, _ = normalize_hard(t)
+            hits.update(norm_secret_hits(norm, rules, raw=t))
+    return sorted(hits)
+
+
 def extract_text(messages) -> str:
     """请求侧检测面文本抽取：各消息 content（str / text 段列表）+ 工具载体
     （tool_calls arguments / Anthropic tool_use input / tool_result content，issue #139）。
@@ -1993,9 +2013,45 @@ class Handler(BaseHTTPRequestHandler):
             if not self._local_guard():
                 return
             # auto 智能路由（issue #117 真实分类器；#115 spike 桩已退役）：
-            # agentgateway extAuthz HTTP 授权服务形态。协议语义不变：2xx=放行（本端点只
-            # 分类不鉴权，守卫通过后任何输入都 200，检测语义上永不阻断——非 2xx 会被
-            # 网关当 deny 决策）；
+            # agentgateway extAuthz HTTP 授权服务形态。协议语义：2xx=放行；非 2xx 会被
+            # 网关当 deny 决策直回客户端（issue #140 补漏起唯一例外=tool 载体 L1 红线
+            # 命中返 451，见下）。
+            try:
+                length = _body_length(self.headers)
+                payload = json.loads(self.rfile.read(length) or b"{}")
+                model = payload.get("model") if isinstance(payload, dict) else None
+            except Exception:
+                payload, model = {}, None
+            resolved = None
+            settings = load_settings()
+            # issue #140 补漏：tool 载体 L1 红线兜底扫描。agentgateway promptGuard webhook
+            # 恒默认 scope（systemPrompt+messages，上游硬限制 "webhook guards always inspect
+            # the default scope"）——assistant tool_calls arguments（toolInput）不进 webhook
+            # body，/request 链路结构性漏检该载体（dlp-regression toolscope 段实证）；本端点
+            # extAuthz includeRequestBody 收完整原始 body，是栈内唯一可见位置。
+            # 只扫载体字段（content 正文归 webhook 面）；l1 总开关与 key 绕行语义同 /request。
+            if isinstance(payload, dict) and payload.get("messages"):
+                if setting_value(settings, "l1", "enabled", "L1_ENABLED", True):
+                    _bp = self._bypass_entry()
+                    if _bp and bypass_keys.covers(_bp, "l1"):
+                        self._bypass_audit(payload, "entry=/classify tool 载体 L1 扫描按 key 绕行")
+                    else:
+                        _chits = tool_carrier_secret_hits(payload["messages"])
+                        if _chits:
+                            _cnorm = normalize_hard("\n".join(
+                                t for m in payload["messages"] if isinstance(m, dict)
+                                for t in _tool_carrier_texts(m)))[0]
+                            shadow_log.record(
+                                "block", hit=True, blocked=True, rule_ids=_chits,
+                                model=model, side="request",
+                                key_hash=key_hash_from_headers(self.headers),
+                                excerpts=block_excerpts(_cnorm, [], [], _chits) or None)
+                            print(f"[dlp.block] 451 via=classify-toolcarrier rules={','.join(_chits)}",
+                                  flush=True)
+                            self._json(451, {"error": {
+                                "message": f"Blocked by ai4s DLP: confidential term detected ({', '.join(_chits)})",
+                                "type": "content_policy_violation", "code": _chits[0]}})
+                            return
             # 改写结论经响应头 x-resolved-model 回传（网关同路由 ai.transformations CEL
             # 读 extauthz.resolved_model 改写 model，缺头回退原值 + modelAliases
             # auto→gpt-5.6-luna 静态兜底）。
@@ -2006,14 +2062,6 @@ class Handler(BaseHTTPRequestHandler):
             # 无头回退原 model 语义等价）。enabled=true 的每个 auto 请求落一条
             # shadow_log layer="router" 决策条（无原文无会话 key，供阈值校准回放与
             # router 层异常率巡检）。
-            try:
-                length = _body_length(self.headers)
-                payload = json.loads(self.rfile.read(length) or b"{}")
-                model = payload.get("model") if isinstance(payload, dict) else None
-            except Exception:
-                payload, model = {}, None
-            resolved = None
-            settings = load_settings()
             if model == "auto" and setting_value(settings, "routing", "enabled", "ROUTING_ENABLED", False):
                 r = route_resolve(payload, self.headers, settings)
                 resolved = r["resolved_model"]

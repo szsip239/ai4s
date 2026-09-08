@@ -80,6 +80,11 @@ routes:
                 headers:
                   x-model: llmRequest.model
                   authorization: 'request.headers["authorization"]'
+              # issue #140 补漏调研：webhook 上送恒为默认 scope（systemPrompt+messages）——
+              # assistant 消息 tool_calls arguments（toolInput）不进 webhook body，shim 载体
+              # 提取拿不到即漏检；agentgateway 硬限制（"webhook guards always inspect the
+              # default scope"），scope 字段仅 regex/bedrockGuardrails 支持。
+              # tool 载体红线改由 extAuthz /classify 顺带扫描兜底（shim 侧实现）。
           # 响应侧（issue #23）：模型应答过 shim /response，命中即 mask（不 451，避免员工看到莫名错误）；
           # fail-open 同契约分级；流式应答覆盖见 streaming 段
           response:
