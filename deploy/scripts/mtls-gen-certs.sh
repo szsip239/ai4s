@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 # ai4s mTLS 测试证书生成（issue #28，幂等）。
-# 产物全部在 deploy/.local/mtls/（gitignored）：
-#   ca.crt/ca.key          测试 CA（客户端证书的信任根）
-#   server.crt/server.key  网关服务端证书（CN=localhost，SAN localhost/127.0.0.1）
-#   client-ok.crt/.key     合法客户端证书（CA 签发）
-#   wrong-ca.crt/.key      对照组：另一个不被信任的 CA 签发的客户端证书
+# 产物分两处（均 gitignored）：
+#   deploy/.local/mtls/          仅容器挂载所需：ca.crt / server.crt / server.key
+#   deploy/.local/mtls-private/  其余私钥与客户端材料：ca.key（可签发任意设备证书）、
+#                                client-ok.crt/.key（合法客户端）、wrong-ca/wrong-client（负面对照组）
+# 私钥不留在挂载目录：agentgateway 容器只需三件套，ca.key 随目录挂载等于把签发权交给容器。
 set -euo pipefail
 cd "$(dirname "$0")/.."
 OUT=".local/mtls"
-mkdir -p "$OUT"
+PRIV=".local/mtls-private"
+mkdir -p "$OUT" "$PRIV"
 cd "$OUT"
 
-if [ -f ca.crt ] && [ -f client-ok.crt ] && [ -f wrong-ca.crt ]; then
-  echo "已存在，跳过（删除 $OUT 后重跑可重新生成）"
+if [ -f ca.crt ] && [ -f server.crt ] && [ -f "../mtls-private/ca.key" ]; then
+  echo "已存在，跳过（删除 $OUT 与 $PRIV 后重跑可重新生成）"
   exit 0
 fi
 
@@ -56,5 +57,11 @@ openssl x509 -req -in wrong-client.csr -CA wrong-ca.crt -CAkey wrong-ca.key -CAc
 rm -f wrong-client.csr wrong-ext.cnf
 
 chmod 600 *.key
-echo "完成：$(pwd)"
+
+# 私钥与客户端材料移出容器挂载目录（ca.key 签发权、客户端身份不交给 agentgateway 容器）
+mv -f ca.key ca.srl client-ok.crt client-ok.key wrong-ca.crt wrong-ca.key wrong-ca.srl wrong-client.crt wrong-client.key "../mtls-private/" 2>/dev/null || true
+
+echo "完成：容器挂载 $(pwd)（仅 ca.crt/server.crt/server.key）"
 ls -1 *.crt *.key
+echo "私钥与客户端材料：$(cd ../mtls-private && pwd)"
+ls -1 ../mtls-private
