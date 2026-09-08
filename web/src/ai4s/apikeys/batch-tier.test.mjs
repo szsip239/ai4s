@@ -44,7 +44,7 @@ test('collectActiveProfiles: 去重含未设档', () => {
   assert.ok(tiers.includes('体验档') && tiers.includes('标准档') && tiers.includes(NO_PROFILE));
 });
 
-test('templateToProfileInput: quota 拷贝 + cost 字符串化 + period 缺省补齐', () => {
+test('templateToProfileInput: quota 拷贝 + cost 字符串化 + period 缺省补齐（issue #138 起全字段形状）', () => {
   const out = templateToProfileInput({
     id: 't1',
     name: '高档',
@@ -52,16 +52,57 @@ test('templateToProfileInput: quota 拷贝 + cost 字符串化 + period 缺省�
   });
   assert.deepEqual(out, {
     name: '高档',
+    modelMappings: [],
+    channelIDs: null,
+    channelTags: null,
+    channelTagsMatchMode: 'any',
+    modelIDs: null,
+    loadBalanceStrategy: null,
     quota: {
       requests: 100000,
       totalTokens: null,
       cost: '500',
-      period: { type: 'calendar_duration', calendarDuration: { unit: 'month' } },
+      period: { type: 'calendar_duration', pastDuration: null, calendarDuration: { unit: 'month' } },
     },
   });
 });
 
-test('templateToProfileInput: past_duration 模板带 pastDuration；无 quota 退化为 null', () => {
+test('templateToProfileInput: 渠道/模型约束全字段透传（issue #138：换入体验档不得丢 channelIDs/modelIDs）', () => {
+  const out = templateToProfileInput({
+    id: 't0',
+    name: '体验档',
+    profile: {
+      modelMappings: [{ from: 'gpt-5', to: 'gpt-5.6-luna' }],
+      channelIDs: [2, 4, 7],
+      channelTags: ['订阅'],
+      channelTagsMatchMode: 'all',
+      modelIDs: ['gpt-5.6-luna'],
+      loadBalanceStrategy: 'round_robin',
+      quota: { totalTokens: 75000000, cost: 50, period: { type: 'calendar_duration', calendarDuration: { unit: 'month' } } },
+    },
+  });
+  assert.deepEqual(out.modelMappings, [{ from: 'gpt-5', to: 'gpt-5.6-luna' }]);
+  assert.deepEqual(out.channelIDs, [2, 4, 7]);
+  assert.deepEqual(out.channelTags, ['订阅']);
+  assert.equal(out.channelTagsMatchMode, 'all');
+  assert.deepEqual(out.modelIDs, ['gpt-5.6-luna']);
+  assert.equal(out.loadBalanceStrategy, 'round_robin');
+});
+
+test('templateToProfileInput: 缺省兜底对齐 shim load_tier_profile（modelMappings→[]、channelTagsMatchMode→any）', () => {
+  const out = templateToProfileInput({
+    id: 't4',
+    name: '兜底档',
+    profile: { modelMappings: null, channelTagsMatchMode: null, quota: null },
+  });
+  assert.deepEqual(out.modelMappings, []);
+  assert.equal(out.channelTagsMatchMode, 'any');
+  // 空串同 null 处理（活栈实测 channelTagsMatchMode 可回落空串，前端 zod 缺省语义=any）
+  const empty = templateToProfileInput({ id: 't5', name: '空串档', profile: { channelTagsMatchMode: '', quota: null } });
+  assert.equal(empty.channelTagsMatchMode, 'any');
+});
+
+test('templateToProfileInput: past_duration 带 pastDuration 且不臆造 calendar 值；无 quota 按 shim 形状落全空 quota', () => {
   const withPast = templateToProfileInput({
     id: 't2',
     name: '计时档',
@@ -69,7 +110,24 @@ test('templateToProfileInput: past_duration 模板带 pastDuration；无 quota �
   });
   assert.equal(withPast.quota.period.type, 'past_duration');
   assert.deepEqual(withPast.quota.period.pastDuration, { value: 1, unit: 'hour' });
+  // shim：calendarDuration 缺省兜底只对 calendar 类模板生效，past_duration 模板不得臆造 calendar 值
+  assert.equal(withPast.quota.period.calendarDuration, null);
 
+  // shim load_tier_profile：模板无 quota 时仍落 quota 骨架（全 null 限额 + period 缺省），非 quota:null
   const noQuota = templateToProfileInput({ id: 't3', name: '空档', profile: null });
-  assert.deepEqual(noQuota, { name: '空档', quota: null });
+  assert.deepEqual(noQuota, {
+    name: '空档',
+    modelMappings: [],
+    channelIDs: null,
+    channelTags: null,
+    channelTagsMatchMode: 'any',
+    modelIDs: null,
+    loadBalanceStrategy: null,
+    quota: {
+      requests: null,
+      totalTokens: null,
+      cost: null,
+      period: { type: 'calendar_duration', pastDuration: null, calendarDuration: { unit: 'month' } },
+    },
+  });
 });

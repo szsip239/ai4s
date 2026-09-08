@@ -74,6 +74,8 @@ export function useBatchTierKeys(projectId?: string) {
   });
 }
 
+// issue #138：profile 全字段（对齐 shim PROFILE_TEMPLATES_QUERY）——updateAPIKeyProfiles 全量替换语义，
+// 查询少取字段=换档静默丢渠道/模型约束（体验档 channelIDs/modelIDs 即在此丢过）
 const BATCH_TIER_TEMPLATES_QUERY = `
   query Ai4sBatchTierTemplates {
     apiKeyProfileTemplates(first: 100) {
@@ -84,6 +86,12 @@ const BATCH_TIER_TEMPLATES_QUERY = `
           description
           profile {
             name
+            modelMappings { from to }
+            channelIDs
+            channelTags
+            channelTagsMatchMode
+            modelIDs
+            loadBalanceStrategy
             quota {
               requests
               totalTokens
@@ -105,7 +113,7 @@ export interface BatchTierTemplateNode extends BatchTierTemplate {
   description?: string | null;
 }
 
-/** 目标档模板列表（限额档=quota 模板，体验档/标准档/高档…） */
+/** 目标档模板列表（限额档=profile 快照模板，体验档/标准档/高档…；含渠道/模型约束字段，issue #138） */
 export function useBatchTierTemplates(projectId?: string) {
   return useQuery({
     queryKey: ['ai4sBatchTierTemplates', projectId],

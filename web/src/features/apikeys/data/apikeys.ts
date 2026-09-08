@@ -22,8 +22,10 @@ import { apiKeyConnectionSchema, apiKeyProfileQuotaUsageSchema, apiKeyProfileTem
 
 const NOAUTH_API_KEY_TYPE = 'noauth';
 
-// Dynamic GraphQL query builders
-function buildApiKeysQuery(permissions: { canViewUsers: boolean }) {
+// Dynamic GraphQL query builders（export 供 data 层查询字段测试，见 apikeys-query.test.mjs）
+// issue #138：列表查询不请求 key——axonhub 对每行返回完整明文，列表批量拉取=明文批量下发面；
+// 明文只走单条路径（buildApiKeyQuery「查看 key」对话框 / 创建 / 轮换响应）
+export function buildApiKeysQuery(permissions: { canViewUsers: boolean }) {
   const userFields = permissions.canViewUsers
     ? `
           user {
@@ -41,7 +43,6 @@ function buildApiKeysQuery(permissions: { canViewUsers: boolean }) {
             id
             createdAt
             updatedAt${userFields}
-            key
             name
             type
             status
@@ -62,7 +63,7 @@ function buildApiKeysQuery(permissions: { canViewUsers: boolean }) {
   `;
 }
 
-function buildApiKeyQuery(permissions: { canViewUsers: boolean }) {
+export function buildApiKeyQuery(permissions: { canViewUsers: boolean }) {
   const userFields = permissions.canViewUsers
     ? `
       user {
@@ -439,7 +440,7 @@ export function useApiKeys(
   });
 }
 
-export function useApiKey(id: string) {
+export function useApiKey(id: string, options?: { enabled?: boolean }) {
   const { t } = useTranslation();
   const { handleError } = useErrorHandler();
   const permissions = useRequestPermissions();
@@ -458,7 +459,8 @@ export function useApiKey(id: string) {
         throw error;
       }
     },
-    enabled: !!id,
+    // options.enabled=false 供刻意单条明文路径延迟拉取（点「查看/登记」才取，issue #138）
+    enabled: !!id && (options?.enabled ?? true),
   });
 }
 

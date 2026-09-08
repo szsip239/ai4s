@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
-import { IconEye, IconEyeOff } from '@tabler/icons-react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -18,7 +17,6 @@ export function ApiKeysEditDialog() {
   const { isDialogOpen, closeDialog, selectedApiKey } = useApiKeysContext();
   const updateApiKey = useUpdateApiKey();
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [showApiKey, setShowApiKey] = useState(false);
   const [dialogContent, setDialogContent] = useState<HTMLDivElement | null>(null);
   const [ipRestrictionEnabled, setIPRestrictionEnabled] = useState(false);
   const [ipInput, setIpInput] = useState('');
@@ -143,20 +141,6 @@ export function ApiKeysEditDialog() {
                   <FormMessage />
                 </FormItem>
               )}
-            </div>
-            <div className='space-y-4'>
-              <div>
-                <div className='flex items-center justify-between'>
-                  <label className='text-muted-foreground text-sm font-medium'>{t('apikeys.dialogs.fields.key.label')}</label>
-                  <Button type='button' variant='ghost' size='sm' onClick={() => setShowApiKey(!showApiKey)} className='h-6 px-2'>
-                    {showApiKey ? <IconEyeOff className='h-3 w-3' /> : <IconEye className='h-3 w-3' />}
-                    <span className='ml-1 text-xs'>{showApiKey ? t('apikeys.actions.hide') : t('apikeys.actions.show')}</span>
-                  </Button>
-                </div>
-                <p className='text-foreground mt-1 font-mono text-sm break-all'>
-                  {showApiKey ? selectedApiKey?.key : '••••••••••••••••••••••••••••••••'}
-                </p>
-              </div>
             </div>
             <DialogFooter className='flex-col items-stretch gap-2 sm:flex-row sm:items-center sm:justify-end'>
               <div className='flex w-full gap-2 sm:w-auto'>

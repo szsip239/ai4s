@@ -1,7 +1,7 @@
 import React from 'react';
 import { DotsHorizontalIcon } from '@radix-ui/react-icons';
 import { Row } from '@tanstack/react-table';
-import { IconUserOff, IconUserCheck, IconEdit, IconSettings, IconArchive, IconCheck, IconRefresh } from '@tabler/icons-react';
+import { IconUserOff, IconUserCheck, IconEdit, IconEye, IconSettings, IconArchive, IconCheck, IconRefresh } from '@tabler/icons-react';
 import { BarChart3 } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { usePermissions } from '@/hooks/usePermissions';
@@ -31,6 +31,12 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
   const handleEdit = (apiKey: ApiKey) => {
     setOpen(false);
     setTimeout(() => openDialog('edit', apiKey), 0);
+  };
+
+  // 查看明文（issue #138：列表不含明文后唯一入口；对话框内单条查询刻意拉取）
+  const handleView = (apiKey: ApiKey) => {
+    setOpen(false);
+    setTimeout(() => openDialog('view', apiKey), 0);
   };
 
   const handleStatusChange = (apiKey: ApiKey) => {
@@ -72,6 +78,10 @@ export function DataTableRowActions({ row }: DataTableRowActionsProps) {
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align='end' className='w-[160px]'>
+          <DropdownMenuItem onClick={() => handleView(apiKey)}>
+            <IconEye className='mr-2 h-4 w-4' />
+            {t('apikeys.actions.view')}
+          </DropdownMenuItem>
           <DropdownMenuItem onClick={handleViewChart}>
             <BarChart3 className='mr-2 h-4 w-4' />
             {t('apikeys.actions.viewTokenChart')}

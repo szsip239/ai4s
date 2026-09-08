@@ -9,6 +9,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { MaskedCodeBlock, MaskedCodeBlockCopyButton, highlightMaskedCode } from '@/components/ai-elements/masked-code-block';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useApiKeysContext } from '../context/apikeys-context';
+import { useApiKey } from '../data/apikeys';
 
 function CopyBaseUrlButton({ baseUrl }: { baseUrl: string }) {
   const { t } = useTranslation();
@@ -39,13 +40,18 @@ export function ApiKeysViewDialog() {
   const [isVisible, setIsVisible] = useState(false);
   const [preRenderedCode, setPreRenderedCode] = useState<Record<string, { light: string; dark: string }>>({});
 
-  const apiKey = selectedApiKey?.key || '';
-  const maskedApiKey = selectedApiKey?.key ? selectedApiKey.key.slice(0, 3) + '...' + selectedApiKey.key.slice(-4) : '';
+  // issue #138：列表查询不再返回明文——打开对话框时按 id 单条查询（刻意单条明文路径）；
+  // 创建/轮换刚产出的新明文已在上下文里则直接用，不必等查询
+  const { data: apiKeyDetail } = useApiKey(isDialogOpen.view ? selectedApiKey?.id || '' : '');
+  const keyValue = selectedApiKey?.key || apiKeyDetail?.key || '';
+
+  const apiKey = keyValue;
+  const maskedApiKey = keyValue ? keyValue.slice(0, 3) + '...' + keyValue.slice(-4) : '';
 
   const currentOrigin = typeof window !== 'undefined' ? window.location.origin : 'http://localhost:3000';
 
   const codeExamples = useMemo(() => {
-    if (!selectedApiKey?.key) return {};
+    if (!keyValue) return {};
 
     return {
       codex: {
@@ -216,10 +222,10 @@ response = client.models.generate_content(
 print(response.text)`
       }
     };
-  }, [selectedApiKey?.key, apiKey, maskedApiKey]);
+  }, [keyValue, apiKey, maskedApiKey]);
 
   useEffect(() => {
-    if (!selectedApiKey?.key || Object.keys(codeExamples).length === 0) return;
+    if (!keyValue || Object.keys(codeExamples).length === 0) return;
 
     const languages: Record<string, 'bash' | 'python'> = {
       codex: 'bash',
@@ -243,16 +249,16 @@ print(response.text)`
     };
 
     renderAllCodeBlocks();
-  }, [selectedApiKey?.key, codeExamples]);
+  }, [keyValue, codeExamples]);
 
   const copyToClipboard = () => {
-    if (selectedApiKey?.key) {
-      navigator.clipboard.writeText(selectedApiKey.key);
+    if (keyValue) {
+      navigator.clipboard.writeText(keyValue);
       toast.success(t('apikeys.messages.copied'));
     }
   };
 
-  const maskedKey = selectedApiKey?.key ? selectedApiKey.key.replace(/./g, '*').slice(0, -4) + selectedApiKey.key.slice(-4) : '';
+  const maskedKey = keyValue ? keyValue.replace(/./g, '*').slice(0, -4) + keyValue.slice(-4) : '';
 
   return (
     <Dialog open={isDialogOpen.view} onOpenChange={() => closeDialog()}>
@@ -277,12 +283,12 @@ print(response.text)`
             <label className='text-sm font-medium'>{t('apikeys.columns.key')}</label>
             <div className='mt-1 flex items-center space-x-2'>
               <code className='bg-muted flex-1 rounded-md p-3 font-mono text-sm break-all'>
-                {isVisible ? selectedApiKey?.key : maskedKey}
+                {keyValue ? (isVisible ? keyValue : maskedKey) : t('common.loading')}
               </code>
-              <Button variant='outline' size='sm' onClick={() => setIsVisible(!isVisible)} className='flex-shrink-0'>
+              <Button variant='outline' size='sm' onClick={() => setIsVisible(!isVisible)} className='flex-shrink-0' disabled={!keyValue}>
                 {isVisible ? <EyeOff className='h-4 w-4' /> : <Eye className='h-4 w-4' />}
               </Button>
-              <Button variant='outline' size='sm' onClick={copyToClipboard} className='flex-shrink-0'>
+              <Button variant='outline' size='sm' onClick={copyToClipboard} className='flex-shrink-0' disabled={!keyValue}>
                 <Copy className='h-4 w-4' />
               </Button>
             </div>

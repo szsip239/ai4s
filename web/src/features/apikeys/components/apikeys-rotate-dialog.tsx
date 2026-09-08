@@ -27,7 +27,8 @@ export function ApiKeysRotateDialog() {
 
     try {
       const result = await rotateApiKey.mutateAsync(selectedApiKey.id);
-      setNewKey(result.key);
+      // schema 的 key 自 issue #138 起为可选（列表查询不返回）；轮换响应恒带新明文，缺失时按未取到处理
+      setNewKey(result.key ?? null);
       // Update the selected API key with the new key
       setSelectedApiKey({ ...selectedApiKey, key: result.key });
     } catch {

@@ -27,7 +27,8 @@ export const apiKeySchema = z.object({
   createdAt: z.coerce.date(),
   updatedAt: z.coerce.date(),
   user: userSchema.partial().optional().nullable(),
-  key: z.string(),
+  // issue #138：列表查询不再返回明文（批量明文下发面），key 仅单条查询/创建/轮换响应携带
+  key: z.string().optional(),
   name: z.string(),
   type: apiKeyTypeSchema,
   status: apiKeyStatusSchema,

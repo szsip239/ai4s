@@ -2,7 +2,9 @@
  * 批量配额换档纯逻辑（issue #64）：命中筛选与模板→profile 入参转换。
  * 换档语义复用 issue #19 审批路径（shim/alert_poller.py apply_tier）：档位是 key 创建时
  * 从模板拷贝的快照而非引用，改模板不回溯存量 key——本模块服务存量调档。
- * profile 入参只带 name+quota：限额档=配额模板，不含渠道/模型约束（与 alert_poller 一致）。
+ * issue #138：profile 入参全字段透传（channelIDs/channelTags/channelTagsMatchMode/modelIDs/
+ * loadBalanceStrategy/modelMappings 一个不落）——体验档等带渠道/模型约束，updateAPIKeyProfiles
+ * 全量替换语义下丢字段=换档静默丢限制；形状与兜底细节照抄 shim alert_poller.load_tier_profile。
  */
 
 /** 参与换档的 key 最小形状（GraphQL 返回子集） */
@@ -14,11 +16,17 @@ export interface BatchTierKey {
   profiles?: { activeProfile?: string | null } | null;
 }
 
-/** 限额档模板最小形状（apiKeyProfileTemplates 返回子集） */
+/** 限额档模板形状（apiKeyProfileTemplates 返回子集；profile 全字段，对齐 shim PROFILE_TEMPLATES_QUERY） */
 export interface BatchTierTemplate {
   id: string;
   name: string;
   profile?: {
+    modelMappings?: { from: string; to: string }[] | null;
+    channelIDs?: number[] | null;
+    channelTags?: string[] | null;
+    channelTagsMatchMode?: string | null;
+    modelIDs?: string[] | null;
+    loadBalanceStrategy?: string | null;
     quota?: {
       requests?: number | null;
       totalTokens?: number | null;
@@ -66,26 +74,36 @@ export function collectActiveProfiles(keys: BatchTierKey[]): string[] {
 }
 
 /**
- * 模板 → UpdateAPIKeyProfilesInput.profiles 的单条入参。
- * 对齐 alert_poller.apply_tier：quota.cost 转字符串（GraphQL DecimalInput）；
- * period 缺省补 calendar_duration/month；模板用 past_duration 时带上 pastDuration。
+ * 模板 → UpdateAPIKeyProfilesInput.profiles 的单条入参（issue #138 起与 shim
+ * alert_poller.load_tier_profile 同形状同兜底）：
+ * - modelMappings 空兜底 []（落库 null 会让前端 zod 必填数组解析崩，shim issue #81 教训）；
+ * - channelTagsMatchMode 空/空串兜底 'any'（对齐前端 zod 缺省语义，shim issue #83）；
+ * - quota.cost 转字符串（GraphQL DecimalInput）；period.type 缺省 calendar_duration；
+ * - calendarDuration 缺省兜底 {unit:'month'} 只对 calendar 类模板生效，past_duration 不臆造 calendar 值；
+ * - 模板无 quota 时仍落全空 quota 骨架（shim 同款，服务端已验证接受）。
  */
 export function templateToProfileInput(template: BatchTierTemplate) {
-  const quota = template.profile?.quota;
-  if (!quota) {
-    return { name: template.name, quota: null };
-  }
-  const period = quota.period;
+  const prof = template.profile ?? {};
+  const quota = prof.quota ?? {};
+  const period = quota.period ?? {};
+  const periodType = period.type ?? 'calendar_duration';
+  const calendarDuration = period.calendarDuration ?? (periodType === 'calendar_duration' ? { unit: 'month' } : null);
   return {
     name: template.name,
+    modelMappings: prof.modelMappings ?? [],
+    channelIDs: prof.channelIDs ?? null,
+    channelTags: prof.channelTags ?? null,
+    channelTagsMatchMode: prof.channelTagsMatchMode || 'any',
+    modelIDs: prof.modelIDs ?? null,
+    loadBalanceStrategy: prof.loadBalanceStrategy ?? null,
     quota: {
       requests: quota.requests ?? null,
       totalTokens: quota.totalTokens ?? null,
       cost: quota.cost != null ? String(quota.cost) : null,
       period: {
-        type: period?.type ?? 'calendar_duration',
-        calendarDuration: period?.calendarDuration ?? { unit: 'month' },
-        ...(period?.pastDuration ? { pastDuration: period.pastDuration } : {}),
+        type: periodType,
+        pastDuration: period.pastDuration ?? null,
+        calendarDuration,
       },
     },
   };

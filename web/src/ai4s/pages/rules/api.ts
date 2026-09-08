@@ -501,3 +501,35 @@ export function useDeleteBypassKey() {
     onError: onMutError('绕行条目删除'),
   });
 }
+
+/**
+ * 白名单服务端匹配（issue #138）：候选 keyId → 命中条目（entryId=哈希，不回明文）。
+ * 替代原「浏览器拉全量 key 明文算 SHA-256 比对」的批量明文面——前端只发 keyId 列表，
+ * 哈希比对在 shim 侧完成；调用方无 read_api_keys scope 时 shim 拒 403（面板已按 read_api_keys
+ * 门控，此处的 DlpApiError 归一是兜底）。
+ */
+export interface BypassKeyMatch {
+  keyId: string;
+  entryId: string;
+  label: string;
+  scope: BypassScope;
+  enabled: boolean;
+}
+
+export interface BypassKeyMatchDoc {
+  matches: BypassKeyMatch[];
+}
+
+/** matches → keyId 集合：候选下拉里「已登记」置灰的判定依据 */
+export function matchedKeyIdSet(matches: BypassKeyMatch[]): Set<string> {
+  return new Set(matches.map((m) => m.keyId));
+}
+
+export function useBypassKeyMatch(keyIds: string[]) {
+  return useQuery({
+    // 挂在 bypassKeys 前缀下：名单增删 invalidate 后匹配状态同步重取
+    queryKey: [...QK.bypassKeys, 'match', keyIds],
+    queryFn: () => post<BypassKeyMatchDoc>('/bypass-keys/match', { keyIds }),
+    enabled: keyIds.length > 0,
+  });
+}

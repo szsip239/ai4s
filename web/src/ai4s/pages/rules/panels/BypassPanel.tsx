@@ -1,13 +1,19 @@
 /**
  * 白名单 Key 面板（原 Key 绕行，issue #129；改名 + 下拉登记随「开关与阈值」tab 收口）：
- * 可信 Key 绕开 DLP 检测的管理入口。登记从既有 Key 列表按名称搜索选择（不再手贴明文），
- * 明文仅本次提交用于服务端算 SHA-256，名单只存哈希。两种粒度：全部层（含网关 L1 密钥红线——
+ * 可信 Key 绕开 DLP 检测的管理入口。登记从既有 Key 列表按名称搜索选择（不手贴明文、不批量拉明文），
+ * 「已登记」标记由服务端匹配（POST /dlp-admin/bypass-keys/match，issue #138）给出——
+ * 不再浏览器拉全量明文算 SHA-256；明文只在点击登记这一刻单条拉取（同「查看 key」对话框的
+ * 刻意单条路径），提交服务端算哈希后即弃，名单只存哈希。两种粒度：全部层（含网关 L1 密钥红线——
  * 须改用 /bv1 专用入口，面板给出地址）；按层（勾选 shim 侧检测层，同 URL 无感）。
  * 每次绕行服务端写审计条（智能路由 → 日志标签 → Key 绕行视图可查）。
+ * issue #138：面板按 read_api_keys 门控——所在页路由只保证 read_channels，而候选 Key 列表
+ * （GraphQL apiKeys）与服务端匹配都需要 read_api_keys；无权限时整面板禁用并提示。
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Check, ChevronsUpDown } from 'lucide-react';
+import { toast } from 'sonner';
 import { cn } from '@/lib/utils';
+import { useRequestPermissions } from '@/hooks/useRequestPermissions';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -18,10 +24,12 @@ import { Label } from '@/components/ui/label';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Switch } from '@/components/ui/switch';
-import { useApiKeys } from '@/features/apikeys/data';
+import { useApiKey, useApiKeys } from '@/features/apikeys/data';
 import {
   BYPASSABLE_LAYERS,
+  matchedKeyIdSet,
   useAddBypassKey,
+  useBypassKeyMatch,
   useBypassKeys,
   useDeleteBypassKey,
   useUpdateBypassKey,
@@ -41,74 +49,65 @@ const LAYER_NAME: Record<BypassLayer, string> = {
   response: '响应侧',
 };
 
-/** 浏览器侧 SHA-256（与服务端 bypass_keys 同算法）：只用于把「已登记」的候选置灰，不明文落盘 */
-async function sha256Hex(text: string): Promise<string> {
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-  return Array.from(new Uint8Array(buf))
-    .map((b) => b.toString(16).padStart(2, '0'))
-    .join('');
-}
-
 interface KeyOption {
   id: string;
   name: string;
-  token: string;
 }
 
-function AddForm({ registeredIds }: { registeredIds: Set<string> }) {
+function AddForm() {
   const add = useAddBypassKey();
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<KeyOption | null>(null);
   const [label, setLabel] = useState('');
   const [scope, setScope] = useState<BypassScope>('all');
   const [layers, setLayers] = useState<BypassLayer[]>([]);
-  const [hashByKeyId, setHashByKeyId] = useState<Record<string, string>>({});
+  const [fetchingToken, setFetchingToken] = useState(false);
 
-  // 白名单登记面向存量正常 Key（archived 不提供）；本页路由已保证 read_api_keys 权限
+  // 白名单登记面向存量正常 Key（archived 不提供）。候选列表只取 id+name——列表查询不含明文（issue #138）；
+  // 「已登记」置灰由服务端匹配给出。本页路由只保证 read_channels，这两个查询实际需 read_api_keys，
+  // 门控在面板层（见 Ai4sBypassPanel），到这里必有权限
   const { data: apiKeysData, isLoading } = useApiKeys({
     first: 200,
     orderBy: { field: 'CREATED_AT', direction: 'DESC' },
     where: { statusIn: ['enabled', 'disabled'] },
   });
   const keyOptions = useMemo<KeyOption[]>(
-    () =>
-      (apiKeysData?.edges ?? [])
-        .map((e) => e.node)
-        .filter((n) => !!n?.key)
-        .map((n) => ({ id: n.id, name: n.name || n.id, token: n.key })),
+    () => (apiKeysData?.edges ?? []).map((e) => ({ id: e.node.id, name: e.node.name || e.node.id })),
     [apiKeysData]
   );
+  const keyIds = useMemo(() => keyOptions.map((k) => k.id), [keyOptions]);
+  const { data: matchData } = useBypassKeyMatch(keyIds);
+  const matchedIds = useMemo(() => matchedKeyIdSet(matchData?.matches ?? []), [matchData]);
 
-  // 对候选 Key 预计算哈希（id → hash），与名单条目 id（即哈希）比对出「已登记」项置灰
-  useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      const pairs = await Promise.all(keyOptions.map(async (k) => [k.id, await sha256Hex(k.token)] as const));
-      if (!cancelled) setHashByKeyId(Object.fromEntries(pairs));
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [keyOptions]);
+  const isRegistered = (k: KeyOption) => matchedIds.has(k.id);
 
-  const isRegistered = (k: KeyOption) => {
-    const h = hashByKeyId[k.id];
-    return !!h && registeredIds.has(h);
-  };
+  // 明文只在点击登记这一刻按 id 单条拉取（刻意单条，同「查看 key」对话框路径），选中候选时不拉
+  const detailQuery = useApiKey(selected?.id ?? '', { enabled: false });
 
-  const submit = () => {
+  const submit = async () => {
     if (!selected) return;
-    add.mutate(
-      { token: selected.token, label: label.trim(), scope, layers: scope === 'layers' ? layers : undefined },
-      {
-        onSuccess: () => {
-          setSelected(null);
-          setLabel('');
-          setScope('all');
-          setLayers([]);
+    setFetchingToken(true);
+    try {
+      const { data: fresh } = await detailQuery.refetch();
+      const token = fresh?.key;
+      if (!token) {
+        toast.error('未能获取所选 Key 的明文，请刷新后重试');
+        return;
+      }
+      add.mutate(
+        { token, label: label.trim(), scope, layers: scope === 'layers' ? layers : undefined },
+        {
+          onSuccess: () => {
+            setSelected(null);
+            setLabel('');
+            setScope('all');
+            setLayers([]);
+          },
         },
-      },
-    );
+      );
+    } finally {
+      setFetchingToken(false);
+    }
   };
 
   return (
@@ -200,7 +199,7 @@ function AddForm({ registeredIds }: { registeredIds: Set<string> }) {
       <div>
         <Button
           size='sm'
-          disabled={add.isPending || !selected || !label.trim() || (scope === 'layers' && layers.length === 0)}
+          disabled={add.isPending || fetchingToken || !selected || !label.trim() || (scope === 'layers' && layers.length === 0)}
           onClick={submit}
         >
           登记白名单 Key
@@ -258,8 +257,29 @@ function KeyRow({ k }: { k: BypassKey }) {
 }
 
 export function Ai4sBypassPanel() {
+  // issue #138：面板数据查询（候选 Key 列表 + 服务端匹配）都需 read_api_keys，而本页路由只保证
+  // read_channels——无权限时整面板禁用并提示，避免两个查询被服务端 403 打回
+  const { canViewApiKeys } = useRequestPermissions();
+  if (!canViewApiKeys) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>白名单 Key</CardTitle>
+          <CardDescription>可信 Key（自动化管道等）绕开 DLP 检测的管理入口。</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <p className='text-sm text-muted-foreground'>
+            当前账号缺少 read_api_keys 权限，无法查询候选 Key 与白名单匹配状态；请联系管理员开通后重试。
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+  return <BypassPanelContent />;
+}
+
+function BypassPanelContent() {
   const { data, isError } = useBypassKeys();
-  const registeredIds = useMemo(() => new Set((data?.keys ?? []).map((k) => k.id)), [data]);
   return (
     <Card>
       <CardHeader>
@@ -271,7 +291,7 @@ export function Ai4sBypassPanel() {
         </CardDescription>
       </CardHeader>
       <CardContent className='space-y-4'>
-        <AddForm registeredIds={registeredIds} />
+        <AddForm />
         {isError && <p className='text-sm text-destructive'>名单加载失败</p>}
         <div className='space-y-2'>
           {(data?.keys ?? []).map((k) => (

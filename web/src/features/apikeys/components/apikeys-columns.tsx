@@ -1,45 +1,15 @@
 import { format } from 'date-fns';
 import { ColumnDef, Table, Row } from '@tanstack/react-table';
-import { Copy, Eye } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { toast } from 'sonner';
-import { cn, extractNumberID } from '@/lib/utils';
-import { Button } from '@/components/ui/button';
+import { extractNumberID } from '@/lib/utils';
 import { Checkbox } from '@/components/ui/checkbox';
 import { DataTableColumnHeader } from '@/components/data-table-column-header';
 import LongText from '@/components/long-text';
-import { useApiKeysContext } from '../context/apikeys-context';
 import { ApiKey } from '../data/schema';
 import { DataTableRowActions } from './data-table-row-actions';
 
-function ApiKeyCell({ apiKey, fullApiKey }: { apiKey: string; fullApiKey: ApiKey }) {
-  const { t } = useTranslation();
-  const { openDialog } = useApiKeysContext();
-
-  // 显示前8个字符和后4个字符，中间用省略号
-  const maskedKey = apiKey.replace(/./g, '*').slice(0, -4) + apiKey.slice(-4);
-
-  const copyToClipboard = () => {
-    navigator.clipboard.writeText(apiKey);
-    toast.success(t('apikeys.messages.copied'));
-  };
-
-  const handleViewKey = () => {
-    openDialog('view', fullApiKey);
-  };
-
-  return (
-    <div className='flex max-w-48 items-center space-x-2'>
-      <code className='bg-muted truncate rounded px-2 py-1 font-mono text-sm'>{maskedKey}</code>
-      <Button variant='ghost' size='sm' onClick={handleViewKey} className='h-6 w-6 flex-shrink-0 p-0' title={t('apikeys.actions.view')}>
-        <Eye className='h-3 w-3' />
-      </Button>
-      <Button variant='ghost' size='sm' onClick={copyToClipboard} className='h-6 w-6 flex-shrink-0 p-0' title={t('apikeys.actions.copy')}>
-        <Copy className='h-3 w-3' />
-      </Button>
-    </div>
-  );
-}
+// issue #138：列表不再有 key 明文列（列表查询不下发明文）——
+// 打码片段/复制按钮随列一并移除；刻意查看单条走行操作「查看」→ 查看对话框（单条查询取明文）
 
 export const createColumns = (t: ReturnType<typeof useTranslation>['t'], canWrite: boolean = true, canViewCreators: boolean = false): ColumnDef<ApiKey>[] => [
   ...(canWrite
@@ -84,15 +54,6 @@ export const createColumns = (t: ReturnType<typeof useTranslation>['t'], canWrit
       return String(row.getValue('name')).toLowerCase().includes(String(value).toLowerCase());
     },
     enableHiding: false,
-  },
-  {
-    accessorKey: 'key',
-    header: ({ column }) => <DataTableColumnHeader column={column} title={t('apikeys.columns.key')} />,
-    cell: ({ row }) => <ApiKeyCell apiKey={row.getValue('key')} fullApiKey={row.original} />,
-    enableSorting: false,
-    meta: {
-      className: 'max-w-48',
-    },
   },
   ...(canViewCreators
     ? ([
