@@ -1,9 +1,11 @@
-import { useState, useEffect, useCallback, useMemo } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   ColumnFiltersState,
+  ColumnOrderState,
   RowData,
   SortingState,
   VisibilityState,
+  Updater,
   flexRender,
   getCoreRowModel,
   getFacetedRowModel,
@@ -15,6 +17,8 @@ import {
 import { motion, AnimatePresence } from 'framer-motion';
 import { useTranslation } from 'react-i18next';
 import type { DateTimeRangeValue } from '@/utils/date-range';
+import type { AutoRefreshInterval } from '@/hooks/use-auto-refresh-interval';
+import { useIsMobile, MOBILE_BREAKPOINT } from '@/hooks/use-mobile';
 import { useAnimatedList } from '@/hooks/useAnimatedList';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { TableSkeleton } from '@/components/ui/table-skeleton';
@@ -22,7 +26,14 @@ import { ServerSidePagination } from '@/components/server-side-pagination';
 import { Request, RequestConnection } from '../data/schema';
 import { DataTableToolbar } from './data-table-toolbar';
 import { RequestBodyDrawer } from './request-body-drawer';
-import { useRequestsColumns } from './requests-columns';
+import { DEFAULT_HIDDEN_COLUMN_IDS, DEFAULT_MOBILE_HIDDEN_COLUMN_IDS, useRequestsColumns } from './requests-columns';
+import { readColumnOrder, writeColumnOrder, reconcileColumnOrder, isReorderableColumn } from '@/lib/column-order';
+
+const COLUMN_VISIBILITY_STORAGE_KEY = 'requests-table-column-visibility';
+const COLUMN_VISIBILITY_STORAGE_VERSION = 6;
+
+const COLUMN_ORDER_STORAGE_KEY = 'requests-table-column-order';
+const COLUMN_ORDER_STORAGE_VERSION = 1;
 
 const MotionTableRow = motion.create(TableRow);
 
@@ -56,8 +67,9 @@ interface RequestsTableProps {
   onViewDetail: (requestId: string) => void;
   onRefresh: () => void;
   showRefresh: boolean;
-  autoRefresh?: boolean;
-  onAutoRefreshChange?: (enabled: boolean) => void;
+  autoRefreshInterval?: AutoRefreshInterval;
+  autoRefreshResumeKey?: number;
+  onAutoRefreshIntervalChange?: (interval: AutoRefreshInterval) => void;
 }
 
 export interface RequestTableFilters {
@@ -102,8 +114,9 @@ export function RequestsTable({
   onViewDetail,
   onRefresh,
   showRefresh,
-  autoRefresh = false,
-  onAutoRefreshChange,
+  autoRefreshInterval = null,
+  autoRefreshResumeKey = 0,
+  onAutoRefreshIntervalChange,
 }: RequestsTableProps) {
   const { t } = useTranslation();
 
@@ -119,29 +132,124 @@ export function RequestsTable({
 
   const requestsColumns = useRequestsColumns({ onBodyClick: handleBodyClick, onViewDetail });
   const [sorting, setSorting] = useState<SortingState>([]);
+  const isMobile = useIsMobile();
 
-  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(() => {
-    const stored = localStorage.getItem('requests-table-column-visibility');
-    if (stored) {
-      try {
-        return JSON.parse(stored);
-      } catch {
-        return {};
+  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>({});
+  const userOverridesRef = useRef<VisibilityState>({});
+  const columnVisibilityRef = useRef<VisibilityState>({});
+  const [visibilityReady, setVisibilityReady] = useState(false);
+
+  // Hydrate column visibility from localStorage once viewport is known
+  useEffect(() => {
+    const isMobileInit = window.innerWidth < MOBILE_BREAKPOINT;
+    const desktopDefaults: VisibilityState = Object.fromEntries(DEFAULT_HIDDEN_COLUMN_IDS.map((id) => [id, false]));
+    const mobileDefaults: VisibilityState = isMobileInit
+      ? { ...desktopDefaults, ...Object.fromEntries(DEFAULT_MOBILE_HIDDEN_COLUMN_IDS.map((id) => [id, false])) }
+      : desktopDefaults;
+
+    let overrides: VisibilityState = {};
+    try {
+      const raw = localStorage.getItem(COLUMN_VISIBILITY_STORAGE_KEY);
+      if (raw) {
+        const parsed: unknown = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          if ((parsed as { v?: number }).v === COLUMN_VISIBILITY_STORAGE_VERSION) {
+            const stored = (parsed as { overrides?: VisibilityState }).overrides;
+            if (stored && typeof stored === 'object') overrides = stored;
+          }
+        }
       }
+    } catch {
+      // localStorage unavailable or corrupt — use defaults
     }
-    // 2026-09-03 owner 反馈：推理强度（仅客户端显式发 reasoning_effort 才有值，97.8% 请求为空）、
-    // 读/写缓存（依渠道 usage 回传；写缓存仅 Anthropic cache_control 语义回传，现网无此渠道恒为 0）
-    // 三列大面积空态，默认隐藏——用户可在列显隐菜单手动开启；已有 localStorage 偏好不受影响
-    return { reasoningEffort: false, readCache: false, writeCache: false };
-  });
+
+    userOverridesRef.current = overrides;
+    setColumnVisibility({ ...mobileDefaults, ...overrides });
+    setVisibilityReady(true);
+  }, []); // Run once on mount
+
+  // Mirror columnVisibility into a ref so the visibility-change handler can read prev without a closure
+  useEffect(() => {
+    columnVisibilityRef.current = columnVisibility;
+  }, [columnVisibility]);
 
   const [rowSelection, setRowSelection] = useState({});
 
+  // Persist only user-driven overrides (never responsive defaults)
   useEffect(() => {
-    localStorage.setItem('requests-table-column-visibility', JSON.stringify(columnVisibility));
-  }, [columnVisibility]);
+    if (!visibilityReady) return;
+    try {
+      localStorage.setItem(
+        COLUMN_VISIBILITY_STORAGE_KEY,
+        JSON.stringify({ v: COLUMN_VISIBILITY_STORAGE_VERSION, overrides: userOverridesRef.current })
+      );
+    } catch {
+      // localStorage unavailable or quota exceeded — skip persistence
+    }
+  }, [columnVisibility, visibilityReady]);
 
-  const displayedData = useAnimatedList(data, autoRefresh, pageSize);
+  useEffect(() => {
+    if (!visibilityReady) return;
+    setColumnVisibility((prev) => {
+      const hidden = DEFAULT_MOBILE_HIDDEN_COLUMN_IDS.filter((id) => !DEFAULT_HIDDEN_COLUMN_IDS.includes(id));
+      const overrides = userOverridesRef.current;
+      const next = { ...prev };
+
+      if (isMobile) {
+        // Hide responsive defaults, preserve user overrides
+        hidden.forEach((id) => {
+          if (next[id] === undefined && overrides[id] === undefined) {
+            next[id] = false;
+          }
+        });
+      } else {
+        // On desktop, remove responsive defaults but keep user overrides
+        hidden.forEach((id) => {
+          if (overrides[id] === undefined) {
+            delete next[id];
+          }
+        });
+      }
+      return next;
+    });
+  }, [isMobile, visibilityReady]);
+
+  const [columnOrder, setColumnOrder] = useState<ColumnOrderState>([]);
+  const columnOrderRef = useRef<ColumnOrderState>([]);
+
+  // Hydrate column order from localStorage once table is mounted
+  useEffect(() => {
+    const allIds = table.getAllLeafColumns().map((c) => c.id);
+    const reorderable = allIds.filter((id) => {
+      const col = table.getColumn(id);
+      return col ? isReorderableColumn(col) : false;
+    });
+    const stored = readColumnOrder(COLUMN_ORDER_STORAGE_KEY, COLUMN_ORDER_STORAGE_VERSION);
+    setColumnOrder(
+      reconcileColumnOrder({
+        allColumnIds: allIds,
+        reorderableColumnIds: reorderable,
+        storedOrder: stored,
+        pinnedLast: ['details'],
+      }),
+    );
+  }, []);
+
+  useEffect(() => {
+    columnOrderRef.current = columnOrder;
+  }, [columnOrder]);
+
+  const handleColumnOrderChange = useCallback((updater: Updater<ColumnOrderState>) => {
+    const next = typeof updater === 'function' ? updater(columnOrderRef.current) : updater;
+    setColumnOrder(next);
+    writeColumnOrder(COLUMN_ORDER_STORAGE_KEY, COLUMN_ORDER_STORAGE_VERSION, next);
+  }, []);
+
+  const animationResetKey = useMemo(
+    () => JSON.stringify({ queryWhere: queryWhere ?? null, autoRefreshResumeKey }),
+    [queryWhere, autoRefreshResumeKey]
+  );
+  const displayedData = useAnimatedList(data, showRefresh && autoRefreshInterval !== null, pageSize, animationResetKey);
 
   const columnFilters = useMemo<ColumnFiltersState>(() => {
     const filters: ColumnFiltersState = [];
@@ -155,7 +263,7 @@ export function RequestsTable({
       filters.push({ id: 'channel', value: channelFilter });
     }
     if (apiKeyFilter.length > 0) {
-      filters.push({ id: 'apiKey', value: apiKeyFilter });
+      filters.push({ id: 'caller', value: apiKeyFilter });
     }
     if (modelIDFilter) {
       filters.push({ id: 'modelID', value: modelIDFilter });
@@ -174,13 +282,25 @@ export function RequestsTable({
         statusFilter: getFilterArrayValue(newFilters, 'status'),
         sourceFilter: getFilterArrayValue(newFilters, 'source'),
         channelFilter: getFilterArrayValue(newFilters, 'channel'),
-        apiKeyFilter: getFilterArrayValue(newFilters, 'apiKey'),
+        apiKeyFilter: getFilterArrayValue(newFilters, 'caller'),
         modelIDFilter: getFilterStringValue(newFilters, 'modelID'),
         threadIDFilter: getFilterStringValue(newFilters, 'thread'),
       });
     },
     [columnFilters, onFiltersChange]
   );
+
+  const handleColumnVisibilityChange = useCallback((updater: Updater<VisibilityState>) => {
+    const prev = columnVisibilityRef.current;
+    const next = typeof updater === 'function' ? updater(prev) : updater;
+    // Record only user-driven changes as explicit overrides
+    Object.entries(next).forEach(([id, visible]) => {
+      if (prev[id] !== visible) {
+        userOverridesRef.current = { ...userOverridesRef.current, [id]: visible };
+      }
+    });
+    setColumnVisibility(next);
+  }, []);
 
   const table = useReactTable({
     data: displayedData,
@@ -189,6 +309,7 @@ export function RequestsTable({
     state: {
       sorting,
       columnVisibility,
+      columnOrder,
       rowSelection,
       columnFilters,
     },
@@ -196,7 +317,8 @@ export function RequestsTable({
     onRowSelectionChange: setRowSelection,
     onSortingChange: setSorting,
     onColumnFiltersChange: handleColumnFiltersChange,
-    onColumnVisibilityChange: setColumnVisibility,
+    onColumnVisibilityChange: handleColumnVisibilityChange,
+    onColumnOrderChange: handleColumnOrderChange,
     getCoreRowModel: getCoreRowModel(),
     getFilteredRowModel: getFilteredRowModel(),
     getSortedRowModel: getSortedRowModel(),
@@ -216,10 +338,12 @@ export function RequestsTable({
         onResetFilters={onResetFilters}
         onRefresh={onRefresh}
         showRefresh={showRefresh}
-        autoRefresh={autoRefresh}
-        onAutoRefreshChange={onAutoRefreshChange}
+        autoRefreshInterval={autoRefreshInterval}
+        onAutoRefreshIntervalChange={onAutoRefreshIntervalChange}
+        enableColumnOrdering
+        getColumnLabel={(id) => t(`requests.columns.${id}`, { defaultValue: id })}
       />
-      <div className='shadow-soft relative mt-4 flex-1 overflow-auto rounded-2xl border border-[var(--table-border)]'>
+      <div className='shadow-soft relative mt-2 flex-1 overflow-auto rounded-2xl border border-[var(--table-border)] sm:mt-4'>
         <div className='min-w-max'>
           <Table data-testid='requests-table' className='border-separate border-spacing-0 rounded-2xl bg-[var(--table-background)]'>
             <TableHeader className='sticky top-0 z-20 bg-[var(--table-header)] shadow-sm'>
@@ -241,7 +365,7 @@ export function RequestsTable({
             </TableHeader>
             <TableBody className='space-y-1 !bg-[var(--table-background)] p-2'>
               {loading ? (
-                <TableSkeleton rows={pageSize} columns={requestsColumns.length} />
+                <TableSkeleton rows={pageSize} columns={table.getVisibleLeafColumns().length} />
               ) : table.getRowModel().rows?.length ? (
                 <AnimatePresence initial={false} mode='popLayout'>
                   {table.getRowModel().rows.map((row) => (
@@ -283,7 +407,7 @@ export function RequestsTable({
           </Table>
         </div>
       </div>
-      <div className='mt-4 flex-shrink-0'>
+      <div className='mt-2 flex-shrink-0 sm:mt-4'>
         <ServerSidePagination
           pageInfo={pageInfo}
           pageSize={pageSize}

@@ -11,7 +11,57 @@ import { DataTableRowActions } from './data-table-row-actions';
 // issue #138：列表不再有 key 明文列（列表查询不下发明文）——
 // 打码片段/复制按钮随列一并移除；刻意查看单条走行操作「查看」→ 查看对话框（单条查询取明文）
 
-export const createColumns = (t: ReturnType<typeof useTranslation>['t'], canWrite: boolean = true, canViewCreators: boolean = false): ColumnDef<ApiKey>[] => [
+function ActiveProfileCell({ apiKey, canWrite }: { apiKey: ApiKey; canWrite: boolean }) {
+  const { t } = useTranslation();
+  const { openDialog } = useApiKeysContext();
+  const activeProfile = apiKey.profiles?.activeProfile?.trim();
+  const activeProfileConfig = apiKey.profiles?.profiles?.find((profile) => profile.name === activeProfile);
+  const templateName = activeProfileConfig?.templateName?.trim();
+  const canOpenProfiles = canWrite && apiKey.type !== 'service_account';
+
+  if (!canOpenProfiles) {
+    return activeProfile ? (
+      <div className='min-w-0'>
+        <LongText className='max-w-36 font-medium'>{activeProfile}</LongText>
+        {templateName && (
+          <div className='text-muted-foreground max-w-36 truncate text-xs'>
+            {t('apikeys.columns.linkedTemplate', { name: templateName })}
+          </div>
+        )}
+      </div>
+    ) : (
+      <span className='text-muted-foreground text-sm'>{t('apikeys.columns.noActiveProfile')}</span>
+    );
+  }
+
+  return (
+    <Button
+      variant='ghost'
+      size='sm'
+      className='h-8 max-w-44 justify-start gap-1.5 px-2 font-medium'
+      onClick={() => openDialog('profiles', apiKey)}
+      title={t('apikeys.columns.activeProfileHint')}
+    >
+      <Settings className='h-3.5 w-3.5 shrink-0' />
+      <span className='min-w-0 text-left'>
+        <span className={cn('block truncate', !activeProfile && 'text-muted-foreground')}>
+          {activeProfile || t('apikeys.columns.noActiveProfile')}
+        </span>
+        {templateName && (
+          <span className='text-muted-foreground block truncate text-xs font-normal'>
+            {t('apikeys.columns.linkedTemplate', { name: templateName })}
+          </span>
+        )}
+      </span>
+    </Button>
+  );
+}
+
+export const createColumns = (
+  t: ReturnType<typeof useTranslation>['t'],
+  canWrite: boolean = true,
+  canViewCreators: boolean = false
+): ColumnDef<ApiKey>[] => [
   ...(canWrite
     ? [
         {
@@ -62,7 +112,7 @@ export const createColumns = (t: ReturnType<typeof useTranslation>['t'], canWrit
           header: ({ column }) => <DataTableColumnHeader column={column} title={t('apikeys.columns.creator')} />,
           cell: ({ row }) => {
             const creator = row.original.user;
-            const displayName = creator ? `${creator.firstName} ${creator.lastName}` : t('apikeys.user.deleted');
+            const displayName = creator ? formatUserName(creator.firstName, creator.lastName) : t('apikeys.user.deleted');
             return <LongText className='text-muted-foreground max-w-24'>{displayName}</LongText>;
           },
           filterFn: (row, _id, value) => {
@@ -125,6 +175,13 @@ export const createColumns = (t: ReturnType<typeof useTranslation>['t'], canWrit
     filterFn: (row, _id, value) => {
       return value.includes(row.getValue('status'));
     },
+    enableSorting: false,
+  },
+  {
+    id: 'activeProfile',
+    accessorFn: (row) => row.profiles?.activeProfile || '',
+    header: ({ column }) => <DataTableColumnHeader column={column} title={t('apikeys.columns.activeProfile')} />,
+    cell: ({ row }) => <ActiveProfileCell apiKey={row.original} canWrite={canWrite} />,
     enableSorting: false,
   },
   {

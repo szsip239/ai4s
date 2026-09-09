@@ -9,6 +9,7 @@ import {
   Moonshot,
   Zhipu,
   OpenRouter,
+  ZenMux,
   XAI,
   Volcengine,
   SiliconCloud,
@@ -31,11 +32,19 @@ import {
   Fireworks,
   Ollama,
   OpenCode,
+  Groq,
 } from '@lobehub/icons';
 import { AtlasCloudIcon } from '../components/atlas-cloud-icon';
+import { CommandCodeIcon } from '../components/commandcode-icon';
 import { EvolinkIcon } from '../components/evolink-icon';
+import { FennoIcon } from '../components/fenno-icon';
 import { NanoGPTIcon } from '../components/nanogpt-icon';
 import { CHANNEL_CONFIGS } from './config_channels';
+import {
+  getApiFormatsForProvider as getApiFormatsForProviderFromConfigs,
+  getChannelTypeForApiFormat as getChannelTypeForApiFormatFromConfigs,
+  type ProtocolConfigs,
+} from './protocol-options';
 import { ApiFormat, ChannelType } from './schema';
 
 export interface ProviderConfig {
@@ -62,6 +71,18 @@ export const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
     icon: AtlasCloudIcon,
     color: 'bg-sky-100 text-sky-800 border-sky-200',
     channelTypes: ['atlascloud'],
+  },
+  qiniu: {
+    provider: 'qiniu',
+    icon: Qiniu,
+    color: 'bg-blue-100 text-blue-800 border-blue-200',
+    channelTypes: ['qiniu_anthropic', 'qiniu'],
+  },
+  fenno: {
+    provider: 'fenno',
+    icon: FennoIcon,
+    color: 'bg-[#EEF2FF] text-[#3155C6] border-[#C7D2FE]',
+    channelTypes: ['fenno'],
   },
   deepseek: {
     provider: 'deepseek',
@@ -145,7 +166,13 @@ export const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
     provider: 'xai',
     icon: XAI,
     color: 'bg-black-100 text-black-800 border-black-200',
-    channelTypes: ['xai'],
+    channelTypes: ['xai', 'xai_responses'],
+  },
+  xai_subscription: {
+    provider: 'xai_subscription',
+    icon: XAI,
+    color: 'bg-black-100 text-black-800 border-black-200',
+    channelTypes: ['xai_subscription'],
   },
   burncloud: {
     provider: 'burncloud',
@@ -225,12 +252,6 @@ export const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
     color: 'bg-indigo-100 text-indigo-800 border-indigo-200',
     channelTypes: ['deepinfra'],
   },
-  qiniu: {
-    provider: 'qiniu',
-    icon: Qiniu,
-    color: 'bg-blue-100 text-blue-800 border-blue-200',
-    channelTypes: ['qiniu'],
-  },
   cerebras: {
     provider: 'cerebras',
     icon: Cerebras,
@@ -273,6 +294,29 @@ export const PROVIDER_CONFIGS: Record<string, ProviderConfig> = {
     color: 'bg-purple-100 text-purple-800 border-purple-200',
     channelTypes: ['cline'],
   },
+  groq: {
+    provider: 'groq',
+    icon: Groq,
+    color: 'bg-orange-100 text-orange-800 border-orange-200',
+    channelTypes: ['groq'],
+  },
+  zenmux: {
+    provider: 'zenmux',
+    icon: ZenMux,
+    color: 'bg-gray-100 text-gray-800 border-gray-200',
+    channelTypes: ['zenmux', 'zenmux_responses', 'zenmux_anthropic', 'zenmux_gemini'],
+  },
+  commandcode: {
+    provider: 'commandcode',
+    icon: CommandCodeIcon,
+    color: 'bg-cyan-100 text-cyan-800 border-cyan-200',
+    channelTypes: ['commandcode', 'commandcode_anthropic'],
+  },
+};
+
+const protocolConfigs: ProtocolConfigs = {
+  providerConfigs: PROVIDER_CONFIGS,
+  channelConfigs: CHANNEL_CONFIGS,
 };
 
 /**
@@ -291,31 +335,12 @@ export const getProviderFromChannelType = (channelType: ChannelType): string | u
  * Get channel type for a provider with specific API format
  */
 export const getChannelTypeForApiFormat = (provider: string, apiFormat: ApiFormat): ChannelType | undefined => {
-  const providerConfig = PROVIDER_CONFIGS[provider];
-  if (!providerConfig) return undefined;
-
-  for (const channelType of providerConfig.channelTypes) {
-    const channelConfig = CHANNEL_CONFIGS[channelType];
-    if (channelConfig?.apiFormat === apiFormat) {
-      return channelType;
-    }
-  }
-  return undefined;
+  return getChannelTypeForApiFormatFromConfigs(provider, apiFormat, protocolConfigs);
 };
 
 /**
  * Get available API formats for a provider
  */
 export const getApiFormatsForProvider = (provider: string): ApiFormat[] => {
-  const providerConfig = PROVIDER_CONFIGS[provider];
-  if (!providerConfig) return [];
-
-  const formats: ApiFormat[] = [];
-  for (const channelType of providerConfig.channelTypes) {
-    const channelConfig = CHANNEL_CONFIGS[channelType];
-    if (channelConfig?.apiFormat && !formats.includes(channelConfig.apiFormat)) {
-      formats.push(channelConfig.apiFormat);
-    }
-  }
-  return formats;
+  return getApiFormatsForProviderFromConfigs(provider, protocolConfigs);
 };

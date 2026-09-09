@@ -1,26 +1,22 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Copy, Eye, EyeOff, AlertTriangle, Link, CheckIcon } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { toast } from 'sonner';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { MaskedCodeBlock, MaskedCodeBlockCopyButton, highlightMaskedCode } from '@/components/ai-elements/masked-code-block';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
+import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard';
 import { useApiKeysContext } from '../context/apikeys-context';
 import { useApiKey } from '../data/apikeys';
 
 function CopyBaseUrlButton({ baseUrl }: { baseUrl: string }) {
   const { t } = useTranslation();
-  const [isCopied, setIsCopied] = useState(false);
-
-  const handleCopy = async () => {
-    await navigator.clipboard.writeText(baseUrl);
-    setIsCopied(true);
-    toast.success(t('apikeys.messages.baseUrlCopied'));
-    setTimeout(() => setIsCopied(false), 2000);
-  };
+  const { isCopied, handleCopy } = useCopyToClipboard({
+    text: baseUrl,
+    copyMessage: t('apikeys.messages.baseUrlCopied'),
+  });
 
   return (
     <Tooltip>
@@ -39,6 +35,10 @@ export function ApiKeysViewDialog() {
   const { isDialogOpen, closeDialog, selectedApiKey } = useApiKeysContext();
   const [isVisible, setIsVisible] = useState(false);
   const [preRenderedCode, setPreRenderedCode] = useState<Record<string, { light: string; dark: string }>>({});
+  const { handleCopy: copyApiKey } = useCopyToClipboard({
+    text: selectedApiKey?.key ?? '',
+    copyMessage: t('apikeys.messages.copied'),
+  });
 
   // issue #138：列表查询不再返回明文——打开对话框时按 id 单条查询（刻意单条明文路径）；
   // 创建/轮换刚产出的新明文已在上下文里则直接用，不必等查询

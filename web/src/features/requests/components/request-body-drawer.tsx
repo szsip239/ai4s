@@ -14,7 +14,8 @@ import {
   Terminal,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import { extractNumberID } from '@/lib/utils';
+import { copyTextToClipboard } from '@/lib/clipboard';
+import { extractNumberID, cn } from '@/lib/utils';
 import { usePaginationSearch } from '@/hooks/use-pagination-search';
 import { useSelectedProjectId } from '@/stores/projectStore';
 import { Badge } from '@/components/ui/badge';
@@ -28,8 +29,10 @@ import { useRequestPermissions } from '../../../hooks/useRequestPermissions';
 import { useRequest, fetchAdjacentRequestPage } from '../data';
 import { Request, RequestConnection } from '../data/schema';
 import { CurlPreviewDialog } from './curl-preview-dialog';
+import { RequestConversationViewer } from './request-conversation-viewer';
 import { getStatusColor } from './help';
 import { generateRequestCurl } from '../utils/curl-generator';
+import { parseRequestConversation } from '../utils/request-conversation';
 
 interface RequestBodyDrawerProps {
   open: boolean;
@@ -131,19 +134,39 @@ export function RequestBodyDrawer({
 
   // ── active tab ─────────────────────────────────────────────────────────────
   const [activeTab, setActiveTab] = useState('request');
+  const [requestBodyView, setRequestBodyView] = useState<'conversation' | 'json'>('conversation');
+
+  // Use the conversation view only when the body actually parses as a conversation.
+  // Only auto-adjust when the underlying request body changes, so manual toggles stick.
+  const lastAutoBodyRef = useRef<string>('');
+  useEffect(() => {
+    if (!displayedRequest) return;
+    const bodyKey = JSON.stringify({ id: displayedRequest?.id, body: displayedRequest?.requestBody, format: displayedRequest?.format });
+    if (bodyKey === lastAutoBodyRef.current) return;
+    lastAutoBodyRef.current = bodyKey;
+    const isConversation = !!parseRequestConversation(displayedRequest.requestBody, displayedRequest.format);
+    setRequestBodyView(isConversation ? 'conversation' : 'json');
+  }, [displayedRequest?.id, displayedRequest?.requestBody, displayedRequest?.format]);
 
   // ── copy / curl ───────────────────────────────────────────────────────────
   const [showCurlPreview, setShowCurlPreview] = useState(false);
   const [curlCommand, setCurlCommand] = useState('');
 
   const copyBody = useCallback(
-    (data: any) => {
+    async (data: any) => {
+      let text: string;
       try {
-        navigator.clipboard.writeText(JSON.stringify(data, null, 2));
+        text = JSON.stringify(data, null, 2);
       } catch {
-        navigator.clipboard.writeText(String(data));
+        text = String(data);
       }
-      toast.success(t('requests.actions.copy'));
+
+      try {
+        await copyTextToClipboard(text);
+        toast.success(t('requests.actions.copy'));
+      } catch {
+        toast.error(t('common.errors.copyFailed'));
+      }
     },
     [t]
   );
@@ -360,24 +383,58 @@ export function RequestBodyDrawer({
                 </div>
 
                 <TabsContent value='request' className='m-0 min-h-0 flex-1 px-6 pb-6 pt-4'>
-                  <ScrollArea className='bg-muted/20 h-full w-full rounded-lg border p-4'>
-                    {displayedRequest.requestBody ? (
-                      <JsonViewer
-                        key={`req-${currentRequestId}`}
-                        data={displayedRequest.requestBody}
-                        rootName=''
-                        defaultExpanded={true}
-                        expandDepth='all'
-                        hideArrayIndices={true}
-                        globalStringExpanded={globalExpanded}
-                        className='text-sm'
-                      />
-                    ) : (
-                      <div className='flex h-32 items-center justify-center'>
-                        <p className='text-muted-foreground text-sm'>{t('requests.drawer.noRequestBody')}</p>
-                      </div>
-                    )}
-                  </ScrollArea>
+                  <div className='bg-muted/40 border-border mb-3 inline-flex h-8 items-center rounded-md border p-0.5'>
+                    <button
+                      type='button'
+                      className={cn(
+                        'text-muted-foreground hover:text-foreground h-full cursor-pointer rounded-md px-3 text-xs transition-colors',
+                        requestBodyView === 'conversation' && 'bg-background text-foreground shadow-sm'
+                      )}
+                      onClick={() => setRequestBodyView('conversation')}
+                    >
+                      {t('requests.detail.tabs.conversation')}
+                    </button>
+                    <button
+                      type='button'
+                      className={cn(
+                        'text-muted-foreground hover:text-foreground h-full cursor-pointer rounded-md px-3 text-xs transition-colors',
+                        requestBodyView === 'json' && 'bg-background text-foreground shadow-sm'
+                      )}
+                      onClick={() => setRequestBodyView('json')}
+                    >
+                      {t('requests.detail.tabs.json')}
+                    </button>
+                  </div>
+                  {requestBodyView === 'conversation' ? (
+                    <ScrollArea className='bg-muted/20 h-full w-full rounded-lg border p-4'>
+                      {displayedRequest.requestBody ? (
+                        <RequestConversationViewer body={displayedRequest.requestBody} format={displayedRequest.format} />
+                      ) : (
+                        <div className='flex h-32 items-center justify-center'>
+                          <p className='text-muted-foreground text-sm'>{t('requests.drawer.noRequestBody')}</p>
+                        </div>
+                      )}
+                    </ScrollArea>
+                  ) : (
+                    <ScrollArea className='bg-muted/20 h-full w-full rounded-lg border p-4'>
+                      {displayedRequest.requestBody ? (
+                        <JsonViewer
+                          key={`req-${currentRequestId}`}
+                          data={displayedRequest.requestBody}
+                          rootName=''
+                          defaultExpanded={true}
+                          expandDepth='all'
+                          hideArrayIndices={true}
+                          globalStringExpanded={globalExpanded}
+                          className='text-sm'
+                        />
+                      ) : (
+                        <div className='flex h-32 items-center justify-center'>
+                          <p className='text-muted-foreground text-sm'>{t('requests.drawer.noRequestBody')}</p>
+                        </div>
+                      )}
+                    </ScrollArea>
+                  )}
                 </TabsContent>
 
                 <TabsContent value='response' className='m-0 min-h-0 flex-1 px-6 pb-6 pt-4'>

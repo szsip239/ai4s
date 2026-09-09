@@ -43,8 +43,6 @@
   "security.oidc.linkError": "绑定失败",
   "security.oidc.unlinkSuccess": "解绑成功",
   "security.oidc.unlinkError": "解绑失败",
-  "settings.providerQuota.opencodeGo.authCookie": "认证 Cookie",
-  "settings.providerQuota.opencodeGo.workspaceId": "工作区 ID",
   "models.developers.inclusionai": "零一万物",
   "request_header.X-Model": "X-Model 请求头",
   "response.output_item.added": "输出项新增",

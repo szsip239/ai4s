@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { buildDateRangeWhereClause, type DateTimeRangeValue } from '@/utils/date-range';
+import { useAutoRefreshInterval } from '@/hooks/use-auto-refresh-interval';
 import { useDebounce } from '@/hooks/use-debounce';
 import { usePaginationSearch } from '@/hooks/use-pagination-search';
 import useInterval from '@/hooks/useInterval';
@@ -20,7 +21,7 @@ function ThreadsContent() {
   const [dateRange, setDateRange] = useState<DateTimeRangeValue | undefined>();
   const [threadIdFilter, setThreadIdFilter] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<string[]>([]);
-  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [autoRefreshInterval, setAutoRefreshInterval] = useAutoRefreshInterval('threads-auto-refresh-interval-ms');
   const debouncedThreadIdFilter = useDebounce(threadIdFilter, 300);
 
   const whereClause = (() => {
@@ -55,11 +56,12 @@ function ThreadsContent() {
   const pageInfo = data?.pageInfo;
   const isFirstPage = !paginationArgs.after && cursorHistory.length === 0;
 
-  useInterval(
+  const autoRefreshResumeKey = useInterval(
     () => {
       refetch();
     },
-    autoRefresh && isFirstPage ? 30000 : null
+    isFirstPage ? autoRefreshInterval : null,
+    { refreshOnResume: true }
   );
 
   const handleNextPage = () => {
@@ -125,8 +127,9 @@ function ThreadsContent() {
         onStatusFilterChange={handleStatusFilterChange}
         onRefresh={refetch}
         showRefresh={isFirstPage}
-        autoRefresh={autoRefresh}
-        onAutoRefreshChange={setAutoRefresh}
+        autoRefreshInterval={autoRefreshInterval}
+        autoRefreshResumeKey={autoRefreshResumeKey}
+        onAutoRefreshIntervalChange={setAutoRefreshInterval}
       />
     </div>
   );
@@ -141,7 +144,7 @@ export default function ThreadsManagement() {
         <div className='flex w-full flex-1 flex-col gap-2 md:flex-row md:items-center md:justify-between md:gap-0'>
           <div>
             <h2 className='text-xl font-bold tracking-tight'>{t('threads.title')}</h2>
-            <p className='text-sm text-muted-foreground'>{t('threads.description')}</p>
+            <p className='text-muted-foreground text-sm'>{t('threads.description')}</p>
           </div>
         </div>
       </Header>

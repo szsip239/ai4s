@@ -9,6 +9,7 @@ import {
   Moonshot,
   Zhipu,
   OpenRouter,
+  ZenMux,
   XAI,
   Volcengine,
   SiliconCloud,
@@ -31,9 +32,12 @@ import {
   Ollama,
   AiHubMix,
   OpenCode,
+  Groq,
 } from '@lobehub/icons';
 import { AtlasCloudIcon } from '../components/atlas-cloud-icon';
+import { CommandCodeIcon } from '../components/commandcode-icon';
 import { EvolinkIcon } from '../components/evolink-icon';
+import { FennoIcon } from '../components/fenno-icon';
 import { NanoGPTIcon } from '../components/nanogpt-icon';
 import { BURNCLOUD_DEFAULT_MODELS } from './burncloud-models';
 import { ApiFormat, ChannelType } from './schema';
@@ -87,6 +91,30 @@ export const CHANNEL_CONFIGS: Record<ChannelType, ChannelConfig> = {
     color: 'bg-sky-100 text-sky-800 border-sky-200',
     icon: AtlasCloudIcon,
   },
+  qiniu: {
+    channelType: 'qiniu',
+    baseURL: 'https://api.qnaigc.com/v1',
+    defaultModels: ['deepseek-v3'],
+    apiFormat: OPENAI_CHAT_COMPLETIONS,
+    color: 'bg-blue-100 text-blue-800 border-blue-200',
+    icon: Qiniu,
+  },
+  qiniu_anthropic: {
+    channelType: 'qiniu_anthropic',
+    baseURL: 'https://api.qnaigc.com',
+    defaultModels: ['deepseek-v3'],
+    apiFormat: ANTHROPIC_MESSAGES,
+    color: 'bg-blue-100 text-blue-800 border-blue-200',
+    icon: Qiniu,
+  },
+  fenno: {
+    channelType: 'fenno',
+    baseURL: 'https://api.fenno.ai',
+    defaultModels: ['gpt-5.2', 'gpt-5.2-codex'],
+    apiFormat: OPENAI_RESPONSES,
+    color: 'bg-[#EEF2FF] text-[#3155C6] border-[#C7D2FE]',
+    icon: FennoIcon,
+  },
   openai_responses: {
     channelType: 'openai_responses',
     baseURL: 'https://api.openai.com/v1',
@@ -98,7 +126,7 @@ export const CHANNEL_CONFIGS: Record<ChannelType, ChannelConfig> = {
   codex: {
     channelType: 'codex',
     baseURL: 'https://chatgpt.com/backend-api/codex#',
-    defaultModels: ['gpt-5.2', 'gpt-5.2-codex'],
+    defaultModels: ['gpt-5.2', 'gpt-5.2-codex', 'gpt-6-astra'],
     apiFormat: OPENAI_RESPONSES,
     color: 'bg-[#32746D] text-white border-[#32746D]',
     icon: OpenAI,
@@ -144,14 +172,6 @@ export const CHANNEL_CONFIGS: Record<ChannelType, ChannelConfig> = {
     apiFormat: OPENAI_CHAT_COMPLETIONS,
     color: 'bg-indigo-100 text-indigo-800 border-indigo-200',
     icon: DeepInfra,
-  },
-  qiniu: {
-    channelType: 'qiniu',
-    baseURL: 'https://api.qnaigc.com/v1',
-    defaultModels: ['deepseek-v3'],
-    apiFormat: OPENAI_CHAT_COMPLETIONS,
-    color: 'bg-blue-100 text-blue-800 border-blue-200',
-    icon: Qiniu,
   },
   anthropic: {
     channelType: 'anthropic',
@@ -325,6 +345,33 @@ export const CHANNEL_CONFIGS: Record<ChannelType, ChannelConfig> = {
     baseURL: 'https://api.x.ai/v1',
     defaultModels: ['grok-4', 'grok-3', 'grok-3-mini', 'grok-code-fast', 'grok-4-fast-reasoning', 'grok-4-fast-non-reasoning'],
     apiFormat: OPENAI_CHAT_COMPLETIONS,
+    color: 'bg-black-100 text-black-800 border-black-200',
+    icon: XAI,
+  },
+  xai_responses: {
+    channelType: 'xai_responses',
+    baseURL: 'https://api.x.ai/v1',
+    defaultModels: ['grok-4', 'grok-3', 'grok-3-mini', 'grok-code-fast', 'grok-4-fast-reasoning', 'grok-4-fast-non-reasoning'],
+    apiFormat: OPENAI_RESPONSES,
+    color: 'bg-black-100 text-black-800 border-black-200',
+    icon: XAI,
+  },
+  xai_subscription: {
+    channelType: 'xai_subscription',
+    baseURL: 'https://cli-chat-proxy.grok.com/v1',
+    defaultModels: [
+      'grok-4.6',
+      'grok-4.5',
+      'grok-4.3',
+      'grok-3-mini',
+      'grok-3-mini-fast',
+      'grok-build-0.1',
+      'grok-composer-2.5-fast',
+      'grok-4.20-0309-reasoning',
+      'grok-4.20-0309-non-reasoning',
+      'grok-4.20-multi-agent-0309',
+    ],
+    apiFormat: OPENAI_RESPONSES,
     color: 'bg-black-100 text-black-800 border-black-200',
     icon: XAI,
   },
@@ -744,6 +791,67 @@ export const CHANNEL_CONFIGS: Record<ChannelType, ChannelConfig> = {
     color: 'bg-purple-100 text-purple-800 border-purple-200',
     icon: Cline,
   },
+  groq: {
+    channelType: 'groq',
+    baseURL: 'https://api.groq.com/openai/v1',
+    defaultModels: [
+      'openai/gpt-oss-120b',
+      'openai/gpt-oss-20b',
+      'whisper-large-v3',
+      'whisper-large-v3-turbo',
+    ],
+    apiFormat: OPENAI_CHAT_COMPLETIONS,
+    color: 'bg-orange-100 text-orange-800 border-orange-200',
+    icon: Groq,
+  },
+  zenmux: {
+    channelType: 'zenmux',
+    baseURL: 'https://zenmux.ai/api/v1',
+    defaultModels: ['openai/gpt-5', 'anthropic/claude-sonnet-4.5'],
+    apiFormat: OPENAI_CHAT_COMPLETIONS,
+    color: 'bg-gray-100 text-gray-800 border-gray-200',
+    icon: ZenMux,
+  },
+  zenmux_responses: {
+    channelType: 'zenmux_responses',
+    baseURL: 'https://zenmux.ai/api/v1',
+    defaultModels: ['openai/gpt-5'],
+    apiFormat: OPENAI_RESPONSES,
+    color: 'bg-gray-100 text-gray-800 border-gray-200',
+    icon: ZenMux,
+  },
+  zenmux_anthropic: {
+    channelType: 'zenmux_anthropic',
+    baseURL: 'https://zenmux.ai/api/anthropic',
+    defaultModels: ['anthropic/claude-sonnet-4.5'],
+    apiFormat: ANTHROPIC_MESSAGES,
+    color: 'bg-gray-100 text-gray-800 border-gray-200',
+    icon: ZenMux,
+  },
+  zenmux_gemini: {
+    channelType: 'zenmux_gemini',
+    baseURL: 'https://zenmux.ai/api/vertex-ai',
+    defaultModels: ['google/gemini-2.5-pro'],
+    apiFormat: GEMINI_CONTENTS,
+    color: 'bg-gray-100 text-gray-800 border-gray-200',
+    icon: OpenRouter,
+  },
+  commandcode: {
+    channelType: 'commandcode',
+    baseURL: 'https://api.commandcode.ai/provider/v1',
+    defaultModels: [],
+    apiFormat: OPENAI_CHAT_COMPLETIONS,
+    color: 'bg-cyan-100 text-cyan-800 border-cyan-200',
+    icon: CommandCodeIcon,
+  },
+  commandcode_anthropic: {
+    channelType: 'commandcode_anthropic',
+    baseURL: 'https://api.commandcode.ai/provider/v1',
+    defaultModels: [],
+    apiFormat: ANTHROPIC_MESSAGES,
+    color: 'bg-cyan-100 text-cyan-800 border-cyan-200',
+    icon: CommandCodeIcon,
+  },
 };
 
 /**
@@ -766,12 +874,13 @@ export const getDefaultModels = (channelType: ChannelType): string[] => {
 export type Provider =
   | 'openai'
   | 'atlascloud'
+  | 'qiniu'
+  | 'fenno'
   | 'cline'
   | 'anthropic'
   | 'claudecode'
   | 'deepseek'
   | 'deepinfra'
-  | 'qiniu'
   | 'gemini'
   | 'moonshot'
   | 'zhipu'
@@ -781,6 +890,7 @@ export type Provider =
   | 'longcat'
   | 'xiaomi'
   | 'xai'
+  | 'xai_subscription'
   | 'openrouter'
   | 'vercel'
   | 'ppio'
@@ -800,7 +910,10 @@ export type Provider =
   | 'fireworks'
   | 'opencode_go'
   | 'ollama'
-  | 'evolink';
+  | 'evolink'
+  | 'groq'
+  | 'zenmux'
+  | 'commandcode';
 
 /**
  * Map channel type to provider
@@ -809,6 +922,9 @@ export const CHANNEL_TYPE_TO_PROVIDER: Record<ChannelType, Provider> = {
   openai: 'openai',
   openai_responses: 'openai',
   atlascloud: 'atlascloud',
+  qiniu: 'qiniu',
+  qiniu_anthropic: 'qiniu',
+  fenno: 'fenno',
   cline: 'cline',
   openai_fake: 'openai',
   anthropic: 'anthropic',
@@ -818,7 +934,6 @@ export const CHANNEL_TYPE_TO_PROVIDER: Record<ChannelType, Provider> = {
   deepseek: 'deepseek',
   deepseek_anthropic: 'deepseek',
   deepinfra: 'deepinfra',
-  qiniu: 'qiniu',
   gemini: 'gemini',
   gemini_openai: 'gemini',
   gemini_vertex: 'gemini',
@@ -837,6 +952,8 @@ export const CHANNEL_TYPE_TO_PROVIDER: Record<ChannelType, Provider> = {
   xiaomi: 'xiaomi',
   xiaomi_anthropic: 'xiaomi',
   xai: 'xai',
+  xai_responses: 'xai',
+  xai_subscription: 'xai_subscription',
   openrouter: 'openrouter',
   vercel: 'vercel',
   ppio: 'ppio',
@@ -863,8 +980,16 @@ export const CHANNEL_TYPE_TO_PROVIDER: Record<ChannelType, Provider> = {
   opencode_go: 'opencode_go',
   opencode_go_anthropic: 'opencode_go',
   ollama: 'ollama',
+  ollama_anthropic: 'ollama',
   evolink: 'evolink',
   evolink_anthropic: 'evolink',
+  groq: 'groq',
+  zenmux: 'zenmux',
+  zenmux_responses: 'zenmux',
+  zenmux_anthropic: 'zenmux',
+  zenmux_gemini: 'zenmux',
+  commandcode: 'commandcode',
+  commandcode_anthropic: 'commandcode',
 };
 
 /**

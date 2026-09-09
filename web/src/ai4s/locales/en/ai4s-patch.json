@@ -43,8 +43,6 @@
   "security.oidc.linkError": "Failed to link account",
   "security.oidc.unlinkSuccess": "Account unlinked",
   "security.oidc.unlinkError": "Failed to unlink account",
-  "settings.providerQuota.opencodeGo.authCookie": "Auth Cookie",
-  "settings.providerQuota.opencodeGo.workspaceId": "Workspace ID",
   "request_header.X-Model": "X-Model Request Header",
   "response.output_item.added": "Output Item Added",
   "response.output_text.delta": "Output Text Delta",

@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from 'react';
+import { useCallback, useMemo } from 'react';
 import { useNavigate, useRouterState } from '@tanstack/react-router';
 import { useTranslation } from 'react-i18next';
 import {
@@ -10,6 +10,7 @@ import {
   type DateTimeRangeValue,
   type TimeValue,
 } from '@/utils/date-range';
+import { useAutoRefreshInterval } from '@/hooks/use-auto-refresh-interval';
 import { useDebounce } from '@/hooks/use-debounce';
 import { usePaginationSearch } from '@/hooks/use-pagination-search';
 import useInterval from '@/hooks/useInterval';
@@ -191,7 +192,7 @@ function RequestsContent() {
   );
   const debouncedModelIDFilter = useDebounce(modelIDFilter, 300);
   const debouncedThreadIDFilter = useDebounce(threadIDFilter, 300);
-  const [autoRefresh, setAutoRefresh] = useState(false);
+  const [autoRefreshInterval, setAutoRefreshInterval] = useAutoRefreshInterval('requests-auto-refresh-interval-ms');
 
   // Build where clause with filters
   const whereClause = (() => {
@@ -235,11 +236,12 @@ function RequestsContent() {
 
   const isFirstPage = !paginationArgs.after && cursorHistory.length === 0;
 
-  useInterval(
+  const autoRefreshResumeKey = useInterval(
     () => {
       refetch();
     },
-    autoRefresh && isFirstPage ? 10000 : null
+    isFirstPage ? autoRefreshInterval : null,
+    { refreshOnResume: true }
   );
 
   const handleNextPage = () => {
@@ -369,8 +371,9 @@ function RequestsContent() {
         onViewDetail={handleViewDetail}
         onRefresh={refetch}
         showRefresh={isFirstPage}
-        autoRefresh={autoRefresh}
-        onAutoRefreshChange={setAutoRefresh}
+        autoRefreshInterval={autoRefreshInterval}
+        autoRefreshResumeKey={autoRefreshResumeKey}
+        onAutoRefreshIntervalChange={setAutoRefreshInterval}
       />
     </div>
   );
@@ -385,12 +388,12 @@ export default function RequestsManagement() {
         <div className='flex w-full flex-1 flex-col gap-2 md:flex-row md:items-center md:justify-between md:gap-0'>
           <div>
             <h2 className='text-xl font-bold tracking-tight'>{t('requests.title')}</h2>
-            <p className='text-muted-foreground text-sm'>{t('requests.description')}</p>
+            <p className='text-muted-foreground hidden text-sm sm:block'>{t('requests.description')}</p>
           </div>
         </div>
       </Header>
 
-      <Main fixed>
+      <Main fixed className='py-2 sm:py-6'>
         <Ai4sPageTabs tabs={pageTabGroups.observability(t)} />
         <RequestsContent />
       </Main>

@@ -20,7 +20,7 @@ export function AuthenticatedLayout({ children }: Props) {
   useVersionCheck();
 
   return (
-    <SidebarProvider className='h-screen flex-col overflow-hidden'>
+    <SidebarProvider className='fixed inset-0 min-h-0 flex-col overflow-hidden'>
       <AppHeader />
       <Ai4sTopNavBar />
       <div className='flex flex-1 overflow-hidden'>
