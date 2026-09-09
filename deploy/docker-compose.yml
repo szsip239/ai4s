@@ -29,7 +29,7 @@ services:
       retries: 5
 
   axonhub:
-    image: looplj/axonhub:v1.0.0-beta6
+    image: looplj/axonhub:v1.0.0-beta10
     container_name: ai4s-axonhub
     environment:
       # 环境变量优先级高于配置文件（官方约定），基本配置仅 env 即可
