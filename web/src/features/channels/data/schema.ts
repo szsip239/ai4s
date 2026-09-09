@@ -236,14 +236,17 @@ export const retryableErrorPatternSchema = z.object({
 });
 export type RetryableErrorPattern = z.infer<typeof retryableErrorPatternSchema>;
 
-export const openCodeGoQuotaSettingsSchema = z.object({
-  workspaceId: z.string().optional().nullable(),
+// Provider quota collection settings stored inside channel settings. Mirrors the
+// GraphQL `CommandCodeQuotaSettings` / `ChannelProviderQuotaSettings` types; it
+// is used for the Command Code billing-quota cookie, kept separate from API
+// credentials.
+export const commandCodeQuotaSettingsSchema = z.object({
   authCookie: z.string().optional().nullable(),
 });
-export type OpenCodeGoQuotaSettings = z.infer<typeof openCodeGoQuotaSettingsSchema>;
+export type CommandCodeQuotaSettings = z.infer<typeof commandCodeQuotaSettingsSchema>;
 
 export const channelProviderQuotaSettingsSchema = z.object({
-  opencodeGo: openCodeGoQuotaSettingsSchema.optional().nullable(),
+  commandCode: commandCodeQuotaSettingsSchema.optional().nullable(),
 });
 export type ChannelProviderQuotaSettings = z.infer<typeof channelProviderQuotaSettingsSchema>;
 

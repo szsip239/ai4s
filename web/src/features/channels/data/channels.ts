@@ -115,8 +115,7 @@ const CREATE_CHANNEL_MUTATION = `
           regex
         }
         providerQuota {
-          opencodeGo {
-            workspaceId
+          commandCode {
             authCookie
           }
         }
@@ -189,8 +188,7 @@ const DUPLICATE_CHANNEL_MUTATION = `
           regex
         }
         providerQuota {
-          opencodeGo {
-            workspaceId
+          commandCode {
             authCookie
           }
         }
@@ -263,8 +261,7 @@ const BULK_CREATE_CHANNELS_MUTATION = `
           regex
         }
         providerQuota {
-          opencodeGo {
-            workspaceId
+          commandCode {
             authCookie
           }
         }
@@ -337,8 +334,7 @@ const UPDATE_CHANNEL_MUTATION = `
           regex
         }
         providerQuota {
-          opencodeGo {
-            workspaceId
+          commandCode {
             authCookie
           }
         }
@@ -527,8 +523,7 @@ const BULK_IMPORT_CHANNELS_MUTATION = `
             regex
           }
           providerQuota {
-            opencodeGo {
-              workspaceId
+            commandCode {
               authCookie
             }
           }
@@ -757,8 +752,7 @@ const BULK_UPDATE_CHANNEL_ORDERING_MUTATION = `
             regex
           }
           providerQuota {
-            opencodeGo {
-              workspaceId
+            commandCode {
               authCookie
             }
           }
@@ -915,8 +909,7 @@ const QUERY_CHANNELS_QUERY = `
               regex
             }
             providerQuota {
-              opencodeGo {
-                workspaceId
+              commandCode {
                 authCookie
               }
             }
