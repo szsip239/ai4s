@@ -331,6 +331,11 @@ const WINDOW_LABEL_KEYS: Record<string, string> = {
   cycle: 'quota.label.subscription',
 };
 
+// ai4s（2026-09-09 owner 反馈）：「预计周期额度」估算行（已用 X 点 / 约 Y 点）是
+// 「网关侧窗口花费 ÷ provider 报告百分比」的反推值，订阅制渠道上口径失真、易误导，整体不渲染；
+// provider 直接报告的窗口百分比条（主要窗口 xx%）不受影响。恢复时开关改回 true。
+const SHOW_PERIOD_QUOTA_ESTIMATE = false;
+
 // PeriodQuotaEstimate prices each limit window: the backend sums what the
 // channel cost during the window from AxonHub usage logs and divides by the
 // usage ratio the provider reported, which yields what the whole window is
@@ -2035,7 +2040,7 @@ function QuotaRow({ channel, enforcementMode, allowedChannelIDs }: { channel: Pr
         </div>
       )}
 
-      <PeriodQuotaEstimate limits={quota.limits} />
+      {SHOW_PERIOD_QUOTA_ESTIMATE && <PeriodQuotaEstimate limits={quota.limits} />}
     </div>
   );
 }
