@@ -11,8 +11,13 @@ const transpiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2023 },
 }).outputText
   .replaceAll(
-    "import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';",
-    'const useMutation = () => ({}); const useQuery = () => ({}); const useQueryClient = () => ({}); const keepPreviousData = undefined;'
+    "import { z } from 'zod';",
+    // beta10 起 apikeys.ts 内联 z.object 定义 options schema——链式调用桩：任意 get/call 返回自身，parse 恒等
+    'const z = new Proxy(function () {}, { get: (t, p) => (p === "parse" ? (x) => x : z), apply: () => z });'
+  )
+  .replaceAll(
+    "import { useInfiniteQuery, useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';",
+    'const useInfiniteQuery = () => ({}); const useMutation = () => ({}); const useQuery = () => ({}); const useQueryClient = () => ({}); const keepPreviousData = undefined;'
   )
   .replaceAll("import { graphqlRequest } from '@/gql/graphql';", 'const graphqlRequest = () => Promise.resolve({});')
   .replaceAll("import { useTranslation } from 'react-i18next';", "const useTranslation = () => ({ t: (k) => k });")
@@ -20,10 +25,10 @@ const transpiled = ts.transpileModule(source, {
   .replaceAll("import { useSelectedProjectId } from '@/stores/projectStore';", 'const useSelectedProjectId = () => null;')
   .replaceAll("import { useErrorHandler } from '@/hooks/use-error-handler';", 'const useErrorHandler = () => ({ handleError: () => {} });')
   .replaceAll("import { useRequestPermissions } from '../../../hooks/useRequestPermissions';", 'const useRequestPermissions = () => ({ canViewUsers: false });')
-  .replaceAll(
-    "import { apiKeyConnectionSchema, apiKeyProfileQuotaUsageSchema, apiKeyProfileTemplateSchema, apiKeySchema, apiKeyTokenUsageStatsSchema } from './schema';",
+  .replace(
+    /import\s*\{[^}]*\}\s*from\s*'\.\/schema';/,
     'const __mk = () => ({ parse: (x) => x, array: () => ({ parse: (x) => x }) });\n' +
-      'const apiKeyConnectionSchema = __mk(); const apiKeyProfileQuotaUsageSchema = __mk(); const apiKeyProfileTemplateSchema = __mk(); const apiKeySchema = __mk(); const apiKeyTokenUsageStatsSchema = __mk();'
+      'const apiKeyConnectionSchema = __mk(); const apiKeyStatusSchema = __mk(); const apiKeyProfileQuotaUsageSchema = __mk(); const apiKeyProfileTemplateSchema = __mk(); const apiKeySchema = __mk(); const apiKeyTokenUsageStatsSchema = __mk();'
   );
 
 const { buildApiKeysQuery, buildApiKeyQuery } = await import(

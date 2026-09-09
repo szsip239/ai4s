@@ -20,6 +20,7 @@ import { Switch } from '@/components/ui/switch';
 import { TagsAutocompleteInput } from '@/components/ui/tags-autocomplete-input';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { AutoComplete } from '@/components/auto-complete';
+import { Ai4sQuotaUsageGrid } from '@/ai4s/apikeys/Ai4sQuotaUsageGrid';
 import { useAllChannelSummarys } from '@/features/channels/data/channels';
 import { useApiKeysContext } from '../context/apikeys-context';
 import { useApiKeyQuotaUsages } from '../data/apikeys';
@@ -859,27 +860,8 @@ function ProfileCard({
                     <div className='text-muted-foreground text-xs'>
                       {t('apikeys.profiles.quotaPeriodType')}: {quotaPeriodLabel(quotaUsagePeriod, t)}
                     </div>
-                    <div className='grid gap-3 md:grid-cols-3'>
-                      <div>
-                        <div className='text-muted-foreground text-xs'>{t('apikeys.profiles.quotaRequests')}</div>
-                        <div className='text-sm'>
-                          {quotaUsage.usage.requestCount}/{currentQuota?.requests ?? '∞'}
-                        </div>
-                      </div>
-                      <div>
-                        <div className='text-muted-foreground text-xs'>{t('apikeys.profiles.quotaTotalTokens')}</div>
-                        <div className='text-sm'>
-                          {quotaUsage.usage.totalTokens}/{currentQuota?.totalTokens ?? '∞'}
-                        </div>
-                      </div>
-                      <div>
-                        <div className='text-muted-foreground text-xs'>{t('apikeys.profiles.quotaCost')}</div>
-                        <div className='text-sm'>
-                          {(quotaUsage.usage.totalCost ?? 0).toLocaleString(undefined, { maximumFractionDigits: 6 })}/
-                          {currentQuota?.cost ?? '∞'}
-                        </div>
-                      </div>
-                    </div>
+                    {/* ai4s 挂载（2026-09-09）：三维度 进度条+百分比 仪表，替换原纯文本「已用/上限」；组件与纯逻辑在 src/ai4s/apikeys/ */}
+                    <Ai4sQuotaUsageGrid usage={quotaUsage.usage} quota={currentQuota} />
                     <div className='text-muted-foreground grid gap-2 text-xs md:grid-cols-2'>
                       <div>
                         {t('common.filters.startTime')}{' '}
