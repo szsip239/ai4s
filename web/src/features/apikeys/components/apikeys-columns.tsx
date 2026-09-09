@@ -1,11 +1,14 @@
 import { format } from 'date-fns';
 import { ColumnDef, Table, Row } from '@tanstack/react-table';
+import { Settings } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { extractNumberID } from '@/lib/utils';
+import { cn, extractNumberID, formatUserName } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { DataTableColumnHeader } from '@/components/data-table-column-header';
 import LongText from '@/components/long-text';
 import { ApiKey } from '../data/schema';
+import { useApiKeysContext } from '../context/apikeys-context';
 import { DataTableRowActions } from './data-table-row-actions';
 
 // issue #138：列表不再有 key 明文列（列表查询不下发明文）——
