@@ -169,7 +169,7 @@ class ToolCarrierL1Test(unittest.TestCase):
                     {"role": "assistant", "content": None, "tool_calls": [
                         {"id": "call_1", "type": "function", "function": {
                             "name": "read_config",
-                            "arguments": '{"path": "a", "token": "sk-ant-api03-x1x2x3x4x5x6x7x8x9x0y1y2"}'}}]}]
+                            "arguments": '{"path": "a", "token": "sk-ant-api03-x1x2x3x4x5x6x7x8x9x0y1y2Y3Y4Y5Y6Y7Y8Y9Y0"}'}}]}]
 
     def _post(self, obj, token=None):
         raw = json.dumps(obj).encode()

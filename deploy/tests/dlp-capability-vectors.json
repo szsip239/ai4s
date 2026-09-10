@@ -14,25 +14,25 @@
       "name": "secrets: sk-ant 代码块",
       "layer": "L1",
       "category": "secrets",
-      "content": "这段环境变量导出对吗？\n```bash\nexport ANTHROPIC_API_KEY=sk-ant-api03-z9y8x7w6v5u4t3s2r1q0p9o8n7m6l5k4\n```",
+      "content": "这段环境变量导出对吗？\n```bash\nexport ANTHROPIC_API_KEY=sk-ant-api03-Z9y8X7w6V5u4T3s2R1q0P9o8N7m6L5k4J3i2H1g0\n```",
       "expect": "reject",
-      "sensitive": "sk-ant-api03-z9y8x7w6v5u4t3s2r1q0p9o8n7m6l5k4"
+      "sensitive": "sk-ant-api03-Z9y8X7w6V5u4T3s2R1q0P9o8N7m6L5k4J3i2H1g0"
     },
     {
       "name": "secrets: sk-proj 混入文本",
       "layer": "L1",
       "category": "secrets",
-      "content": "sk-proj-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0 这个项目还有额度吗",
+      "content": "sk-proj-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4 这个项目还有额度吗",
       "expect": "reject",
-      "sensitive": "sk-proj-a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0"
+      "sensitive": "sk-proj-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4"
     },
     {
       "name": "secrets: sk- 普通 key 代码块",
       "layer": "L1",
       "category": "secrets",
-      "content": "本地 .env 里这行生效了吗：\n```\nOPENAI_API_KEY=sk-Q1w2E3r4T5y6U7i8O9p0A1s2D3f4G5h6J7k8\n```",
+      "content": "本地 .env 里这行生效了吗：\n```\nOPENAI_API_KEY=sk-Q1w2E3r4T5y6U7i8O9p0A1s2D3f4G5h6J7k8L9m0N1b2V3c4\n```",
       "expect": "reject",
-      "sensitive": "sk-Q1w2E3r4T5y6U7i8O9p0A1s2D3f4G5h6J7k8"
+      "sensitive": "sk-Q1w2E3r4T5y6U7i8O9p0A1s2D3f4G5h6J7k8L9m0N1b2V3c4"
     },
     {
       "name": "secrets: ghp_ 混入文本",
@@ -386,7 +386,7 @@
       "category": "negative",
       "content": "sk-ant-api03-short 这串也太短了吧，肯定不是真 key",
       "expect": "pass",
-      "note": "sk-ant- 后不足 20 字符，不合规则"
+      "note": "sk-ant- 后不足 40 字符，不达 issue #142 位长下限"
     },
     {
       "name": "negative: 字符集越界假 AKIA",

@@ -914,19 +914,21 @@ class SecretBoundaryNormTest(unittest.TestCase):
                 self.assertEqual(self._hits(text), [])
 
     def test_digitless_long_tail_no_longer_hits(self):
-        """收窄钉档：尾部 20+ 位纯字母无数字不再命中——含 24 个 x 的文档占位串同此豁免。"""
-        self.assertEqual(self._hits("sk-" + "x" * 24), [])
-        self.assertEqual(self._hits("sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), [])
+        """收窄钉档：尾部纯字母（无数字无大写）归一化通道不命中——issue #142 位长提到
+        {40,} 后 48 位纯字母占位串归一化仍豁免（raw 通道按密钥形态兜拦，见
+        test_raw_channel_digitless_placeholder_hits）。"""
+        self.assertEqual(self._hits("sk-" + "x" * 48), [])
+        self.assertEqual(self._hits("sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), [])
 
     def test_clean_keys_still_hit(self):
         """干净形态真 key 检出不变：openai sk-/sk-proj、github ghp_/gho_/github_pat_、anthropic sk-ant 归一化命中。"""
         cases = [
-            ("sk-a1b2c3d4e5f6g7h8i9j0k1l2 失效了吗", "secrets.openai_sk"),
-            ("sk-proj-a1b2c3d4e5f6g7h8i9j0k1l2m3n4 这个怎么用", "secrets.openai_sk"),
+            ("sk-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4 失效了吗", "secrets.openai_sk"),
+            ("sk-proj-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4 这个怎么用", "secrets.openai_sk"),
             ("ghp_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7 是我 PAT", "secrets.github_token"),
             ("gho_a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7", "secrets.github_token"),
             ("github_pat_11ABCDEFG0a1b2c3d4e5_f6g7h8i9j0k1l2m3n4o5p6q7r8s9", "secrets.github_token"),
-            ("sk-ant-a1b2c3d4e5f6g7h8i9j0k1l2 这把 key 还有效吗", "secrets.anthropic_sk"),
+            ("sk-ant-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4 这把 key 还有效吗", "secrets.anthropic_sk"),
         ]
         for text, code in cases:
             with self.subTest(code=code, text=text[:20]):
@@ -934,14 +936,14 @@ class SecretBoundaryNormTest(unittest.TestCase):
 
     def test_key_after_colon_or_cjk_boundary_hits(self):
         """前置为非字母数字（冒号/CJK/引号）时边界断言放行检测：归一化层仍兜住。"""
-        hits = self._hits("密钥：sk-a1b2c3d4e5f6g7h8i9j0k1l2m3n4")
+        hits = self._hits("密钥：sk-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4")
         self.assertIn("secrets.openai_sk", hits)
 
     def test_key_glued_after_letter_word_hits_via_raw_channel(self):
         """issue #140 补漏：key 紧贴字母词尾（"task sk-…"）hard 归一化粘连废掉词首
         lookbehind（归一化单通道仍漏，作病因钉档保留），raw 原文直扫通道
         （gateway_patterns，原网关检测面）兜回——shim 单点下检测面不窄于旧网关层。"""
-        text = "check task sk-a1b2c3d4e5f6g7h8i9j0k1l2m3n4 please"
+        text = "check task sk-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4 please"
         self.assertNotIn("secrets.openai_sk", self._hits(text))  # 归一化单通道仍漏（病因钉档）
         self.assertIn("secrets.openai_sk", self._hits_dual(text))
 
@@ -949,7 +951,7 @@ class SecretBoundaryNormTest(unittest.TestCase):
         """issue #140 补漏：中文语境日常粘贴形态——"这个 key sk-ant-…"里英文词 key 的
         词尾 y 紧邻 skant，归一化通道全漏（活栈实证 200 放行）；raw 通道全兜回。"""
         cases = [
-            ("这个 key sk-ant-api03-a1b2c3d4e5f6g7h8i9j0 帮我看看", "secrets.anthropic_sk"),
+            ("这个 key sk-ant-api03-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4 帮我看看", "secrets.anthropic_sk"),
             ("我的 token ghp_AbCdEfGhIjKlMnOpQrStUvWx 还有效吗", "secrets.github_token"),
             ("把我的 key sk-ant-api03-x1x2x3x4x5x6x7x8x9x0y1y2y3y4y5y6y7y8y9y 发过去", "secrets.anthropic_sk"),
         ]
@@ -972,10 +974,12 @@ class SecretBoundaryNormTest(unittest.TestCase):
                 self.assertEqual(self._hits_dual(text), [])
 
     def test_raw_channel_digitless_placeholder_hits(self):
-        """raw 通道恢复「密钥形态即涉密」口径：sk- + 24 位纯字母文档占位串命中
-        （gateway_patterns 无数字断言——对齐 judge prompt「占位符形态同样涉密」策略；
-        归一化单通道的数字断言豁免仅属该通道，见 test_digitless_long_tail_no_longer_hits）。"""
-        text = "sk-" + "x" * 24
+        """raw 通道保留「密钥形态即涉密」口径：sk- + 48 位纯字母长占位串命中
+        （gateway_patterns 无字符组成断言——对齐 judge prompt「占位符形态同样涉密」策略；
+        issue #142 起位长下限 {40,}，24 位短占位串随之放行，见
+        SecretKeyFormatFidelityTest.test_short_placeholder_passes_long_placeholder_hits；
+        归一化单通道豁免见 test_digitless_long_tail_no_longer_hits）。"""
+        text = "sk-" + "x" * 48
         self.assertIn("secrets.openai_sk", self._hits_dual(text))
 
     def test_uppercase_splice_mines_pass(self):
@@ -1038,6 +1042,72 @@ class SecretBoundaryNormTest(unittest.TestCase):
         for text, code in residual:
             with self.subTest(code=code, text=text[:25]):
                 self.assertIn(code, self._hits(text))
+
+
+class SecretKeyFormatFidelityTest(unittest.TestCase):
+    """secrets sk 族位长/字符组成收口（issue #142，2026-09-10 现网误报）。
+
+    病因：openai_sk/anthropic_sk 尾部下限 {20,} 远低于真实密钥位长（OpenAI legacy 尾 48、
+    sk-proj 48+、sk-ant-api03- 尾 90+），业务编码（"SK20260910-A1B2" 类）与归一化粘连产物
+    （"sk2026 0910 ab12 cd34" 剔分隔符后粘连）轻易越过下限；数字断言 (?=…\\d) 对含日期的
+    业务编码无效（日期本身就是数字）。当日 emp-u13 被误拦 23 次（命中串掩码 sk***rn）。
+    修复：尾部下限 {20,}→{40,}（双通道），归一化通道追加大写字母断言（真 key 为大小写
+    混合 base62，48 位全小写概率 (36/62)^48≈4e-12，明示接受此收窄）；raw 通道不加字符
+    组成断言——保留「密钥形态即涉密」口径（≥40 位长占位串仍拦）。
+    直接读仓库 deploy/dlp/format-rules.json，口径即现网口径。"""
+
+    @classmethod
+    def setUpClass(cls):
+        repo_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        with open(os.path.join(repo_root, "deploy", "dlp", "format-rules.json"), encoding="utf-8") as f:
+            cls.rules = json.load(f)["rules"]
+
+    def _hits_dual(self, text):
+        norm, _ = shim_app.normalize_hard(text)
+        return shim_app.norm_secret_hits(norm, self.rules, raw=text)
+
+    def test_business_codes_pass_dual(self):
+        """现网误报类负例：SK/sk 开头的业务编码（日期码、连字符码、空格分隔粘连码）双通道放行。"""
+        mines = [
+            "工单 SK20260910001 帮我查下进度",
+            "项目编号 sk-2026-0910-A1B2-C3D4-5E6F 什么时候上线",
+            "sk2026 0910 ab12 cd34 ef56 gh78 ij90 kl12 这串编号什么意思",
+            "设备码 sk-2F4A-9B1C-8E3D-7A5F-6B2D 报错",
+            "配置 sk-proj-your-key-here 占位符即可",
+        ]
+        for text in mines:
+            with self.subTest(text=text[:30]):
+                self.assertEqual(self._hits_dual(text), [])
+
+    def test_long_glued_lowercase_code_passes(self):
+        """41 位粘连反例（单靠位长下限防不住）：纯小写+数字的粘连业务串靠大写字母断言放行——
+        真 key 为混合大小写 base62，该断言误杀真检出的概率约 4e-12（明示接受）。"""
+        text = "sk2026 0910 ab12 cd34 ef56 gh78 ij90 kl12 mn34 op"  # 归一化后 41 位
+        self.assertEqual(self._hits_dual(text), [])
+
+    def test_realistic_keys_still_hit(self):
+        """真实位长密钥形态（48 位混合 base62 尾）双通道检出不变。"""
+        cases = [
+            ("sk-T7xQ9mP2wL5vN8cR4yB6hK3jF1dS0aZ9eU7iO5pM2qA4wE8rT", "secrets.openai_sk"),
+            ("sk-proj-W8xR2mN9pQ5vK7yT4bL6jH3fD1sA0zX8cV7nM4qG2hJ9k", "secrets.openai_sk"),
+            ("sk-ant-api03-Kd8F2mQ9xW4vT7bN5jH3cL6pR1sA0zY8eU5iO9wM2", "secrets.anthropic_sk"),
+            ("我的 key sk-T7xQ9mP2wL5vN8cR4yB6hK3jF1dS0aZ9eU7iO5pM2qA4wE8rT 还能用吗", "secrets.openai_sk"),
+        ]
+        for text, code in cases:
+            with self.subTest(code=code, text=text[:24]):
+                self.assertIn(code, self._hits_dual(text))
+
+    def test_lowercase_51_tail_raw_only(self):
+        """全小写长 key 形（51 位）：归一化通道因大写断言不命中（收窄钉档），raw 通道兜回。"""
+        text = "sk-ant-api03-x1x2x3x4x5x6x7x8x9x0y1y2y3y4y5y6y7y8y9y0z1z2"
+        norm, _ = shim_app.normalize_hard(text)
+        self.assertNotIn("secrets.anthropic_sk", shim_app.norm_secret_hits(norm, self.rules))
+        self.assertIn("secrets.anthropic_sk", self._hits_dual(text))
+
+    def test_short_placeholder_passes_long_placeholder_hits(self):
+        """占位符政策随位长下限迁移：24 位短占位放行（文档常见形态）；48 位长占位 raw 仍拦。"""
+        self.assertEqual(self._hits_dual("sk-" + "x" * 24), [])
+        self.assertIn("secrets.openai_sk", self._hits_dual("sk-" + "x" * 48))
 
 
 # EDM fixture（issue #34）：三条目覆盖三种形态——带 added_at、无 added_at（旧文档）、旧格式纯 shingle 数组
