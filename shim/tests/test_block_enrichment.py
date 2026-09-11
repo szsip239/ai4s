@@ -4,8 +4,8 @@
 覆盖：
 - shadow_log.record 新键（side/key_hash/excerpts）非 None 才写的纪律；
 - app.bearer_token / key_hash_from_headers 从 Authorization 头取 token 算 SHA-256；
-- app._mask_excerpt 掩码（短串全掩、长串留头尾）；
-- app.block_excerpts：词表命中原样（管理员自配词表）、secrets 命中掩码、条数/长度上限；
+- app._plain_excerpt 明文摘录（截 200 字符防超长）；
+- app.block_excerpts：词表命中原样（管理员自配词表）、secrets 命中明文（issue #143）、条数/长度上限；
 - admin_api._enrich_block_records：key_hash → key 名/用户邮箱映射（fetcher 注入，不触网）。
 """
 import hashlib
@@ -60,17 +60,23 @@ class TestKeyHash(unittest.TestCase):
         self.assertIsNone(app.key_hash_from_headers({"Authorization": "Bearer "}))
 
 
-class TestMaskExcerpt(unittest.TestCase):
-    def test_short_fully_masked(self):
-        self.assertEqual(app._mask_excerpt("abc"), "****")
-        self.assertEqual(app._mask_excerpt("abcd"), "****")
+class TestPlainExcerpt(unittest.TestCase):
+    """issue #143：命中摘录明文落盘（去掩码）——#142 误报纠纷时掩码无法鉴定命中真假，
+    用户拍板改明文（运行态文件在 deploy/.local 不入库，可见面=管理员/运维）。"""
 
-    def test_long_keeps_head_tail(self):
-        self.assertEqual(app._mask_excerpt("sk-1234567890abcdef"), "sk***ef")
+    def test_plain_verbatim(self):
+        self.assertEqual(app._plain_excerpt("sk-1234567890abcdef"), "sk-1234567890abcdef")
+        self.assertEqual(app._plain_excerpt("abc"), "abc")
+
+    def test_strips_and_empty(self):
+        self.assertEqual(app._plain_excerpt("  sk-ant-x  "), "sk-ant-x")
+        self.assertEqual(app._plain_excerpt(""), "")
 
     def test_cap_length(self):
-        s = "x" * 100
-        self.assertLessEqual(len(app._mask_excerpt(s)), 30)
+        s = "x" * 300
+        out = app._plain_excerpt(s)
+        self.assertLessEqual(len(out), 201)  # 200 + 截断标记
+        self.assertTrue(out.endswith("…"))
 
 
 class TestBlockExcerpts(unittest.TestCase):
@@ -85,16 +91,15 @@ class TestBlockExcerpts(unittest.TestCase):
         ex = app.block_excerpts("", [], hits, [], rules=[])
         self.assertIn({"rule": "confidential.codename", "text": "北极星计划"}, ex)
 
-    def test_secret_hit_masked(self):
+    def test_secret_hit_plaintext(self):
+        """issue #143：secrets 命中串明文落盘（去掩码）——误报鉴定需要完整命中内容。"""
         rules = [{
             "code": "secrets.openai_sk", "action": "reject", "enabled": True,
             "shim_patterns": [r"sk-[A-Za-z0-9]{8,}"],
         }]
         norm = "key 是 sk-abcdef123456 谢谢"
         ex = app.block_excerpts(norm, [], [], ["secrets.openai_sk"], rules=rules)
-        self.assertEqual(ex, [{"rule": "secrets.openai_sk", "text": "sk***56"}])
-        # 不含完整明文
-        self.assertNotIn("sk-abcdef123456", str(ex))
+        self.assertEqual(ex, [{"rule": "secrets.openai_sk", "text": "sk-abcdef123456"}])
 
     def test_cap_and_dedupe(self):
         terms = [{"value": f"词{i}", "rule_id": f"confidential.t{i}"} for i in range(8)]

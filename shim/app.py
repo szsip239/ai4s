@@ -40,7 +40,7 @@
     shadow_log layer=block（blocked=True + rule_ids 规则族标识 + model）+
     日志行；alert_poller 巡检项 5 复用阻断游标通道发飞书卡；issue #134 起增强：
     响应侧 451 同槽落条，block 条带 side/key_hash（SHA-256 指纹）/excerpts
-    （词表原样、secrets 掩码），读侧 shadow-verdicts 按 key_hash 回填 key 名/用户邮箱
+    （词表原样、secrets 明文——issue #143 起去掩码），读侧 shadow-verdicts 按 key_hash 回填 key 名/用户邮箱
   - issue #139 检测面批次（2026-09-08 对抗性审查）：工具调用载体（tool_calls arguments /
     Anthropic tool_use/tool_result blocks）纳入请求侧抽取与响应侧回扫掩码（judge 外发
     掩码管线同口径）；normalize_hard 升级 NFKC + Cyrillic/Greek 同形字折叠 + 繁简表
@@ -1478,23 +1478,22 @@ def key_hash_from_headers(headers):
     return hashlib.sha256(tok.encode()).hexdigest() if tok else None
 
 
-def _mask_excerpt(s: str) -> str:
-    """命中内容掩码摘录：≤4 字符全掩，更长留头尾各 2 字符；整体截 30 字符防超长。"""
+def _plain_excerpt(s: str) -> str:
+    """命中内容明文摘录（issue #143：去掩码——#142 误报纠纷时首2尾2掩码无法鉴定命中
+    真假，用户拍板明文落盘；可见面=管理员/运维，运行态文件 deploy/.local 不入库）。
+    截 200 字符防超长（截断加省略号标记）。"""
     s = (s or "").strip()
-    if not s:
-        return ""
-    if len(s) <= 4:
-        return "****"
-    masked = s[:2] + "***" + s[-2:]
-    return masked[:30]
+    if len(s) > 200:
+        return s[:200] + "…"
+    return s
 
 
 def block_excerpts(norm: str, term_hits: list, hits: list, secret_codes: list,
                    rules: list = None, limit: int = 5) -> list:
-    """451 落条的命中摘录（issue #134）：[{rule, text}]。
-    词表命中（confidential.*）原样保留——词表为管理员自配清单，非用户敏感数据；
-    secrets 命中串掩码留头尾（不存完整密钥）；EDM/其他族无摘录（无可安全展示内容）。
-    不含原文上下文；去重后至多 limit 条。"""
+    """451 落条的命中摘录（issue #134 建，#143 起 secrets 命中串去掩码明文落盘）：
+    [{rule, text}]。词表命中（confidential.*）原样保留——词表为管理员自配清单，
+    非用户敏感数据；secrets 命中串明文（可鉴定性优先）；EDM/其他族无摘录
+    （无可安全展示内容）。不含原文上下文；去重后至多 limit 条。"""
     out, seen = [], set()
 
     def _push(rule_id, text):
@@ -1516,7 +1515,7 @@ def block_excerpts(norm: str, term_hits: list, hits: list, secret_codes: list,
                 for rgx in _norm_compiled(rule):
                     m = rgx.search(norm or "")
                     if m:
-                        _push(code, _mask_excerpt(m.group(0)))
+                        _push(code, _plain_excerpt(m.group(0)))
                         break
                 break
     return out
@@ -2283,8 +2282,8 @@ class Handler(BaseHTTPRequestHandler):
             # 复用阻断通道消费发飞书；rule_ids 为规则族标识（confidential.*/secrets.*/
             # edm.doc_match——规则标识非敏感值）。
             # issue #134 增强：side=request + key_hash（Bearer SHA-256 指纹，不明文落盘，
-            # 读侧哈希比对反查 key 名/用户）+ excerpts（词表命中原样、secrets 掩码，
-            # 绝无完整原文上下文）。record 永不抛（shadow_log 纪律）。
+            # 读侧哈希比对反查 key 名/用户）+ excerpts（词表命中原样、secrets 明文
+            # ——issue #143 起去掩码，误报鉴定需要；绝无完整原文上下文）。record 永不抛（shadow_log 纪律）。
             shadow_log.record("block", hit=True, blocked=True, rule_ids=rule_ids,
                               model=self._req_model(payload), side="request",
                               key_hash=key_hash_from_headers(self.headers),

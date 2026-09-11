@@ -112,10 +112,11 @@ class BlockObserveTest(unittest.TestCase):
         self.assertEqual(len(blocks), 1)
         self.assertIn("secrets.test_sk", blocks[0]["rule_ids"])
         self.assertNotIn("model", blocks[0])  # 无 x-model 头 → 键级省略纪律
-        # issue #134：secrets 命中串掩码落摘录（归一化后命中 skABCDEFGH12345 → 留头尾），不落完整密钥
+        # issue #143：secrets 命中串明文落摘录（归一化后命中 skABCDEFGH12345 原样落盘，
+        # 去掩码——误报鉴定需要）；不落整句原文上下文
         ex = blocks[0].get("excerpts") or []
-        self.assertEqual(ex, [{"rule": "secrets.test_sk", "text": "sk***45"}])
-        self.assertNotIn("skABCDEFGH12345", json.dumps(blocks[0], ensure_ascii=False))
+        self.assertEqual(ex, [{"rule": "secrets.test_sk", "text": "skABCDEFGH12345"}])
+        self.assertNotIn("我的 key 是", json.dumps(blocks[0], ensure_ascii=False))
 
     def test_clean_request_no_block_record(self):
         _, body = _post("/request", self._payload("今天天气怎么样"))

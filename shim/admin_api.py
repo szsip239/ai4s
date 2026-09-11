@@ -1230,7 +1230,7 @@ def _shadow_verdicts(handler, _me):
     issue #134：block 层增强——records 另带 side（request/response）、key_hash
     （SHA-256 指纹）与读侧回填的 key_name/user_email（身份反查：admin GraphQL 拉
     key 清单现算哈希比对，60s 缓存，失败 fail-open 不标注）、excerpts（命中摘录：
-    词表原样/secrets 掩码）。"""
+    词表原样/secrets 明文——issue #143 起去掩码）。"""
     q = urllib.parse.parse_qs(urllib.parse.urlsplit(handler.path).query)
     try:
         n = int((q.get("n") or ["50"])[0])

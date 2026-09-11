@@ -87,11 +87,13 @@ def record(layer: str, hit=None, score=None, confidence=None, latency_ms=None,
     issue #134：block 层增强三键——side（request/response 侧）、key_hash（请求 Bearer
     token 的 SHA-256，与 bypass_keys 同纪律：不明文落盘，身份反查在读侧经 admin
     GraphQL 哈希比对完成）、excerpts（命中摘录 [{rule,text}]：词表命中原样——词表
-    为管理员自配非用户敏感数据；secrets 命中掩码留头尾；绝无完整原文/上下文）。
+    为管理员自配非用户敏感数据；secrets 命中 issue #143 起明文落盘（去掩码，
+    误报鉴定需要）；绝无完整原文/上下文）。
     issue #134：block 层增强三键——side（request/response 侧）、key_hash（请求 Bearer
     token 的 SHA-256，与 bypass_keys 同纪律：不明文落盘，身份反查在读侧经 admin
     GraphQL 哈希比对完成）、excerpts（命中摘录 [{rule,text}]：词表命中原样——词表
-    为管理员自配非用户敏感数据；secrets 命中掩码留头尾；绝无完整原文/上下文）。
+    为管理员自配非用户敏感数据；secrets 命中 issue #143 起明文落盘（去掩码，
+    误报鉴定需要）；绝无完整原文/上下文）。
     三键同「非 None 才写」纪律。
     admin 配置面审计（layer="admin"）：actor（操作者 email，缺省 id）、op（操作名
     put_settings/put_wordlist/put_format_rules/bypass_add/
@@ -117,7 +119,7 @@ def record(layer: str, hit=None, score=None, confidence=None, latency_ms=None,
                  ("p_complex", p_complex), ("reason", reason), ("session", session),
                  ("rule_ids", rule_ids),  # rule_ids：issue #130 block 层命中规则族
                  ("side", side), ("key_hash", key_hash),  # issue #134：block 层侧别/密钥哈希
-                 ("excerpts", excerpts),  # excerpts：issue #134 命中摘录（掩码）
+                 ("excerpts", excerpts),  # excerpts：issue #134 命中摘录（#143 起明文）
                  ("actor", actor), ("op", op), ("changed", changed)):  # admin 配置面审计
         if v is not None:
             rec[k] = v
