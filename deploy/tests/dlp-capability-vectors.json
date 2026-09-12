@@ -386,7 +386,7 @@
       "category": "negative",
       "content": "sk-ant-api03-short 这串也太短了吧，肯定不是真 key",
       "expect": "pass",
-      "note": "sk-ant- 后不足 40 字符，不达 issue #142 位长下限"
+      "note": "sk-ant- 后不足 20 字符，不达位长下限（#142 复查收口由 40 回 20）"
     },
     {
       "name": "negative: 字符集越界假 AKIA",
@@ -467,7 +467,7 @@
       "name": "response: 请求侧 L1 先兜住",
       "layer": "response",
       "category": "response",
-      "content": "模拟泄漏，顺便验证 sk-ant-api03-x1x2x3x4x5x6x7x8x9x0y1y2y3y4y5y6y7y8y9y0z1z2",
+      "content": "模拟泄漏，顺便验证 sk-ant-api03-X1x2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4",
       "expect": "reject",
       "note": "请求本身含 sk-ant，确认请求侧 L1 先于响应侧拦截"
     },

@@ -633,7 +633,8 @@ class AdminFormatRulesTest(unittest.TestCase):
             self.assertEqual(f.read(), _CONFIG_FIXTURE)
 
     def test_put_format_rules_invalid_400(self):
-        """PUT 校验逐条 400：schema 必填、action/layer 枚举、regex 编译、gateway_patterns 禁 Rust 不支持构造。"""
+        """PUT 校验逐条 400：schema 必填、action/layer 枚举、regex 编译、gateway_patterns 禁 backreference。
+        lookaround 自 #142 复查收口起放行（消费方仅 shim Python re），见下方 200 钉档。"""
         import copy
         base_rule = {"code": "secrets.ok", "layer": "L1", "action": "reject", "enabled": True,
                      "message": "m", "gateway_patterns": [r"OK[0-9]{4}"], "shim_patterns": []}
@@ -656,8 +657,6 @@ class AdminFormatRulesTest(unittest.TestCase):
             "reject 缺 message": doc(lambda r: r.pop("message")),
             "gateway_patterns 非数组": doc(lambda r: r.update(gateway_patterns="x")),
             "gateway regex 编译失败": doc(lambda r: r.update(gateway_patterns=["("])),
-            "gateway lookbehind": doc(lambda r: r.update(gateway_patterns=[r"(?<=OK)[0-9]+"])),
-            "gateway lookahead": doc(lambda r: r.update(gateway_patterns=[r"OK(?=X)"])),
             "gateway backreference": doc(lambda r: r.update(gateway_patterns=[r"(OK)\1"])),
             "shim regex 编译失败": doc(lambda r: r.update(shim_patterns=["("])),
         }
@@ -670,6 +669,20 @@ class AdminFormatRulesTest(unittest.TestCase):
         self.assertEqual(self._read_json(self.rules_path), _FR_FIXTURE)
         with open(self.config_path, encoding="utf-8") as f:
             self.assertEqual(f.read(), _CONFIG_FIXTURE)
+
+    def test_put_format_rules_gateway_lookaround_200(self):
+        """#142 复查收口：gateway_patterns 放行 lookaround——唯一消费方为 shim 原文直扫
+        （Python re，#140 起渲染链路撤除），sk 族双通道字符组成断言需要 lookahead。"""
+        import copy
+        new_doc = copy.deepcopy(_FR_FIXTURE)
+        new_doc["rules"].append({
+            "code": "secrets.look", "layer": "L1", "action": "reject", "enabled": True,
+            "message": "lookaround key",
+            "gateway_patterns": [r"LOOK(?=[A-Za-z0-9]*\d)(?=[A-Za-z0-9]*[A-Z])[A-Za-z0-9]{20,}"],
+            "shim_patterns": []})
+        status, body = _request("PUT", "/dlp-admin/format-rules", token="writer-token", payload=new_doc)
+        self.assertEqual(status, 200, body)
+        self.assertEqual(self._read_json(self.rules_path), new_doc)
 
     def test_put_format_rules_json_write_failure_500(self):
         """JSON 写失败（review #2）→ 500 带 error 且 config.yaml 未被触碰（与 YAML 写失败处理对称）。"""
@@ -914,9 +927,8 @@ class SecretBoundaryNormTest(unittest.TestCase):
                 self.assertEqual(self._hits(text), [])
 
     def test_digitless_long_tail_no_longer_hits(self):
-        """收窄钉档：尾部纯字母（无数字无大写）归一化通道不命中——issue #142 位长提到
-        {40,} 后 48 位纯字母占位串归一化仍豁免（raw 通道按密钥形态兜拦，见
-        test_raw_channel_digitless_placeholder_hits）。"""
+        """收窄钉档：尾部纯字母（无数字无大写）归一化通道不命中。#142 复查收口后
+        raw 通道同持字符组成断言，双通道均豁免（见 test_raw_channel_digitless_placeholder_passes）。"""
         self.assertEqual(self._hits("sk-" + "x" * 48), [])
         self.assertEqual(self._hits("sk-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), [])
 
@@ -953,7 +965,7 @@ class SecretBoundaryNormTest(unittest.TestCase):
         cases = [
             ("这个 key sk-ant-api03-A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4 帮我看看", "secrets.anthropic_sk"),
             ("我的 token ghp_AbCdEfGhIjKlMnOpQrStUvWx 还有效吗", "secrets.github_token"),
-            ("把我的 key sk-ant-api03-x1x2x3x4x5x6x7x8x9x0y1y2y3y4y5y6y7y8y9y 发过去", "secrets.anthropic_sk"),
+            ("把我的 key sk-ant-api03-X1x2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8 发过去", "secrets.anthropic_sk"),
         ]
         for text, code in cases:
             with self.subTest(code=code, text=text[:16]):
@@ -973,14 +985,12 @@ class SecretBoundaryNormTest(unittest.TestCase):
             with self.subTest(text=text[:30]):
                 self.assertEqual(self._hits_dual(text), [])
 
-    def test_raw_channel_digitless_placeholder_hits(self):
-        """raw 通道保留「密钥形态即涉密」口径：sk- + 48 位纯字母长占位串命中
-        （gateway_patterns 无字符组成断言——对齐 judge prompt「占位符形态同样涉密」策略；
-        issue #142 起位长下限 {40,}，24 位短占位串随之放行，见
-        SecretKeyFormatFidelityTest.test_short_placeholder_passes_long_placeholder_hits；
-        归一化单通道豁免见 test_digitless_long_tail_no_longer_hits）。"""
+    def test_raw_channel_digitless_placeholder_passes(self):
+        """#142 复查收口：raw 通道同持字符组成断言（数字+大写），不再单按「密钥形态即涉密」
+        兜拦——sk- + 48 位纯小写长占位串双通道放行（占位符/全小写长串非可用密钥，明示接受
+        此收窄；归一化单通道豁免见 test_digitless_long_tail_no_longer_hits）。"""
         text = "sk-" + "x" * 48
-        self.assertIn("secrets.openai_sk", self._hits_dual(text))
+        self.assertEqual(self._hits_dual(text), [])
 
     def test_uppercase_splice_mines_pass(self):
         """8 条全大写拼接雷负例（与 deploy/tests/dlp-vectors.json #108 负例同文）归一化后零命中。
@@ -1045,15 +1055,18 @@ class SecretBoundaryNormTest(unittest.TestCase):
 
 
 class SecretKeyFormatFidelityTest(unittest.TestCase):
-    """secrets sk 族位长/字符组成收口（issue #142，2026-09-10 现网误报）。
+    """secrets sk 族位长/字符组成收口（issue #142，2026-09-10 现网误报；2026-09-12 复查收口）。
 
-    病因：openai_sk/anthropic_sk 尾部下限 {20,} 远低于真实密钥位长（OpenAI legacy 尾 48、
-    sk-proj 48+、sk-ant-api03- 尾 90+），业务编码（"SK20260910-A1B2" 类）与归一化粘连产物
-    （"sk2026 0910 ab12 cd34" 剔分隔符后粘连）轻易越过下限；数字断言 (?=…\\d) 对含日期的
-    业务编码无效（日期本身就是数字）。当日 emp-u13 被误拦 23 次（命中串掩码 sk***rn）。
-    修复：尾部下限 {20,}→{40,}（双通道），归一化通道追加大写字母断言（真 key 为大小写
-    混合 base62，48 位全小写概率 (36/62)^48≈4e-12，明示接受此收窄）；raw 通道不加字符
-    组成断言——保留「密钥形态即涉密」口径（≥40 位长占位串仍拦）。
+    初修（#142）：尾部下限 {20,}→{40,}（双通道），归一化通道追加大写字母断言——以位长
+    压住业务编码误报（当日 emp-u13 被误拦 23 次）。
+    复查收口（用户拍板）：位长下限回 {20,}——真实密钥语义是「剔无效分隔符（空格/横线/
+    下划线/换行/零宽）后连续的一串」，位长不是判据；夹真实内容（中文/标点）即拼不起来，
+    不算泄密。配套：字符组成断言（数字+大写）双通道化——raw 通道原「密钥形态即涉密」
+    口径（无断言、40 位长占位仍拦）随位长回退一并放弃，防业务编码误报反弹。
+    明示接受的取舍：
+    - 含大写+数字的 20+ 位 sk 形态串与真 key 同构，规则分不开——「sk-2026-0910-A1B2-
+      C3D4-5E6F」类横线分段业务码双通道照拦（钉档见 test_uppercase_business_codes_still_blocked）。
+    - 全小写/无数字长串（含 48 位纯小写占位）双通道放行——非可用密钥形态。
     直接读仓库 deploy/dlp/format-rules.json，口径即现网口径。"""
 
     @classmethod
@@ -1067,17 +1080,26 @@ class SecretKeyFormatFidelityTest(unittest.TestCase):
         return shim_app.norm_secret_hits(norm, self.rules, raw=text)
 
     def test_business_codes_pass_dual(self):
-        """现网误报类负例：SK/sk 开头的业务编码（日期码、连字符码、空格分隔粘连码）双通道放行。"""
+        """现网误报类负例：SK/sk 开头的业务编码（日期码、空格分隔粘连码、短占位符）双通道放行。"""
         mines = [
             "工单 SK20260910001 帮我查下进度",
-            "项目编号 sk-2026-0910-A1B2-C3D4-5E6F 什么时候上线",
             "sk2026 0910 ab12 cd34 ef56 gh78 ij90 kl12 这串编号什么意思",
-            "设备码 sk-2F4A-9B1C-8E3D-7A5F-6B2D 报错",
             "配置 sk-proj-your-key-here 占位符即可",
         ]
         for text in mines:
             with self.subTest(text=text[:30]):
                 self.assertEqual(self._hits_dual(text), [])
+
+    def test_uppercase_business_codes_still_blocked(self):
+        """明示接受的代价（复查收口）：横线分段、含大写+数字、20+ 位的业务码与真 key
+        形态同构——剔横线粘连后过全部断言，双通道照拦。"""
+        blocked = [
+            ("项目编号 sk-2026-0910-A1B2-C3D4-5E6F 什么时候上线", "secrets.openai_sk"),
+            ("设备码 sk-2F4A-9B1C-8E3D-7A5F-6B2D 报错", "secrets.openai_sk"),
+        ]
+        for text, code in blocked:
+            with self.subTest(text=text[:30]):
+                self.assertIn(code, self._hits_dual(text))
 
     def test_long_glued_lowercase_code_passes(self):
         """41 位粘连反例（单靠位长下限防不住）：纯小写+数字的粘连业务串靠大写字母断言放行——
@@ -1086,28 +1108,46 @@ class SecretKeyFormatFidelityTest(unittest.TestCase):
         self.assertEqual(self._hits_dual(text), [])
 
     def test_realistic_keys_still_hit(self):
-        """真实位长密钥形态（48 位混合 base62 尾）双通道检出不变。"""
+        """真实密钥形态双通道检出：48 位混合 base62 尾、22 位短形态、空格/横线拆散形态。"""
         cases = [
             ("sk-T7xQ9mP2wL5vN8cR4yB6hK3jF1dS0aZ9eU7iO5pM2qA4wE8rT", "secrets.openai_sk"),
             ("sk-proj-W8xR2mN9pQ5vK7yT4bL6jH3fD1sA0zX8cV7nM4qG2hJ9k", "secrets.openai_sk"),
             ("sk-ant-api03-Kd8F2mQ9xW4vT7bN5jH3cL6pR1sA0zY8eU5iO9wM2", "secrets.anthropic_sk"),
             ("我的 key sk-T7xQ9mP2wL5vN8cR4yB6hK3jF1dS0aZ9eU7iO5pM2qA4wE8rT 还能用吗", "secrets.openai_sk"),
+            # 22 位短形态（位长回 {20,} 的动机：39 位以下真实形态纳入检测）
+            ("sk-T7xQ9mP2wL5vN8cR4yB6hK1j", "secrets.openai_sk"),
+            ("sk-ant-api03-Kd8F2mQ9xW4vT7bN", "secrets.anthropic_sk"),
+            # 空格拆散真 key：剔无效分隔符后仍连续，算泄密，拦
+            ("sk- T7xQ9mP2 wL5vN8cR4 yB6hK3jF1 dS0aZ9eU 7iO5pM2q A4wE8rT", "secrets.openai_sk"),
         ]
         for text, code in cases:
             with self.subTest(code=code, text=text[:24]):
                 self.assertIn(code, self._hits_dual(text))
 
-    def test_lowercase_51_tail_raw_only(self):
-        """全小写长 key 形（51 位）：归一化通道因大写断言不命中（收窄钉档），raw 通道兜回。"""
+    def test_content_between_fragments_breaks_continuity(self):
+        """复查口径钉档：碎片间夹真实内容（中文/标点）即拼不起来，不算泄密——放行。
+        归一化只剔空格/横线/下划线/换行/零宽，其余字符切断粘连。"""
+        fragments = [
+            "sk T7xQ9mP2wL 然后 5vN8cR4yB6hK3jF1dS0aZ9eU7iO5pM2qA4wE8rT",
+            "sk T7xQ9mP2wL。5vN8cR4yB6hK3jF1dS0aZ9eU7iO5pM2qA4wE8rT",
+            "sk T7xQ9mP2wL, 5vN8cR4yB6hK3jF1dS0aZ9eU7iO5pM2qA4wE8rT",
+        ]
+        for text in fragments:
+            with self.subTest(text=text[:24]):
+                self.assertEqual(self._hits_dual(text), [])
+
+    def test_lowercase_long_form_passes_dual(self):
+        """全小写长 key 形（51 位）：双通道字符组成断言（数字+大写）均不满足，放行——
+        复查收口明示接受的收窄（原 raw 通道「形态即涉密」兜拦口径已放弃）。"""
         text = "sk-ant-api03-x1x2x3x4x5x6x7x8x9x0y1y2y3y4y5y6y7y8y9y0z1z2"
         norm, _ = shim_app.normalize_hard(text)
         self.assertNotIn("secrets.anthropic_sk", shim_app.norm_secret_hits(norm, self.rules))
-        self.assertIn("secrets.anthropic_sk", self._hits_dual(text))
+        self.assertEqual(self._hits_dual(text), [])
 
-    def test_short_placeholder_passes_long_placeholder_hits(self):
-        """占位符政策随位长下限迁移：24 位短占位放行（文档常见形态）；48 位长占位 raw 仍拦。"""
+    def test_placeholders_pass_dual(self):
+        """占位符政策：24 位/48 位纯小写占位串双通道放行（无大写不涉密形态）。"""
         self.assertEqual(self._hits_dual("sk-" + "x" * 24), [])
-        self.assertIn("secrets.openai_sk", self._hits_dual("sk-" + "x" * 48))
+        self.assertEqual(self._hits_dual("sk-" + "x" * 48), [])
 
 
 # EDM fixture（issue #34）：三条目覆盖三种形态——带 added_at、无 added_at（旧文档）、旧格式纯 shingle 数组

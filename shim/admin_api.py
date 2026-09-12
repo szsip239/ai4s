@@ -710,8 +710,9 @@ def _settings_put(handler, _me):
     _respond(handler, 200, payload)
 
 
-# gateway_patterns 禁用的 Rust regex 不支持构造（lookaround；backreference 另行 \1~\9 扫描）
-_RUST_UNSUPPORTED = ("(?=", "(?!", "(?<=", "(?<!")
+# gateway_patterns 禁用的构造：backreference（\1~\9 扫描）。
+# lookaround 曾同禁（Rust regex 不支持），#142 复查收口起放行——gateway_patterns 唯一消费方是
+# shim 原文直扫通道（Python re，issue #140 起渲染链路已撤除），sk 族字符组成断言需要 lookahead。
 _BACKREF_RE = re.compile(r"\\[1-9]")
 
 
@@ -729,10 +730,11 @@ def _check_pattern(p, label: str) -> str | None:
 def _validate_format_rules(data) -> str | None:
     """format-rules JSON 校验（issue #33）：合法返回 None，非法返回具体原因。
     schema：每条 code/layer/action/enabled 必填，action∈{reject,mask}，layer∈{L1,L1.5}；
-    全部 patterns 过 re.compile；gateway_patterns 禁 Rust regex 不支持构造（lookaround/backreference）。
+    全部 patterns 过 re.compile；gateway_patterns 禁 backreference（lookaround 自 #142 复查
+    收口起放行——唯一消费方为 shim Python re，sk 族断言需要）。
     issue #140：gateway_scope 已无消费方（不再渲染 config.yaml），保留为历史文件兼容字段；
-    gateway_patterns 改由 shim 原文直扫通道消费（app.py norm_secret_hits raw 通道）——Rust 构造
-    禁令原样保留（约束更严无害，且兼容未来任何 RE2 消费方回归），校验整体原样防脏数据落盘。"""
+    gateway_patterns 改由 shim 原文直扫通道消费（app.py norm_secret_hits raw 通道），
+    校验整体防脏数据落盘。"""
     if not isinstance(data, dict):
         return "format-rules 必须是对象"
     rules = data.get("rules")
@@ -764,11 +766,8 @@ def _validate_format_rules(data) -> str | None:
             err = _check_pattern(p, f"rules[{i}].gateway_patterns[{j}]")
             if err:
                 return err
-            for bad in _RUST_UNSUPPORTED:
-                if bad in p:
-                    return f"rules[{i}].gateway_patterns[{j}] 含 Rust regex 不支持的构造: {bad}"
             if _BACKREF_RE.search(p):
-                return f"rules[{i}].gateway_patterns[{j}] 含 Rust regex 不支持的 backreference"
+                return f"rules[{i}].gateway_patterns[{j}] 含不支持的 backreference"
         sp = r.get("shim_patterns", [])
         if not isinstance(sp, list):
             return f"rules[{i}].shim_patterns 必须是数组"

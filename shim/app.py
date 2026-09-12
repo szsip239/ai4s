@@ -1213,7 +1213,8 @@ def _raw_compiled(rule: dict) -> list:
     """编译单条规则的原文直扫 pattern（gateway_patterns）。坏 pattern 跳过。
     历史背景（issue #140）：gateway_patterns 原渲染进 agentgateway config.yaml 由网关
     在原文上直扫；#140 起网关层撤除、判定收回 shim 单点，本字段改由 shim 原文直扫通道
-    消费（归一化通道的 lookbehind 边界会被粘连废掉，原文通道兜回该漏检面）。"""
+    消费（归一化通道的 lookbehind 边界会被粘连废掉，原文通道兜回该漏检面）。本进程为
+    唯一消费方（Python re），pattern 允许 lookaround（#142 复查收口 sk 族断言）。"""
     out = []
     for p in rule.get("gateway_patterns") or []:
         try:

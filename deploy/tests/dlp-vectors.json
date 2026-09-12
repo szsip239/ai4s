@@ -5,9 +5,9 @@
   {
    "name": "secret: sk-ant 干净样本",
    "layer": "secrets",
-   "content": "把我的 key sk-ant-api03-x1x2x3x4x5x6x7x8x9x0y1y2y3y4y5y6y7y8y9y0z1z2 贴给模型看看",
+   "content": "把我的 key sk-ant-api03-X1x2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4 贴给模型看看",
    "expect": "reject",
-   "sensitive": "sk-ant-api03-x1x2x3x4x5x6x7x8x9x0y1y2y3y4y5y6y7y8y9y0z1z2"
+   "sensitive": "sk-ant-api03-X1x2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0U1v2W3x4"
   },
   {
    "name": "secret: sk-proj 干净样本",
