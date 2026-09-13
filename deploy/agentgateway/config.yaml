@@ -63,6 +63,11 @@ routes:
         # 无改写目标时回退原 model——注意 eval 失败会删 model 键，故必须 has() 守卫不抛错
         transformations:
           model: 'has(extauthz.resolved_model) && extauthz.resolved_model != null && extauthz.resolved_model != "" ? extauthz.resolved_model : llmRequest.model'
+          # K3 族统一 temperature=1：kimi 渠道 k3/k3-256k 为思考模型，上游只接受 temperature=1，
+          # 客户端传其他值直接报错——收口网关，客户端免各自适配。非 K3 原样透传；客户端未提供
+          # temperature 时表达式 eval 失败→删键=no-op（键本不存在），语义同上方 model 注。
+          # auto 路由现网档位（deepseek-v4-flash/gpt-5.6-luna）不含 K3，无需匹配 extauthz.resolved_model。
+          temperature: 'llmRequest.model in ["k3", "k3-256k"] ? 1.0 : llmRequest.temperature'
         promptGuard:
           request:
             # issue #140：L1/L1.5 格式规则（secrets reject / PII mask）判定收回下方 shim
@@ -120,6 +125,11 @@ routes:
       urlRewrite:
         path:
           prefix: /v1
+      # K3 族 temperature=1 统一收口同 /v1——绕行入口不豁免参数修正（只改 temperature，
+      # 不动 model、无 promptGuard，Key 全绕 DLP 语义不变）。
+      ai:
+        transformations:
+          temperature: 'llmRequest.model in ["k3", "k3-256k"] ? 1.0 : llmRequest.temperature'
       extAuthz:
         host: shim:8080
         failureMode: deny  # fail-closed：绕行门在 shim 故障时常闭

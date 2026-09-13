@@ -51,6 +51,8 @@ class Handler(BaseHTTPRequestHandler):
                         echo = " ".join(p.get("text", "") for p in c if isinstance(p, dict))
                     break
             content = "mock upstream reply: link OK | echo: " + echo[:2000]
+            # 参数回显锚点（K3 temperature=1 网关注入验证）：断言上游实际收到的 temperature
+            content += " | temp: " + json.dumps(req.get("temperature"))
             # issue #23 响应侧测试触发器：请求只含无害暗号，应答由 mock 拼出敏感内容
             if "模拟泄漏" in echo:
                 content = ("mock upstream reply: leak-sim | 好的，信息如下："
