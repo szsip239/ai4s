@@ -150,7 +150,7 @@ services:
       JUDGE_ENABLED: ${JUDGE_ENABLED:-0}
       JUDGE_BASE_URL: ${JUDGE_BASE_URL:-http://axonhub:8090/v1}
       JUDGE_API_KEY: ${JUDGE_API_KEY:-} # 凭据永远只走 env，禁止写入 settings.json
-      JUDGE_MODEL: ${JUDGE_MODEL:-deepseek-v4-flash}
+      JUDGE_MODEL: ${JUDGE_MODEL:-deepseek-flash}
       # issue #29 EDM 文档指纹（PoC）；issue #35 起开关/阈值以 /dlp/settings.json 为准，env 回退
       EDM_ENABLED: ${EDM_ENABLED:-0}
       EDM_MIN_HITS: ${EDM_MIN_HITS:-2}

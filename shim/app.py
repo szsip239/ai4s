@@ -390,7 +390,7 @@ def _judge_chat(model, base_url, timeout, system_content, fewshot, text):
             {"role": "user", "content": fewshot},
             {"role": "user", "content": text[:4000]},
         ],
-        "max_tokens": 1500,  # issue #61：deepseek-v4-flash 是推理模型，300 会被 reasoning 烧尽（finish_reason=length、content 空 → ERR）；1500 实测够用
+        "max_tokens": 1500,  # issue #61：deepseek-flash 是推理模型，300 会被 reasoning 烧尽（finish_reason=length、content 空 → ERR）；1500 实测够用
         "temperature": 0,
     }).encode()
     req = urllib.request.Request(
@@ -417,7 +417,7 @@ def judge_text(text: str):
     enabled = setting_value(s, "judge", "enabled", "JUDGE_ENABLED", False)
     if not (enabled and JUDGE_API_KEY):
         return None
-    model = setting_value(s, "judge", "model", "JUDGE_MODEL", "deepseek-v4-flash")
+    model = setting_value(s, "judge", "model", "JUDGE_MODEL", "deepseek-flash")
     base_url = setting_value(s, "judge", "base_url", "JUDGE_BASE_URL", "http://axonhub:8090/v1")
     timeout = setting_value(s, "judge", "timeout", "JUDGE_TIMEOUT", 8)
     prompt_system = setting_value(s, "judge", "prompt_system", None, None)
@@ -458,7 +458,7 @@ def judge_inject_text(text: str):
     inject_on = setting_value(s, "judge", "inject_enabled", "JUDGE_INJECT_ENABLED", False)
     if not (enabled and inject_on and JUDGE_API_KEY):
         return None
-    model = setting_value(s, "judge", "model", "JUDGE_MODEL", "deepseek-v4-flash")
+    model = setting_value(s, "judge", "model", "JUDGE_MODEL", "deepseek-flash")
     base_url = setting_value(s, "judge", "base_url", "JUDGE_BASE_URL", "http://axonhub:8090/v1")
     timeout = setting_value(s, "judge", "timeout", "JUDGE_TIMEOUT", 8)
     prompt_system = setting_value(s, "judge", "inject_prompt_system", None, None)
@@ -486,10 +486,10 @@ def judge_inject_text(text: str):
 #（p >= 阈值 → complex）。外发纪律同 #93：分类输入先过 mask_pipeline（L1/L2 掩码）再外发。
 # routing 节（settings.json 热更新；节缺席或 enabled=false → 零行为：/classify 恒 200 无头）：
 #   enabled（默认 false——新层进场先关，验证后再开）/threshold（默认 0.5，#114 §7 推荐
-#   默认工作点）/tiers（两档映射，默认 simple→deepseek-v4-flash、complex→gpt-5.6-luna，
+#   默认工作点）/tiers（两档映射，默认 simple→deepseek-flash、complex→gpt-5.6-luna，
 #   与网关 modelAliases auto→gpt-5.6-luna 兜底一致；映射目标只选全量开放模型池，
-#   避免与 axonhub profile 白名单耦合）/timeout（默认 4s——#114 §8 建议 3~5s：分类在
-#   请求关键路径上，judge.timeout=8s 盖不住长尾；超时 fail-open）/max_concurrency
+#   避免与 axonhub profile 白名单耦合）/timeout（默认 6s——issue #144：实测分类链路
+#   p95≈3.5s/max≈4s，4s 贴线致尾部结构性 fail-open；超时 fail-open）/max_concurrency
 #  （默认 2，**独立预算键**，与商密/注入 judge 不互挤——#114 §8）。
 # 会话策略（方案 A）：同会话首轮定档、后续继承；只允许强置信升档（simple→complex，
 # 本轮 p_complex ≥ escalate_conf），永不降档；tool-loop 硬锁（最后一条消息
@@ -672,7 +672,7 @@ def router_classify(text: str, settings: dict):
     结构性 fail-open）。settings 由调用方一次读入（热更新每请求重读）。"""
     if not text or not JUDGE_API_KEY:
         return None
-    model = setting_value(settings, "judge", "model", "JUDGE_MODEL", "deepseek-v4-flash")
+    model = setting_value(settings, "judge", "model", "JUDGE_MODEL", "deepseek-flash")
     base_url = setting_value(settings, "judge", "base_url", "JUDGE_BASE_URL", "http://axonhub:8090/v1")
     timeout = setting_value(settings, "routing", "timeout", "ROUTING_TIMEOUT", 6)
     # issue #119：分类系统提示可配（routing.prompt），缺省=ROUTER_PROMPT_SYSTEM 常量逐字
@@ -699,7 +699,7 @@ def route_resolve(payload: dict, headers, settings: dict) -> dict:
     messages = payload.get("messages")
     messages = messages if isinstance(messages, list) else []
     tiers = setting_value(settings, "routing", "tiers", None,
-                          {"simple": "deepseek-v4-flash", "complex": "gpt-5.6-luna"})
+                          {"simple": "deepseek-flash", "complex": "gpt-5.6-luna"})
     # tiers 值进响应头：过白名单（settings 可能被手改绕过 admin 校验——防响应拆分
     # 纪律与 #115 桩一致）。配置坏=分类不可用 → fail-open + error 落条（要可感知）。
     if not (isinstance(tiers, dict)

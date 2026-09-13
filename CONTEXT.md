@@ -56,7 +56,7 @@ _Avoid_: 原文外发
 _Avoid_: 虚拟模型、智能模型
 
 **路由档位（Routing Tier）**:
-auto 路由的两档分类结论：`simple`（便宜档，默认映射 deepseek-v4-flash）/ `complex`（旗舰档，默认 gpt-5.6-luna）；映射经 settings `routing.tiers` 热更新，目标模型必须在员工 key 的 profile 白名单内。与额度「档（Tier）」是两个不相干概念——那个管额度，这个管模型选型。
+auto 路由的两档分类结论：`simple`（便宜档，默认映射 deepseek-flash）/ `complex`（旗舰档，默认 gpt-5.6-luna）；映射经 settings `routing.tiers` 热更新，目标模型必须在员工 key 的 profile 白名单内。与额度「档（Tier）」是两个不相干概念——那个管额度，这个管模型选型。
 _Avoid_: 与额度档混称"档位"
 
 **路由分类器（Router Classifier）**:

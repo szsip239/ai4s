@@ -33,7 +33,7 @@ export function normalizeRouting(routing: Partial<RoutingSettings> | undefined):
     enabled: routing?.enabled ?? false,
     threshold: routing?.threshold ?? 0.5,
     tiers: {
-      simple: routing?.tiers?.simple ?? 'deepseek-v4-flash',
+      simple: routing?.tiers?.simple ?? 'deepseek-flash',
       complex: routing?.tiers?.complex ?? 'gpt-5.6-luna',
     },
     timeout: routing?.timeout ?? 4,

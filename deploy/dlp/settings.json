@@ -49,7 +49,7 @@
     "enabled": true,
     "threshold": 0.5,
     "tiers": {
-      "simple": "deepseek-v4-flash",
+      "simple": "deepseek-flash",
       "complex": "gpt-5.6-luna"
     },
     "timeout": 6,

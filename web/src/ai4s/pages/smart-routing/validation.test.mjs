@@ -19,7 +19,7 @@ const { validateRouting } = mod;
 const validRouting = {
   enabled: true,
   threshold: 0.5,
-  tiers: { simple: 'deepseek-v4-flash', complex: 'gpt-5.6-luna' },
+  tiers: { simple: 'deepseek-flash', complex: 'gpt-5.6-luna' },
   timeout: 4,
   max_concurrency: 2,
   prompt: '分类系统提示',
