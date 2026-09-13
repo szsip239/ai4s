@@ -52,7 +52,7 @@
       "simple": "deepseek-v4-flash",
       "complex": "gpt-5.6-luna"
     },
-    "timeout": 4,
+    "timeout": 6,
     "max_concurrency": 2,
     "prompt": "你是 LLM 网关的路由分类器。把用户请求分为两档：\n- simple：单步、有确定答案、无需长链推理或跨上下文综合——事实问答、短翻译、一句话润色、单行代码修改、简单命令、单工具直取。\n- complex：多步推理、设计/权衡、长上下文代码任务、跨文件依赖、专业领域翻译、实验/建模设计、多轮工具编排与错误恢复。\n注意：输入文本长短不代表难度；带 [SYSTEM]/[USER]/[TOOL] 标记的是 coding agent 多轮会话形态，按最后待完成的任务定档。\n只输出 JSON：{\"p_complex\": 0 到 1 的小数}，表示「该请求需要旗舰模型（complex 档）」的概率。",
     "escalate_conf": 0.85,

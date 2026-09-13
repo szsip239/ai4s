@@ -668,12 +668,13 @@ def router_classify(text: str, settings: dict):
     """auto 路由复杂度分类（#114 票选候选 B 生产落点）：返回 0~1 p_complex；
     异常/超时/verdict 损坏/缺凭据返回 None（fail-open 由调用方落旗舰）。
     模型/地址沿用 settings judge.*（与商密/注入 judge 同通道）；超时独立
-    routing.timeout（默认 4s）。settings 由调用方一次读入（热更新每请求重读）。"""
+    routing.timeout（默认 6s——issue #144：实测分类链路 p95≈3.5s/max≈4s，4s 贴线致尾部
+    结构性 fail-open）。settings 由调用方一次读入（热更新每请求重读）。"""
     if not text or not JUDGE_API_KEY:
         return None
     model = setting_value(settings, "judge", "model", "JUDGE_MODEL", "deepseek-v4-flash")
     base_url = setting_value(settings, "judge", "base_url", "JUDGE_BASE_URL", "http://axonhub:8090/v1")
-    timeout = setting_value(settings, "routing", "timeout", "ROUTING_TIMEOUT", 4)
+    timeout = setting_value(settings, "routing", "timeout", "ROUTING_TIMEOUT", 6)
     # issue #119：分类系统提示可配（routing.prompt），缺省=ROUTER_PROMPT_SYSTEM 常量逐字
     prompt = setting_value(settings, "routing", "prompt", "ROUTING_PROMPT", ROUTER_PROMPT_SYSTEM)
     v = _router_chat(model, base_url, timeout, text, prompt)
