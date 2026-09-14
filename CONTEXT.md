@@ -99,6 +99,9 @@ _Avoid_: 额度单位、积分
 
 ### 基础设施
 
+**渠道可见性（Channel Visibility）**:
+数据面（/v1）模型可调用性 = 项目 Profile 的 ChannelIDs 白名单 ∩ 渠道 supportedModels ∩（模型卡片 enabled 时的卡片 associations）。新建渠道默认不在任何项目白名单——员工 key 请求其模型一律 422 `model not found`（管理面 testChannel 不经选择器、不受白名单约束，单看它会误判渠道正常）。上线新渠道必须同步把渠道 ID 加入 Default 项目 active profile 的 ChannelIDs（`updateProjectProfiles`）；key 级 profile 的 ChannelIDs 若非空，在项目范围内再收窄（axonhub 源码 `select_candidates.go`，2026-09-14 实证）。
+
 **稳定版钉住（Stable-only Pinning）**:
 axonhub 升级只考虑稳定版（GA 及以上），beta 一律不追（ADR-0005，2026-08-24 拍板；现网钉住 v1.0.0-beta6）。重评审触发条件：稳定版发布 / #88 三项上游缺陷或上游 #2281 修复 / 影响 beta6 的安全补丁。beta6→beta7 评审存档 `docs/research/2026-08-24-axonhub-beta7-review.md`。
 _Avoid_: 追 latest/unstable

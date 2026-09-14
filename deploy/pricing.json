@@ -1,11 +1,13 @@
 {
-  "version": "2026-08-03",
-  "note": "credit 定价（issue #18）：1 credit = $1 官方原价消耗；配额档位见 axonhub Profile 模板（体验 100 / 标准 500 / 高档 2000 credits 自然月，issue #84 起）。渠道倍率无默认值，必须由管理员显式配置（订阅渠道 <1，按量渠道 1.0）。改倍率后跑 deploy/scripts/apply-pricing.py 生效。",
+  "version": "2026-09-14",
+  "note": "credit 定价（issue #18）：1 credit = $1 官方原价消耗；配额档位见 axonhub Profile 模板（体验 100 / 标准 500 / 高档 2000 credits 自然月，issue #84 起）。渠道倍率无默认值，必须由管理员显式配置（订阅渠道 <1，按量渠道 1.0）。改倍率后跑 deploy/scripts/apply-pricing.py 生效。channels 节与各渠道 supportedModels 对齐（2026-09-14 漂移修复）；mock 类模型（mock-gpt/echo-test）不计价不进表。",
   "official_prices_per_million_usd": {
     "gpt-5.6-sol": { "prompt": 5.00, "completion": 30.00, "cached": 0.50 },
     "gpt-5.6-terra": { "prompt": 2.00, "completion": 12.00, "cached": 0.20 },
     "gpt-5.6-luna": { "prompt": 0.20, "completion": 1.20, "cached": 0.02 },
     "gpt-5.3-codex": { "prompt": 1.75, "completion": 14.00, "cached": 0.175 },
+    "gpt-5.5": { "prompt": 5.00, "completion": 30.00, "cached": 0.50 },
+    "gpt-6-astra": { "prompt": 10.00, "completion": 50.00, "cached": 1.00 },
     "kimi-k2.7-code": { "prompt": 0.95, "completion": 4.00, "cached": 0.19 },
     "kimi-k2.7-code-highspeed": { "prompt": 1.90, "completion": 8.00, "cached": 0.38 },
     "kimi-k3": { "prompt": 3.00, "completion": 15.00, "cached": 0.30 },
@@ -13,7 +15,12 @@
     "deepseek-v4-pro": { "prompt": 0.435, "completion": 0.87, "cached": 0.003625 },
     "glm-5.1": { "prompt": 1.40, "completion": 4.40, "cached": 0.26 },
     "glm-5.2": { "prompt": 1.40, "completion": 4.40, "cached": 0.26 },
-    "qwen3.6-27b": { "prompt": 0.20, "completion": 1.50, "cached": 0.04 }
+    "glm-5.3": { "prompt": 1.40, "completion": 4.40, "cached": 0.26 },
+    "glm-5.3-flash": { "prompt": 0.075, "completion": 0.25, "cached": 0.015 },
+    "qwen3.6-27b": { "prompt": 0.20, "completion": 1.50, "cached": 0.04 },
+    "claude-haiku-4-5": { "prompt": 1.00, "completion": 5.00, "cached": 0.10 },
+    "google/gemini-3.8-flash": { "prompt": 0.75, "completion": 3.75, "cached": 0.075 },
+    "google/gemini-3.7-flash": { "prompt": 0.75, "completion": 3.75, "cached": 0.075 }
   },
   "channels": [
     {
@@ -23,7 +30,9 @@
         "gpt-5.6-sol": "gpt-5.6-sol",
         "gpt-5.6-terra": "gpt-5.6-terra",
         "gpt-5.6-luna": "gpt-5.6-luna",
-        "gpt-5.3-codex-spark": "gpt-5.3-codex"
+        "gpt-5.3-codex-spark": "gpt-5.3-codex",
+        "gpt-5.5": "gpt-5.5",
+        "gpt-6-astra": "gpt-6-astra"
       }
     },
     {
@@ -40,7 +49,6 @@
       "name": "deepseek",
       "multiplier": 1.0,
       "models": {
-        "deepseek/deepseek-v4.1-flash": "deepseek/deepseek-v4.1-flash",
         "deepseek-v4-pro": "deepseek-v4-pro"
       }
     },
@@ -48,11 +56,26 @@
       "name": "tokenhub",
       "multiplier": 1.0,
       "models": {
-        "glm-5.1": "glm-5.1",
         "glm-5.2": "glm-5.2",
-        "deepseek/deepseek-v4.1-flash": "deepseek/deepseek-v4.1-flash",
-        "kimi-k3": "kimi-k3",
+        "glm-5.3": "glm-5.3",
+        "glm-5.3-flash": "glm-5.3-flash",
         "qwen3.6-27b": "qwen3.6-27b"
+      }
+    },
+    {
+      "name": "Claude",
+      "multiplier": 0.2,
+      "models": {
+        "claude-haiku-4-5": "claude-haiku-4-5"
+      }
+    },
+    {
+      "name": "zenmux",
+      "multiplier": 1.0,
+      "models": {
+        "deepseek/deepseek-v4.1-flash": "deepseek/deepseek-v4.1-flash",
+        "google/gemini-3.8-flash": "google/gemini-3.8-flash",
+        "google/gemini-3.7-flash": "google/gemini-3.7-flash"
       }
     }
   ]
