@@ -34,7 +34,7 @@ OPF 第二检测器专项段（issue #127）：judge 注入段之后——段内
 姓名样本应掩码【PII:姓名】→ PUT 还原（关）→ 同样本放行；shim 未含 #127 区块时
 （PUT 400 未知字段）SKIP 不 fail（集成前预期态，对齐各段探测纪律）。
 auto 路由专项段（issue #118）：judge 注入段之后——PUT 开 routing 节（enabled=true,
-threshold=0.5, tiers simple→deepseek-flash/complex→gpt-5.6-luna, timeout=4,
+threshold=0.5, tiers simple→deepseek/deepseek-v4.1-flash/complex→gpt-5.6-luna, timeout=4,
 max_concurrency=2）→ model=auto 简单问题应落 tier=simple 改写条 → 复杂任务应落
 tier=complex 且响应 200 model=gpt-5.6-luna → 故障注入（routing.timeout=0.001 强制
 分类器超时）应 fail-open 落旗舰不 422 且 router error 条 → 同会话二轮应
@@ -701,10 +701,10 @@ ROUTER_SIMPLE_SAMPLE = "请用一句话说明地球为什么近似球形。"
 ROUTER_COMPLEX_SAMPLE = ("比较 Raft 与 Paxos 在选主活锁与一致性证明上的本质差异，"
                          "并给出工程选型权衡——三行以内概括。")
 ROUTER_FAILOPEN_SAMPLE = "用一句话解释什么是光合作用。"
-# 两档映射（issue #117 默认档）：simple→deepseek-flash（dev 栈测试 key 的 profile
+# 两档映射（issue #117 默认档）：simple→deepseek/deepseek-v4.1-flash（dev 栈测试 key 的 profile
 # 白名单不含该模型，axonhub 拒 422——已知事项，用例 a 只断言改写条不断言应答）；
 # complex→gpt-5.6-luna（测试 key 白名单内含，#117 实网验证过 200）
-ROUTER_TIERS = {"simple": "deepseek-flash", "complex": "gpt-5.6-luna"}
+ROUTER_TIERS = {"simple": "deepseek/deepseek-v4.1-flash", "complex": "gpt-5.6-luna"}
 ROUTER_FLAGSHIP = "gpt-5.6-luna"  # 网关 modelAliases auto→旗舰 静态兜底（#115 定稿）
 # 分类走真实 judge 通道（~2s/次）非确定，单用例最多重试次数（三次全不符才判失败，
 # 同 judge warn/judgeInject 段纪律）
@@ -736,7 +736,7 @@ def send_auto(api_key, content_or_messages, session_id=None):
 def run_auto_router_section(api_key, token):
     """auto 路由专项段（issue #118，自包含）：admin PUT 开 routing 节（五键齐全，
     其余段原样）→ a) model=auto 简单题 → 查询出口 layer=router 出现 tier=simple
-    改写条（resolved_model=deepseek-flash；dev 栈该模型不在测试 key 白名单，
+    改写条（resolved_model=deepseek/deepseek-v4.1-flash；dev 栈该模型不在测试 key 白名单，
     应答 422 属已知事项，不据此判失败）→ b) 复杂题 → tier=complex 落条且响应 200
     model=gpt-5.6-luna → c) 故障注入（PUT routing.timeout=0.001 强制分类器超时——
     选配置注入而非停容器：回归友好、不中断 DLP 链路、finally 自还原）→ auto 请求

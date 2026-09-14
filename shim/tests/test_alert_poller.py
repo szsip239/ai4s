@@ -1801,13 +1801,13 @@ class TestPlanCardSync(unittest.TestCase):
     def test_mixed_enabled_disabled_only_enabled_attached(self):
         # 同名模型跨 enabled（deepseek）+ disabled（tokenhub）：关联只挂 enabled 渠道
         acts = ap.plan_card_sync([
-            _unassoc_entry(8, "tokenhub", "disabled", ["deepseek-flash"]),
-            _unassoc_entry(5, "deepseek", "enabled", ["deepseek-flash"]),
+            _unassoc_entry(8, "tokenhub", "disabled", ["deepseek/deepseek-v4.1-flash"]),
+            _unassoc_entry(5, "deepseek", "enabled", ["deepseek/deepseek-v4.1-flash"]),
         ], [])
         self.assertEqual(len(acts), 1)
         a = acts[0]
         self.assertEqual(a["input"]["settings"]["associations"], [
-            {"type": "channel_model", "channelModel": {"channelId": 5, "modelId": "deepseek-flash"}}])
+            {"type": "channel_model", "channelModel": {"channelId": 5, "modelId": "deepseek/deepseek-v4.1-flash"}}])
         self.assertTrue(a["enable"])
         self.assertIn("deepseek", a["detail"])
 
@@ -2066,16 +2066,16 @@ class TestCheckCycleCardSync(unittest.TestCase):
     def test_first_round_backfill_create_enable_notify(self):
         # 首轮回填：enabled 渠道模型建卡（原子带关联）+ 启用 + 通知带模型/渠道明细
         state, sends, ops = self._cycle(
-            {}, [_unassoc_entry(5, "deepseek", "enabled", ["deepseek-flash"])], [])
+            {}, [_unassoc_entry(5, "deepseek", "enabled", ["deepseek/deepseek-v4.1-flash"])], [])
         self.assertEqual(len(ops["creates"]), 1)
         inp = ops["creates"][0]["input"]
-        self.assertEqual(inp["modelID"], "deepseek-flash")
+        self.assertEqual(inp["modelID"], "deepseek/deepseek-v4.1-flash")
         self.assertEqual(inp["settings"]["associations"], [
-            {"type": "channel_model", "channelModel": {"channelId": 5, "modelId": "deepseek-flash"}}])
+            {"type": "channel_model", "channelModel": {"channelId": 5, "modelId": "deepseek/deepseek-v4.1-flash"}}])
         self.assertEqual(ops["status"], [{"id": "gid://axonhub/Model/100", "status": "enabled"}])
         self.assertEqual(len(sends), 1)
         self.assertIn("模型卡片同步", sends[0])
-        self.assertIn("deepseek-flash", sends[0])
+        self.assertIn("deepseek/deepseek-v4.1-flash", sends[0])
         self.assertIn("deepseek", sends[0])
         self.assertNotIn("card_sync_pending", state)  # 发送成功不留补发队列
 

@@ -320,7 +320,7 @@ class RouterClassifyTest(RouterTestBase):
 
     def test_non_auto_models_no_header_no_classify(self):
         """enabled=true 时非 auto model → 200 无头（不再回显原值）、零分类调用、零落条。"""
-        for model in ("echo-test", "gpt-5.6-luna", "deepseek-flash"):
+        for model in ("echo-test", "gpt-5.6-luna", "deepseek/deepseek-v4.1-flash"):
             status, hdr, _ = self._post({"model": model, "messages": self._msgs()})
             self.assertEqual(status, 200)
             self.assertIsNone(hdr)
@@ -370,10 +370,10 @@ class RouterClassifyTest(RouterTestBase):
 
     def test_tiers_wrong_type_falls_back_to_default(self):
         """tiers 类型护栏（app 侧逐键纪律）：JSON 里 tiers 写成字符串 → 该键回退内置默认
-        （默认 simple=deepseek-flash / complex=gpt-5.6-luna，与 modelAliases 兜底一致）。"""
+        （默认 simple=deepseek/deepseek-v4.1-flash / complex=gpt-5.6-luna，与 modelAliases 兜底一致）。"""
         self._write_settings(self._settings_payload(routing=self._routing(tiers="bogus")))
         _, hdr, _ = self._post({"model": "auto", "messages": self._msgs()})
-        self.assertEqual(hdr, "deepseek-flash")
+        self.assertEqual(hdr, "deepseek/deepseek-v4.1-flash")
 
 
 class RouterFailOpenTest(RouterTestBase):

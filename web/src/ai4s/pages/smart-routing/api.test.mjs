@@ -29,7 +29,7 @@ test('normalizeRouting: routing 节缺席/空对象补全量默认（issue #120�
   const expected = {
     enabled: false, // 缺席=关态合法（shim #117）
     threshold: 0.5, // #114 评测推荐默认工作点
-    tiers: { simple: 'deepseek-flash', complex: 'gpt-5.6-luna' },
+    tiers: { simple: 'deepseek/deepseek-v4.1-flash', complex: 'gpt-5.6-luna' },
     timeout: 4,
     max_concurrency: 2,
     prompt: ROUTER_DEFAULT_PROMPT, // #119 缺省=app.py ROUTER_PROMPT_SYSTEM 常量

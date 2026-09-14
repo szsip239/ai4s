@@ -9,7 +9,7 @@
     "kimi-k2.7-code": { "prompt": 0.95, "completion": 4.00, "cached": 0.19 },
     "kimi-k2.7-code-highspeed": { "prompt": 1.90, "completion": 8.00, "cached": 0.38 },
     "kimi-k3": { "prompt": 3.00, "completion": 15.00, "cached": 0.30 },
-    "deepseek-flash": { "prompt": 0.14, "completion": 0.28, "cached": 0.0028 },
+    "deepseek/deepseek-v4.1-flash": { "prompt": 0.14, "completion": 0.28, "cached": 0.0028 },
     "deepseek-v4-pro": { "prompt": 0.435, "completion": 0.87, "cached": 0.003625 },
     "glm-5.1": { "prompt": 1.40, "completion": 4.40, "cached": 0.26 },
     "glm-5.2": { "prompt": 1.40, "completion": 4.40, "cached": 0.26 },
@@ -40,7 +40,7 @@
       "name": "deepseek",
       "multiplier": 1.0,
       "models": {
-        "deepseek-flash": "deepseek-flash",
+        "deepseek/deepseek-v4.1-flash": "deepseek/deepseek-v4.1-flash",
         "deepseek-v4-pro": "deepseek-v4-pro"
       }
     },
@@ -50,7 +50,7 @@
       "models": {
         "glm-5.1": "glm-5.1",
         "glm-5.2": "glm-5.2",
-        "deepseek-flash": "deepseek-flash",
+        "deepseek/deepseek-v4.1-flash": "deepseek/deepseek-v4.1-flash",
         "kimi-k3": "kimi-k3",
         "qwen3.6-27b": "qwen3.6-27b"
       }

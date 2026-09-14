@@ -488,7 +488,7 @@ _SETTINGS_ROUTING_OPTIONAL_KEYS = {"prompt", "escalate_conf", "session_ttl",
 _SETTINGS_ROUTING_TIERS = {"simple", "complex"}
 # tiers 映射值进 extAuthz 响应头（x-resolved-model）——白名单字符形态与 app.py
 # _CLASSIFY_MODEL_SAFE 同款（admin_api 不 import app，自包含复述；防响应拆分纪律一致）
-_SETTINGS_MODEL_SAFE = re.compile(r"[A-Za-z0-9._:-]{1,128}")
+_SETTINGS_MODEL_SAFE = re.compile(r"[A-Za-z0-9._:/-]{1,128}")
 
 
 # judge 动作分级（issue #94）：off 关 / shadow 仅记录 / warn 告警 / reject 拦截；

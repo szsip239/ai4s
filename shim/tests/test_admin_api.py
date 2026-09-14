@@ -1622,7 +1622,7 @@ _SETTINGS_FIXTURE = {
     "_comment": "测试 fixture",
     "judge": {
         "enabled": True,
-        "model": "deepseek-flash",
+        "model": "deepseek/deepseek-v4.1-flash",
         "base_url": "http://axonhub:8090/v1",
         "timeout": 8,
         "prompt_system": "系统提示 {terms} {{json}}",
@@ -3277,7 +3277,7 @@ class AdminSettingsRoutingTest(unittest.TestCase):
     tiers 两档映射形态）。fixture 同 AdminSettingsTest。"""
 
     _ROUTING_OK = {"enabled": False, "threshold": 0.5,
-                   "tiers": {"simple": "deepseek-flash", "complex": "gpt-5.6-luna"},
+                   "tiers": {"simple": "deepseek/deepseek-v4.1-flash", "complex": "gpt-5.6-luna"},
                    "timeout": 4, "max_concurrency": 2}
 
     def setUp(self):
@@ -3436,7 +3436,7 @@ class TestShadowVerdictsRouterApi(unittest.TestCase):
 
     def test_layer_router_accepted(self):
         import shadow_log
-        shadow_log.record("router", model="auto", resolved_model="deepseek-flash",
+        shadow_log.record("router", model="auto", resolved_model="deepseek/deepseek-v4.1-flash",
                           tier="simple", p_complex=0.1, reason="classify", session=False,
                           latency_ms=1200, path=self.log_path)
         shadow_log.record("router", error="unavailable", reason="fail_open",
@@ -3446,7 +3446,7 @@ class TestShadowVerdictsRouterApi(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual([r["layer"] for r in body["records"]], ["router", "router"])
         rec = body["records"][1]  # 新到旧：fail_open 在前，classify 条在[1]
-        self.assertEqual(rec["resolved_model"], "deepseek-flash")
+        self.assertEqual(rec["resolved_model"], "deepseek/deepseek-v4.1-flash")
         self.assertEqual(rec["tier"], "simple")
         self.assertEqual(rec["p_complex"], 0.1)
         self.assertEqual(rec["reason"], "classify")
