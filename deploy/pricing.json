@@ -110,7 +110,7 @@
   "channels": [
     {
       "name": "codex-main",
-      "multiplier": 0.2,
+      "multiplier": 0.5,
       "models": {
         "gpt-5.6-sol": "gpt-5.6-sol",
         "gpt-5.6-terra": "gpt-5.6-terra",
@@ -122,7 +122,7 @@
     },
     {
       "name": "kimi",
-      "multiplier": 0.2,
+      "multiplier": 0.5,
       "models": {
         "kimi-for-coding": "kimi-k2.7-code",
         "kimi-for-coding-highspeed": "kimi-k2.7-code-highspeed",
@@ -149,7 +149,7 @@
     },
     {
       "name": "Claude",
-      "multiplier": 0.2,
+      "multiplier": 0.5,
       "models": {
         "claude-haiku-4-5": "claude-haiku-4-5"
       }
