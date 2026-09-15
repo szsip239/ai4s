@@ -45,9 +45,20 @@ class TestFindOfficialCost(unittest.TestCase):
         self.assertNotEqual(cost["input"], 2)
 
     def test_alias_resolves_channel_named_model(self):
-        pid, cost = sp.find_official_cost(CATALOG, "deepseek/deepseek-v4.1-flash")
+        aliases = {"deepseek/deepseek-v4.1-flash": "deepseek:deepseek-v4-flash"}
+        pid, cost = sp.find_official_cost(CATALOG, "deepseek/deepseek-v4.1-flash", aliases)
         self.assertEqual(pid, "deepseek")
         self.assertEqual(cost["output"], 0.6)  # 命中官方 deepseek-v4-flash
+
+    def test_channel_named_model_without_alias_returns_none(self):
+        # 渠道侧命名（前缀不在 PROVIDER_MAP）且未配别名 → 进 manuals，绝不猜 reseller
+        self.assertIsNone(sp.find_official_cost(CATALOG, "deepseek/deepseek-v4.1-flash"))
+        self.assertIsNone(sp.find_official_cost(CATALOG, "deepseek/deepseek-v4.1-flash", {}))
+
+    def test_malformed_alias_ignored(self):
+        # 别名值缺 ":" 属配置错误，按无别名处理 → None（模型进 manuals 提醒人工）
+        aliases = {"deepseek/deepseek-v4.1-flash": "deepseek-v4-flash"}
+        self.assertIsNone(sp.find_official_cost(CATALOG, "deepseek/deepseek-v4.1-flash", aliases))
 
     def test_unknown_returns_none(self):
         self.assertIsNone(sp.find_official_cost(CATALOG, "nonexistent-model"))
@@ -76,6 +87,16 @@ class TestComputeDrifts(unittest.TestCase):
         new = drifts[0][2]
         self.assertEqual(new["cached"], 0.6)  # 保守取 prompt 全价，防缓存命中白送
         self.assertNotIn("cache_write", new)  # 官方无价则键省略（apply-pricing 不写该项）
+
+    def test_alias_in_compute_drifts_clears_manual(self):
+        # 同一模型：无别名 → manuals；pricing.json 配了 official_aliases → 正常比对锚
+        official = {"deepseek/deepseek-v4.1-flash": {"prompt": 0.15, "completion": 0.6, "cached": 0.003}}
+        _, manuals = sp.compute_drifts(official, CATALOG)
+        self.assertEqual(manuals, ["deepseek/deepseek-v4.1-flash"])
+        aliases = {"deepseek/deepseek-v4.1-flash": "deepseek:deepseek-v4-flash"}
+        drifts, manuals = sp.compute_drifts(official, CATALOG, aliases)
+        self.assertEqual(drifts, [])
+        self.assertEqual(manuals, [])
 
     def test_unknown_model_goes_manual(self):
         official = {"mystery-model": {"prompt": 1, "completion": 2, "cached": 0.1}}

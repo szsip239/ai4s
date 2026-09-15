@@ -1338,8 +1338,32 @@ def price_drift_decision(drifts: list, manuals: list, prev_hash):
     return None, "", prev_hash
 
 
+def price_manual_hash(manuals: list) -> str:
+    """手工锚清单指纹：集合变 → hash 变 → 重新提醒（防抖同漂移告警）。"""
+    blob = json.dumps(sorted(manuals), ensure_ascii=False)
+    return hashlib.sha1(blob.encode()).hexdigest()
+
+
+def price_manual_decision(manuals: list, prev_hash):
+    """手工锚提醒判定（纯函数）：(action|None, 提醒/恢复文本, 成功后应存的 hash)。
+    手工锚（第一方目录无收录）只能靠 official_aliases 补映射或人工对价目，
+    漂移告警不一定触发，故独立防抖提醒——否则新增未映射模型会静默。"""
+    h = price_manual_hash(manuals) if manuals else None
+    if manuals and h != prev_hash:
+        text = (
+            f"[ai4s 提醒] 价格锚待人工维护 {len(manuals)} 项（第一方目录无收录）\n"
+            + "\n".join(f"- {m}" for m in manuals[:PRICE_DRIFT_MAX_LINES])
+            + "\n处置: 在 pricing.json official_aliases 补 \"provider:官方模型id\" 映射，或按上游实际价目人工定价"
+            + f"\n时间: {now_str()}"
+        )
+        return "alert", text, h
+    if not manuals and prev_hash:
+        return "recover", "[ai4s 恢复] 价格锚全部纳入官方目录同步", None
+    return None, "", prev_hash
+
+
 def price_drift_check(state: dict):
-    """价格锚漂移周检（巡检项 8）。state 键：priceDrift:lastRun / failed / hash。
+    """价格锚漂移周检（巡检项 8）。state 键：priceDrift:lastRun / failed / hash / manualHash。
     拉取/比对失败记日志并按 PRICE_DRIFT_RETRY 间隔重试；发送失败不存 hash 下轮按
     重试间隔补发——与其他巡检项同款「单轮异常只记日志」隔离纪律。"""
     now = time.time()
@@ -1350,8 +1374,12 @@ def price_drift_check(state: dict):
     try:
         sync = _load_pricing_sync()
         with open(PRICING_JSON_PATH, encoding="utf-8") as f:
-            official = json.load(f)["official_prices_per_million_usd"]
-        drifts, manuals = sync.compute_drifts(official, sync.fetch_catalog(False))
+            pricing_cfg = json.load(f)
+        drifts, manuals = sync.compute_drifts(
+            pricing_cfg["official_prices_per_million_usd"],
+            sync.fetch_catalog(False),
+            pricing_cfg.get("official_aliases"),
+        )
     except Exception as e:
         state["priceDrift:lastRun"] = now
         state["priceDrift:failed"] = True
@@ -1365,6 +1393,13 @@ def price_drift_check(state: dict):
         if send_feishu(text):
             state["priceDrift:hash"] = h
             print(f"[alert] 已告警: 价格锚漂移 {action}", flush=True)
+        else:
+            state["priceDrift:failed"] = True  # 下轮按重试间隔补发
+    m_action, m_text, m_h = price_manual_decision(manuals, state.get("priceDrift:manualHash"))
+    if m_action:
+        if send_feishu(m_text):
+            state["priceDrift:manualHash"] = m_h
+            print(f"[alert] 已告警: 价格锚手工维护 {m_action}", flush=True)
         else:
             state["priceDrift:failed"] = True  # 下轮按重试间隔补发
 

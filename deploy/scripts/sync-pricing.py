@@ -35,11 +35,6 @@ PROVIDER_MAP = {
     "google/gemini": "google",
     "deepseek-v4-pro": "deepseek",
 }
-# 渠道命名 ≠ 官方命名的显式别名（canonical → (provider, 官方模型 id)）：
-# zenmux 的 deepseek-v4.1-flash 是渠道侧命名，官方目录对应 deepseek-v4-flash
-OFFICIAL_ALIASES = {
-    "deepseek/deepseek-v4.1-flash": ("deepseek", "deepseek-v4-flash"),
-}
 EPSILON = 1e-9
 
 
@@ -67,11 +62,14 @@ def fetch_catalog(offline: bool):
     return data
 
 
-def find_official_cost(catalog, canonical: str):
-    """在第一方 provider 下按裸模型名查找 cost（别名优先）；找不到返回 None。"""
+def find_official_cost(catalog, canonical: str, aliases=None):
+    """在第一方 provider 下按裸模型名查找 cost；找不到返回 None。
+    aliases：pricing.json 的 official_aliases 节，值格式 "provider:官方模型id"，
+    用于 canonical 前缀不在 PROVIDER_MAP 的渠道侧命名（如 zenmux 的 deepseek/*）。"""
     pid, base = None, canonical.split("/")[-1]
-    if canonical in OFFICIAL_ALIASES:
-        pid, base = OFFICIAL_ALIASES[canonical]
+    alias = (aliases or {}).get(canonical)
+    if alias and ":" in alias:
+        pid, base = alias.split(":", 1)
     else:
         pid = firstparty_provider(canonical)
     if not pid or pid not in catalog:
@@ -90,14 +88,14 @@ def close(a, b):
     return abs(a - b) <= EPSILON * max(1.0, abs(a), abs(b))
 
 
-def compute_drifts(official: dict, catalog) -> tuple:
+def compute_drifts(official: dict, catalog, aliases=None) -> tuple:
     """比对官方锚与第一方目录 → (drifts, manuals)。
     drifts: [(canonical, pid, 新锚dict, 变更行list)]；manuals: 第一方无收录/缺价的模型描述。
     官方无 cache_read 价（None）→ cached 锚取 prompt 全价（保守：防上游报 cached
     tokens 时按 0 白送——axonhub 未配 cached 价格项的缓存命中不计费）。"""
     drifts, manuals = [], []
     for canonical, anchor in official.items():
-        hit = find_official_cost(catalog, canonical)
+        hit = find_official_cost(catalog, canonical, aliases)
         if not hit:
             manuals.append(canonical)
             continue
@@ -129,7 +127,7 @@ def main():
     official = cfg["official_prices_per_million_usd"]
     catalog = fetch_catalog(offline)
 
-    drifts, manuals = compute_drifts(official, catalog)
+    drifts, manuals = compute_drifts(official, catalog, cfg.get("official_aliases"))
 
     for canonical in manuals:
         print(f"MANUAL  {canonical}：第一方目录无收录，保留现锚，请对上游实际价目（如 ZENMUX 账单）")
