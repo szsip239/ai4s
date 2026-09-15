@@ -15,9 +15,11 @@ const INVITE_EXPIRES_IN_HOURS = 168;
 const INVITE_MAX_USES = 1;
 // issue #128：邀请一律绑隔离项目，注册后零能力，Key 走审批签发
 const QUARANTINE_PROJECT_NAME = 'External-Quarantine';
+// beta7 起邀请创建强制 roleID；绑隔离项目内零 scopes 的 Invitee 角色，保持落地零能力
+const INVITEE_ROLE_NAME = 'Invitee';
 
-const QUARANTINE_PROJECT_QUERY = `
-  query QuarantineProject($first: Int) {
+const INVITE_PREREQS_QUERY = `
+  query InvitePrereqs($first: Int, $roleName: String) {
     projects(first: $first) {
       edges {
         node {
@@ -26,13 +28,31 @@ const QUARANTINE_PROJECT_QUERY = `
         }
       }
     }
+    roles(first: $first, where: { name: $roleName }) {
+      edges {
+        node {
+          id
+          name
+          projectID
+        }
+      }
+    }
   }
 `;
 
-interface ProjectsResult {
+interface InvitePrereqsResult {
   projects: {
     edges: Array<{ node: { id: string; name: string } }>;
   };
+  roles: {
+    edges: Array<{ node: { id: string; name: string; projectID: string } }>;
+  };
+}
+
+// gid://axonhub/Role/20 -> 20；REST /admin/invitations 的 roleID 是数字主键
+function parseNumericId(gid: string): number | null {
+  const id = Number(gid.split('/').pop());
+  return Number.isInteger(id) && id > 0 ? id : null;
 }
 
 interface Props {
@@ -46,15 +66,28 @@ export function UsersInviteDialog({ open, onOpenChange }: Props) {
   const [isCopied, setIsCopied] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
-  const { data: quarantineProjectId, isError: isProjectQueryError } = useQuery({
-    queryKey: ['quarantine-project', QUARANTINE_PROJECT_NAME],
+  const { data: prereqs, isError: isPrereqsQueryError } = useQuery({
+    queryKey: ['invite-prereqs', QUARANTINE_PROJECT_NAME, INVITEE_ROLE_NAME],
     enabled: open,
     staleTime: 60_000,
     queryFn: async () => {
-      const result = await graphqlRequest<ProjectsResult>(QUARANTINE_PROJECT_QUERY, { first: 100 });
-      return result.projects.edges.find((edge) => edge.node.name === QUARANTINE_PROJECT_NAME)?.node.id ?? null;
+      const result = await graphqlRequest<InvitePrereqsResult>(INVITE_PREREQS_QUERY, {
+        first: 100,
+        roleName: INVITEE_ROLE_NAME,
+      });
+      const projectId =
+        result.projects.edges.find((edge) => edge.node.name === QUARANTINE_PROJECT_NAME)?.node.id ?? null;
+      const roleGid = projectId
+        ? (result.roles.edges.find((edge) => edge.node.projectID === projectId)?.node.id ?? null)
+        : null;
+      return {
+        projectId,
+        roleId: roleGid ? parseNumericId(roleGid) : null,
+      };
     },
   });
+  const quarantineProjectId = prereqs?.projectId ?? null;
+  const inviteeRoleId = prereqs?.roleId ?? null;
 
   const closeDialog = (nextOpen: boolean) => {
     if (!nextOpen) {
@@ -65,7 +98,7 @@ export function UsersInviteDialog({ open, onOpenChange }: Props) {
   };
 
   const onSubmit = async () => {
-    if (!quarantineProjectId) {
+    if (!quarantineProjectId || !inviteeRoleId) {
       return;
     }
 
@@ -78,6 +111,7 @@ export function UsersInviteDialog({ open, onOpenChange }: Props) {
         body: {
           expiresInHours: INVITE_EXPIRES_IN_HOURS,
           maxUses: INVITE_MAX_USES,
+          roleID: inviteeRoleId,
         },
       });
       // 邀请链接指向当前控制台 origin 的 /sign-up?invite=<token>
@@ -102,7 +136,8 @@ export function UsersInviteDialog({ open, onOpenChange }: Props) {
     }
   };
 
-  const quarantineMissing = quarantineProjectId === null || isProjectQueryError;
+  const quarantineMissing = isPrereqsQueryError || (prereqs !== undefined && quarantineProjectId === null);
+  const inviteeRoleMissing = !quarantineMissing && prereqs !== undefined && inviteeRoleId === null;
 
   return (
     <Dialog open={open} onOpenChange={closeDialog}>
@@ -131,6 +166,7 @@ export function UsersInviteDialog({ open, onOpenChange }: Props) {
               {t('users.dialogs.invite.quarantineProject')}：{QUARANTINE_PROJECT_NAME}
             </p>
             {quarantineMissing && <p className='text-destructive'>{t('users.dialogs.invite.quarantineMissing')}</p>}
+            {inviteeRoleMissing && <p className='text-destructive'>{t('users.dialogs.invite.inviteeRoleMissing')}</p>}
           </div>
         )}
         <DialogFooter>
@@ -141,7 +177,7 @@ export function UsersInviteDialog({ open, onOpenChange }: Props) {
               <DialogClose asChild>
                 <Button variant='outline'>{t('common.buttons.cancel')}</Button>
               </DialogClose>
-              <Button type='button' onClick={onSubmit} disabled={isSubmitting || !quarantineProjectId}>
+              <Button type='button' onClick={onSubmit} disabled={isSubmitting || !quarantineProjectId || !inviteeRoleId}>
                 {t('users.buttons.createInvitation')}
               </Button>
             </>

@@ -112,7 +112,7 @@ _Avoid_: 追 latest/unstable
 飞书 SSO 首登时 axonhub 自动创建的账号，email 形如 `ou_<open_id>@casdoor.oidc`；open_id 是其与飞书通讯录的唯一关联键。
 
 **邀请用户（Invited User）**:
-非飞书组织的外部人员账号（issue #128）：管理员在隔离项目 `External-Quarantine`（gid `gid://axonhub/Project/6`，无渠道/无额度档/成员空 scopes）发邀请链接（7 天、单次），受邀者经 `/sign-up?invite=<token>` 注册本地账号即激活（邀请=预审，无注册后审批闸门）；落地隔离项目零模型调用能力，shim 巡检 `auto_assign_project` 对无 OIDC 身份者跳过（不自动入 Default——判别用服务端身份链接，email 后缀可伪造不可用）；模型调用只能经 Key：控制台自助申请（`/self/key-requests`），管理员审批时指定正式项目与额度档，明文经 `/self/keys` 本人自取。Casdoor 公网自助注册已在边缘封禁（`/signup`、`/api/signup` → 404）。
+非飞书组织的外部人员账号（issue #128）：管理员在隔离项目 `External-Quarantine`（gid `gid://axonhub/Project/6`，无渠道/无额度档/成员空 scopes）发邀请链接（7 天、单次；beta7 起上游强制 `roleID`，一律绑隔离项目内零 scopes 的 `Invitee` 角色 gid `gid://axonhub/Role/20`），受邀者经 `/sign-up?invite=<token>` 注册本地账号即激活（邀请=预审，无注册后审批闸门）；落地隔离项目零模型调用能力，shim 巡检 `auto_assign_project` 对无 OIDC 身份者跳过（不自动入 Default——判别用服务端身份链接，email 后缀可伪造不可用）；模型调用只能经 Key：控制台自助申请（`/self/key-requests`），管理员审批时指定正式项目与额度档，明文经 `/self/keys` 本人自取。Casdoor 公网自助注册已在边缘封禁（`/signup`、`/api/signup` → 404）。
 _Avoid_: 外部员工、访客账号
 
 **员工能力档（Employee Posture）**:

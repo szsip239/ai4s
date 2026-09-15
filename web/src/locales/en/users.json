@@ -36,6 +36,7 @@
   "users.dialogs.invite.description": "Create a registration link for an external user. The link is valid for 7 days and allows a single registration. Invited users land in the quarantine project with no capabilities; keys are issued via approval.",
   "users.dialogs.invite.quarantineProject": "Landing project",
   "users.dialogs.invite.quarantineMissing": "Quarantine project External-Quarantine not found. Create it on the Projects page before sending invitations.",
+  "users.dialogs.invite.inviteeRoleMissing": "Zero-scope role Invitee not found in the quarantine project. Create it (with empty scopes) before sending invitations.",
   "users.dialogs.manageProjects.title": "Manage Project Memberships",
   "users.dialogs.manageProjects.description": "Manage project memberships, roles, and scopes for {{firstName}} {{lastName}}.",
   "users.dialogs.manageProjects.joinedProjects": "Joined Projects",

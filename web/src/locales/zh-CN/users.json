@@ -36,6 +36,7 @@
   "users.dialogs.invite.description": "为外部用户创建注册链接，7 天内有效、仅可注册 1 次。受邀用户注册后落地隔离项目，默认零能力，Key 需审批签发。",
   "users.dialogs.invite.quarantineProject": "落地项目",
   "users.dialogs.invite.quarantineMissing": "未找到隔离项目 External-Quarantine，请先在项目页创建后再发起邀请。",
+  "users.dialogs.invite.inviteeRoleMissing": "隔离项目中未找到零权限角色 Invitee，请先在项目角色中创建（权限为空）后再发起邀请。",
   "users.dialogs.manageProjects.title": "项目归属管理",
   "users.dialogs.manageProjects.description": "管理 {{firstName}} {{lastName}} 的项目归属、角色与权限。",
   "users.dialogs.manageProjects.joinedProjects": "已加入项目",
