@@ -86,6 +86,8 @@ axonhub 无事件源的事务靠主动轮询补齐。巡检项（状态翻转才
 单测环境安全）；轮询循环体整体 try/except，单轮异常只记日志不杀线程、绝不影响检测路径。
 """
 import copy
+import hashlib
+import importlib.util
 import json
 import os
 import threading
@@ -161,6 +163,15 @@ KEY_PROJECT_ID = os.environ.get("APPROVAL_KEY_PROJECT_ID", "gid://axonhub/Projec
 # （issue #139：淘汰只清窗口外旧条目——窗口内条目被逐出会在下轮回拉「重现」为未处理
 # 实例被重复执行=重复私信投递 key 明文；窗口内不设数量上限，正确性优先于状态文件体积）
 APPROVAL_WINDOW_SEC = 7 * 24 * 3600
+
+# 价格锚漂移周检（2026-09-15 owner 拍板）：拉 models.dev 第一方目录比对 pricing.json 官方锚，
+# 漂移发飞书（只报告不改价——价格变更永远过人：sync-pricing.py --apply + apply-pricing.py）。
+# 比对逻辑复用 deploy/scripts/sync-pricing.py（ro 挂载进容器，单一事实源，勿在 shim 重写）。
+PRICING_JSON_PATH = os.environ.get("PRICING_JSON_PATH", "/pricing/pricing.json")
+PRICING_SYNC_PATH = os.environ.get("PRICING_SYNC_PATH", "/pricing/sync-pricing.py")
+PRICE_DRIFT_INTERVAL = _env_int("PRICE_DRIFT_INTERVAL", 7 * 24 * 3600)
+PRICE_DRIFT_RETRY = _env_int("PRICE_DRIFT_RETRY", 3600)  # 拉取失败/发卡失败后的重试间隔
+PRICE_DRIFT_MAX_LINES = _env_int("PRICE_DRIFT_MAX_LINES", 12)  # 单卡漂移明细行封顶
 
 # issue #70 #6：enabled Key 列表查询单份（原 apply_tier / check_cycle 各写一遍同样的查询）。
 # 约束：first:100 硬上限——查询无 projectID 过滤，全局 enabled Key 超 100 即漏判；当前规模（十余个）远不及，
@@ -1289,6 +1300,75 @@ def sync_model_cards(ax: Axonhub, state: dict):
         state["card_sync_pending"] = pending
 
 
+def _load_pricing_sync(path: str = PRICING_SYNC_PATH):
+    """importlib 加载 sync-pricing.py（文件名带连字符不能直接 import；纯函数复用，单一事实源）。"""
+    spec = importlib.util.spec_from_file_location("sync_pricing", path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def price_drift_hash(drifts: list) -> str:
+    """漂移内容指纹：内容变 → hash 变 → 重新告警；内容不变不重复打扰（周检不周周报）。"""
+    blob = json.dumps([[c, ch] for c, _p, _n, ch in drifts], ensure_ascii=False, sort_keys=True)
+    return hashlib.sha1(blob.encode()).hexdigest()
+
+
+def price_drift_decision(drifts: list, manuals: list, prev_hash):
+    """漂移告警判定（纯函数）：(action|None, 告警/恢复文本, 成功后应存的 hash)。
+    有漂移且与上次告警内容不同 → alert；无漂移且之前有告警态 → recover；其余不发。"""
+    h = price_drift_hash(drifts) if drifts else None
+    if drifts and h != prev_hash:
+        lines = []
+        for canonical, pid, _new, changed in drifts[:PRICE_DRIFT_MAX_LINES]:
+            lines.append(f"{canonical} [{pid}]：" + "；".join(changed))
+        if len(drifts) > PRICE_DRIFT_MAX_LINES:
+            lines.append(f"……另 {len(drifts) - PRICE_DRIFT_MAX_LINES} 项，全量见 sync-pricing.py --check")
+        manual_line = f"\n手工锚提醒（第一方目录无收录，需对上游价目）: {', '.join(manuals)}" if manuals else ""
+        text = (
+            f"[ai4s 告警] 官方价格锚漂移 {len(drifts)} 项\n"
+            + "\n".join(lines)
+            + manual_line
+            + f"\n处置: deploy 下 python3 scripts/sync-pricing.py --check 复核 → --apply → apply-pricing.py 落库"
+            + f"\n时间: {now_str()}"
+        )
+        return "alert", text, h
+    if not drifts and prev_hash:
+        return "recover", "[ai4s 恢复] 官方价格锚已与第一方目录一致", None
+    return None, "", prev_hash
+
+
+def price_drift_check(state: dict):
+    """价格锚漂移周检（巡检项 8）。state 键：priceDrift:lastRun / failed / hash。
+    拉取/比对失败记日志并按 PRICE_DRIFT_RETRY 间隔重试；发送失败不存 hash 下轮按
+    重试间隔补发——与其他巡检项同款「单轮异常只记日志」隔离纪律。"""
+    now = time.time()
+    last = state.get("priceDrift:lastRun") or 0
+    interval = PRICE_DRIFT_RETRY if state.get("priceDrift:failed") else PRICE_DRIFT_INTERVAL
+    if now - last < interval:
+        return
+    try:
+        sync = _load_pricing_sync()
+        with open(PRICING_JSON_PATH, encoding="utf-8") as f:
+            official = json.load(f)["official_prices_per_million_usd"]
+        drifts, manuals = sync.compute_drifts(official, sync.fetch_catalog(False))
+    except Exception as e:
+        state["priceDrift:lastRun"] = now
+        state["priceDrift:failed"] = True
+        print(f"[alert] 价格锚漂移检查失败（{PRICE_DRIFT_RETRY}s 后重试）: {type(e).__name__}: {e}", flush=True)
+        return
+    state["priceDrift:lastRun"] = now
+    state["priceDrift:failed"] = False
+    print(f"[alert] 价格锚漂移检查: 漂移 {len(drifts)} 项，手工锚 {len(manuals)} 项", flush=True)
+    action, text, h = price_drift_decision(drifts, manuals, state.get("priceDrift:hash"))
+    if action:
+        if send_feishu(text):
+            state["priceDrift:hash"] = h
+            print(f"[alert] 已告警: 价格锚漂移 {action}", flush=True)
+        else:
+            state["priceDrift:failed"] = True  # 下轮按重试间隔补发
+
+
 def check_cycle(ax: Axonhub, state: dict) -> dict:
     """一轮巡检；返回新状态。finding: key -> (bad: bool, 告警文本, 恢复文本)"""
     findings = {}
@@ -1427,6 +1507,13 @@ def check_cycle(ax: Axonhub, state: dict) -> dict:
         sync_model_cards(ax, state)
     except Exception as e:
         print(f"[alert] 模型卡片同步失败: {type(e).__name__}: {e}", flush=True)
+
+    # 8) 价格锚漂移周检（2026-09-15 owner 拍板）：models.dev 第一方目录 vs pricing.json
+    # 官方锚，漂移发飞书（只报告不改价）；同款隔离纪律
+    try:
+        price_drift_check(state)
+    except Exception as e:
+        print(f"[alert] 价格锚漂移巡检失败: {type(e).__name__}: {e}", flush=True)
     return state
 
 

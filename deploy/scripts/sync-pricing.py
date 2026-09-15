@@ -19,7 +19,9 @@ import urllib.request
 
 DEPLOY_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PRICING_PATH = os.path.join(DEPLOY_DIR, "pricing.json")
-CACHE_PATH = os.path.join(DEPLOY_DIR, ".local", "modelsdev-cache.json")
+CACHE_PATH = os.environ.get(
+    "MODELSDEV_CACHE", os.path.join(DEPLOY_DIR, ".local", "modelsdev-cache.json")
+)
 SOURCE_URL = "https://models.dev/api.json"
 
 # canonical 模型 → models.dev 第一方 provider id（只信官方，reseller 不采）
@@ -32,6 +34,11 @@ PROVIDER_MAP = {
     "gemini": "google",
     "google/gemini": "google",
     "deepseek-v4-pro": "deepseek",
+}
+# 渠道命名 ≠ 官方命名的显式别名（canonical → (provider, 官方模型 id)）：
+# zenmux 的 deepseek-v4.1-flash 是渠道侧命名，官方目录对应 deepseek-v4-flash
+OFFICIAL_ALIASES = {
+    "deepseek/deepseek-v4.1-flash": ("deepseek", "deepseek-v4-flash"),
 }
 EPSILON = 1e-9
 
@@ -61,11 +68,14 @@ def fetch_catalog(offline: bool):
 
 
 def find_official_cost(catalog, canonical: str):
-    """在第一方 provider 下按裸模型名查找 cost；找不到返回 None。"""
-    pid = firstparty_provider(canonical)
+    """在第一方 provider 下按裸模型名查找 cost（别名优先）；找不到返回 None。"""
+    pid, base = None, canonical.split("/")[-1]
+    if canonical in OFFICIAL_ALIASES:
+        pid, base = OFFICIAL_ALIASES[canonical]
+    else:
+        pid = firstparty_provider(canonical)
     if not pid or pid not in catalog:
         return None
-    base = canonical.split("/")[-1]
     for mid, m in (catalog[pid].get("models") or {}).items():
         if mid.split("/")[-1] == base and m.get("cost"):
             return pid, m["cost"]
@@ -80,13 +90,11 @@ def close(a, b):
     return abs(a - b) <= EPSILON * max(1.0, abs(a), abs(b))
 
 
-def main():
-    apply_changes = "--apply" in sys.argv
-    offline = "--offline" in sys.argv
-    cfg = json.load(open(PRICING_PATH, encoding="utf-8"))
-    official = cfg["official_prices_per_million_usd"]
-    catalog = fetch_catalog(offline)
-
+def compute_drifts(official: dict, catalog) -> tuple:
+    """比对官方锚与第一方目录 → (drifts, manuals)。
+    drifts: [(canonical, pid, 新锚dict, 变更行list)]；manuals: 第一方无收录/缺价的模型描述。
+    官方无 cache_read 价（None）→ cached 锚取 prompt 全价（保守：防上游报 cached
+    tokens 时按 0 白送——axonhub 未配 cached 价格项的缓存命中不计费）。"""
     drifts, manuals = [], []
     for canonical, anchor in official.items():
         hit = find_official_cost(catalog, canonical)
@@ -94,8 +102,6 @@ def main():
             manuals.append(canonical)
             continue
         pid, cost = hit
-        # 官方无 cache_read 价（None）→ 本地 cached 锚取 prompt 全价（保守：防上游报
-        # cached tokens 时按 0 白送——axonhub 未配 cached 价格项的缓存命中不计费）
         new = {
             "prompt": cost.get("input"),
             "completion": cost.get("output"),
@@ -113,6 +119,17 @@ def main():
                 changed.append(f"{k}: {anchor.get(k)} → {new.get(k)}")
         if changed:
             drifts.append((canonical, pid, new, changed))
+    return drifts, manuals
+
+
+def main():
+    apply_changes = "--apply" in sys.argv
+    offline = "--offline" in sys.argv
+    cfg = json.load(open(PRICING_PATH, encoding="utf-8"))
+    official = cfg["official_prices_per_million_usd"]
+    catalog = fetch_catalog(offline)
+
+    drifts, manuals = compute_drifts(official, catalog)
 
     for canonical in manuals:
         print(f"MANUAL  {canonical}：第一方目录无收录，保留现锚，请对上游实际价目（如 ZENMUX 账单）")

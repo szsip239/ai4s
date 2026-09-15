@@ -195,6 +195,8 @@ services:
       # issue #139：隔离项目 gid 直比（#128 邀请流程迁出来源）；置空则不自动迁出（fail-closed）
       QUARANTINE_PROJECT_GID: ${QUARANTINE_PROJECT_GID:-}
       POLL_INTERVAL: "30"
+      # 价格锚漂移周检（alert_poller 巡检项 8）：models.dev 抓取缓存落 /state（ro 挂载外可写区）
+      MODELSDEV_CACHE: /state/modelsdev-cache.json
     volumes:
       - ./dlp:/dlp:rw # 词表/format-rules/settings.json 挂载（issue #31 起 rw：admin API 写回）；shim 每请求重读热更新
       - ../recognizers:/recognizers:rw # PII recognizer 定义（issue #15），issue #31 起 rw
@@ -202,6 +204,8 @@ services:
       - ./agentgateway:/agentgateway:rw # SHIM-LOCAL-TOKEN 渲染写回（issue #139；#140 起 #33 规则渲染已撤）
       - ./.local/alert-state:/state # 告警防抖状态（issue #56 平移自 alert-poller，gitignored）
       - ./.local/promptguard-model:/models/promptguard:ro # PromptGuard 2 模型（issue #67 平移自 promptguard 服务，gitignored）
+      - ./pricing.json:/pricing/pricing.json:ro # 价格锚漂移周检只读比对（2026-09-15）
+      - ./scripts/sync-pricing.py:/pricing/sync-pricing.py:ro # 比对逻辑单一事实源（importlib 加载）
     networks:
       - ai4s
     depends_on:

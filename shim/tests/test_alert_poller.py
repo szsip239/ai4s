@@ -1028,6 +1028,7 @@ class TestCheckCycleDebounce(unittest.TestCase):
         ax = mock.Mock()
         ax.gql.side_effect = RuntimeError("axonhub down")
         with mock.patch.object(ap, "http_get", return_value=True), \
+             mock.patch.object(ap, "price_drift_check"), \
              mock.patch.object(ap, "send_feishu", return_value=True):
             state = ap.check_cycle(ax, {})
         self.assertEqual(state, {})
@@ -1202,6 +1203,7 @@ class TestCheckCycleShadowAvail(unittest.TestCase):
         # shadow_log 自身异常：本轮跳过 shadow 分支，循环不抛
         with mock.patch.object(ap, "http_get", return_value=True), \
              mock.patch.object(ap.shadow_log, "stats", side_effect=RuntimeError("io err")), \
+             mock.patch.object(ap, "price_drift_check"), \
              mock.patch.object(ap, "send_feishu", return_value=True):
             ax = mock.Mock()
             ax.gql.side_effect = RuntimeError("gql down")
@@ -1424,6 +1426,7 @@ class TestCheckCyclePgBlockCursor(unittest.TestCase):
              mock.patch.object(ap.shadow_log, "tail", side_effect=RuntimeError("io err")), \
              mock.patch.object(ap.shadow_log, "stats",
                                side_effect=lambda layer, window=0: _shadow_stats(0, 0)), \
+             mock.patch.object(ap, "price_drift_check"), \
              mock.patch.object(ap, "send_feishu", return_value=True) as s:
             state = ap.check_cycle(ax, {})
         self.assertEqual(state, {})
@@ -2205,6 +2208,7 @@ class TestCheckCycleCardSync(unittest.TestCase):
              mock.patch.object(ap.shadow_log, "stats",
                                side_effect=lambda layer, window=0: _shadow_stats(0, 0)), \
              mock.patch.object(ap.shadow_log, "tail", return_value=[]), \
+             mock.patch.object(ap, "price_drift_check"), \
              mock.patch.object(ap, "send_feishu", return_value=True) as s:
             state = ap.check_cycle(ax, {})
         self.assertEqual(state, {})
