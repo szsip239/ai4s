@@ -1,26 +1,111 @@
 {
-  "version": "2026-09-14",
-  "note": "credit 定价（issue #18）：1 credit = $1 官方原价消耗；配额档位见 axonhub Profile 模板（体验 100 / 标准 500 / 高档 2000 credits 自然月，issue #84 起）。渠道倍率无默认值，必须由管理员显式配置（订阅渠道 <1，按量渠道 1.0）。改倍率后跑 deploy/scripts/apply-pricing.py 生效。channels 节与各渠道 supportedModels 对齐（2026-09-14 漂移修复）；mock 类模型（mock-gpt/echo-test）不计价不进表。",
+  "version": "2026-09-15",
+  "note": "credit 定价（issue #18）：1 credit = $1 官方原价消耗；配额档位见 axonhub Profile 模板与 docs/contracts/quota-tiers.md（2026-09-06 回调为 50/300/1000 credits 自然月）。渠道倍率无默认值，必须由管理员显式配置（订阅渠道 <1，按量渠道 1.0）。改倍率后跑 deploy/scripts/apply-pricing.py 生效。官方价锚由 deploy/scripts/sync-pricing.py 机制同步（models.dev 第一方 provider，--check 漂移报告 / --apply 写回）；cache_write 锚随同步进入，落库为第 4 价格项 prompt_write_cached_tokens（缺该项时上游缓存写入按 0 白送）。第一方目录无收录的模型（如 zenmux 的 deepseek/deepseek-v4.1-flash）锚为手工维护，须对上游实际价目。channels 节与各渠道 supportedModels 对齐（2026-09-14 漂移修复）；mock 类模型（mock-gpt/echo-test）不计价不进表。",
   "official_prices_per_million_usd": {
-    "gpt-5.6-sol": { "prompt": 5.00, "completion": 30.00, "cached": 0.50 },
-    "gpt-5.6-terra": { "prompt": 2.00, "completion": 12.00, "cached": 0.20 },
-    "gpt-5.6-luna": { "prompt": 0.20, "completion": 1.20, "cached": 0.02 },
-    "gpt-5.3-codex": { "prompt": 1.75, "completion": 14.00, "cached": 0.175 },
-    "gpt-5.5": { "prompt": 5.00, "completion": 30.00, "cached": 0.50 },
-    "gpt-6-astra": { "prompt": 10.00, "completion": 50.00, "cached": 1.00 },
-    "kimi-k2.7-code": { "prompt": 0.95, "completion": 4.00, "cached": 0.19 },
-    "kimi-k2.7-code-highspeed": { "prompt": 1.90, "completion": 8.00, "cached": 0.38 },
-    "kimi-k3": { "prompt": 3.00, "completion": 15.00, "cached": 0.30 },
-    "deepseek/deepseek-v4.1-flash": { "prompt": 0.14, "completion": 0.28, "cached": 0.0028 },
-    "deepseek-v4-pro": { "prompt": 0.435, "completion": 0.87, "cached": 0.003625 },
-    "glm-5.1": { "prompt": 1.40, "completion": 4.40, "cached": 0.26 },
-    "glm-5.2": { "prompt": 1.40, "completion": 4.40, "cached": 0.26 },
-    "glm-5.3": { "prompt": 1.40, "completion": 4.40, "cached": 0.26 },
-    "glm-5.3-flash": { "prompt": 0.075, "completion": 0.25, "cached": 0.015 },
-    "qwen3.6-27b": { "prompt": 0.20, "completion": 1.50, "cached": 0.04 },
-    "claude-haiku-4-5": { "prompt": 1.00, "completion": 5.00, "cached": 0.10 },
-    "google/gemini-3.8-flash": { "prompt": 0.75, "completion": 3.75, "cached": 0.075 },
-    "google/gemini-3.7-flash": { "prompt": 0.75, "completion": 3.75, "cached": 0.075 }
+    "gpt-5.6-sol": {
+      "prompt": 4,
+      "completion": 20,
+      "cached": 0.4,
+      "cache_write": 5
+    },
+    "gpt-5.6-terra": {
+      "prompt": 2,
+      "completion": 12,
+      "cached": 0.2,
+      "cache_write": 2.5
+    },
+    "gpt-5.6-luna": {
+      "prompt": 0.2,
+      "completion": 1.2,
+      "cached": 0.02,
+      "cache_write": 0.25
+    },
+    "gpt-5.3-codex": {
+      "prompt": 1.75,
+      "completion": 14.0,
+      "cached": 0.175
+    },
+    "gpt-5.5": {
+      "prompt": 5.0,
+      "completion": 30.0,
+      "cached": 0.5
+    },
+    "gpt-6-astra": {
+      "prompt": 10,
+      "completion": 50,
+      "cached": 1,
+      "cache_write": 12.5
+    },
+    "kimi-k2.7-code": {
+      "prompt": 0.95,
+      "completion": 4.0,
+      "cached": 0.19
+    },
+    "kimi-k2.7-code-highspeed": {
+      "prompt": 1.9,
+      "completion": 8.0,
+      "cached": 0.38
+    },
+    "kimi-k3": {
+      "prompt": 3.0,
+      "completion": 15.0,
+      "cached": 0.3
+    },
+    "deepseek/deepseek-v4.1-flash": {
+      "prompt": 0.14,
+      "completion": 0.28,
+      "cached": 0.0028
+    },
+    "deepseek-v4-pro": {
+      "prompt": 0.435,
+      "completion": 0.87,
+      "cached": 0.003625
+    },
+    "glm-5.1": {
+      "prompt": 1.4,
+      "completion": 4.4,
+      "cached": 0.26,
+      "cache_write": 0
+    },
+    "glm-5.2": {
+      "prompt": 1.4,
+      "completion": 4.4,
+      "cached": 0.26,
+      "cache_write": 0
+    },
+    "glm-5.3": {
+      "prompt": 1.4,
+      "completion": 4.4,
+      "cached": 0.26,
+      "cache_write": 0
+    },
+    "glm-5.3-flash": {
+      "prompt": 0.075,
+      "completion": 0.25,
+      "cached": 0.015,
+      "cache_write": 0
+    },
+    "qwen3.6-27b": {
+      "prompt": 0.6,
+      "completion": 3.6,
+      "cached": 0.6
+    },
+    "claude-haiku-4-5": {
+      "prompt": 1,
+      "completion": 5,
+      "cached": 0.1,
+      "cache_write": 1.25
+    },
+    "google/gemini-3.8-flash": {
+      "prompt": 0.75,
+      "completion": 3.75,
+      "cached": 0.075
+    },
+    "google/gemini-3.7-flash": {
+      "prompt": 0.75,
+      "completion": 3.75,
+      "cached": 0.075
+    }
   },
   "channels": [
     {

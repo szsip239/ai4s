@@ -98,9 +98,16 @@ def main():
                 {"itemCode": "completion_tokens", "pricing": {"mode": "usage_per_unit", "usagePerUnit": per_million(o["completion"], m)}},
                 {"itemCode": "prompt_cached_tokens", "pricing": {"mode": "usage_per_unit", "usagePerUnit": per_million(o["cached"], m)}},
             ]
+            # 缓存写入（axonhub 第 4 个 itemCode）：锚存在才写。缺此项时上游报回的写入
+            # tokens 会从 prompt 量扣掉再按 0 白送（cost_calc.go 无条件扣减）。Claude 的
+            # 5m/1h TTL 分档自动回退本基础项计价；切勿把 _5m/_1h 当独立 itemCode（静默计 0）
+            if o.get("cache_write") is not None:
+                items.append({"itemCode": "prompt_write_cached_tokens",
+                              "pricing": {"mode": "usage_per_unit", "usagePerUnit": per_million(o["cache_write"], m)}})
             prices.append({"modelId": alias, "price": {"items": items}})
+            cw_note = f" cache_write={per_million(o['cache_write'], m)}" if o.get("cache_write") is not None else ""
             print(f"  {ch['name']}/{alias}（锚 {canonical}，×{m}）: "
-                  f"prompt={per_million(o['prompt'], m)} completion={per_million(o['completion'], m)} cached={per_million(o['cached'], m)} credit/M")
+                  f"prompt={per_million(o['prompt'], m)} completion={per_million(o['completion'], m)} cached={per_million(o['cached'], m)}{cw_note} credit/M")
         if check_only:
             continue
         gql("""mutation($channelId: ID!, $input: [SaveChannelModelPriceInput!]!) {

@@ -21,7 +21,8 @@ cp .env.example .env       # 填 DB_PASSWORD 与管理面账号；OAuth 凭据�
 docker compose up -d
 ./scripts/bootstrap.sh     # 初始化管理账号 + 渠道 + 测试 API key（幂等）
 ./scripts/smoke-test.sh    # curl 经 agentgateway 完成一次 chat completion
-python3 scripts/apply-pricing.py  # credit 价格表落库（pricing.json：官方原价×渠道倍率，issue #18）
+python3 scripts/sync-pricing.py --check   # 官方价锚漂移检查（models.dev 第一方 provider；--apply 写回 pricing.json，issue #18 机制化，2026-09-15 起）
+python3 scripts/apply-pricing.py  # credit 价格表落库（pricing.json：官方原价×渠道倍率，issue #18）；sync --apply 后必跑
 ./scripts/assign-default-project.sh  # JIT 新员工补进 Default 项目（幂等；issue #73 起常规路径已由 shim 巡检自动覆盖，本脚本为手工兜底）
 python3 scripts/dlp-regression.py    # DLP 对抗回归（issue #20）：改词表/规则后必跑（含 EDM 段与 admin API 段）
 python3 scripts/dlp-capability.py    # DLP 能力水位（issue #42）：词表/规则调优后与回归一起跑；gap 不 fail，负例误伤/开关矩阵失败才非零（公共部分在 dlp_testkit.py）
