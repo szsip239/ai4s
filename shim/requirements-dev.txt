@@ -9,3 +9,5 @@ pytesseract==0.3.13
 Pillow==12.3.0
 # issue #72：新建 key 审批归属步骤 SQL 直改（alert_poller.assign_key_owner，函数级懒加载）
 psycopg[binary]==3.2.12
+# test_gateway_token_render：渲染结果结构性断言（缩进错位即 parse 挂/落错位置）
+PyYAML==6.0.3
