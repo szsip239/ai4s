@@ -53,7 +53,11 @@ routes:
             # >>> SHIM-LOCAL-TOKEN BEGIN（issue #139：shim 启动渲染 addRequestHeaders 注守卫头，勿手改；env SHIM_LOCAL_TOKEN 空则段内渲染为空） >>>
             # <<< SHIM-LOCAL-TOKEN END <<<
             metadata:
-              resolved_model: 'response.headers["x-resolved-model"]'
+              # in 守卫：shim fail-open/无需改写时不出该头，直取键会让网关每条记一行 error
+              # （设计噪音）；落空串 → 下方 transformations 的 has()/!= "" 守卫回退原 model。
+              # 注：agentgateway CEL 的 has() 只接受字段选择、不接受 map 下标（v1.5.0 实证
+              # invalid argument to has() macro），map 键存在性用 in。
+              resolved_model: '"x-resolved-model" in response.headers ? response.headers["x-resolved-model"] : ""'
       ai:
         # auto→旗舰静态兜底（spike 定稿）：extAuthz fail-open / 桩未给出改写目标时，
         # transformations 回退保留原 model="auto"，由本别名映射到旗舰模型（顺序：先 transformations 后 alias）
