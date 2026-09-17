@@ -14,6 +14,15 @@
 | mock-upstream（可选） | `python:3.12-alpine` | 仅无 OAuth 凭据时验证链路用 |
 | opf（可选，profile `opf`） | 本地构建 `../opf`（python:3.12-slim + torch CPU 轮 + openai/privacy-filter pin commit） | privacy-filter 中文 PII NER sidecar（issue #127，预接入默认关；#122 实测 torch CPU 延迟不可用故不进默认路径，GPU/Q4 机型就绪后启用） |
 
+## ⚠️ 运行主机：lichunmac（不是本机）
+
+2026-09-17 起本栈运行在 **lichunmac**（`100.80.80.81` / `192.168.31.21`，SSH 用户 `lichun`），
+栈目录 `/Users/lichun/hostdb/ai4s/deploy`。**licbot 本机已卸载 Docker，`docker` 命令不存在**，
+下面的 `docker compose` 命令需在目标主机上执行（`~/.claude/skills/dev-hosts/scripts/connect.sh dify`）。
+
+规范入口 `https://ai4s.echobyte.cn:8444/8445`；边缘 nginx 是 Dify 的 `docker-nginx-1`，不属本项目，
+重建需同时传三个 compose 文件。完整约束见 `docs/agents/deployment.md`。
+
 ## 快速开始
 
 ```bash
@@ -60,8 +69,10 @@ huggingface-cli download gravitee-io/Llama-Prompt-Guard-2-86M-onnx \
 - SSO（issue #14 已上线）：员工在 http://localhost:3000/sign-in 点"Casdoor SSO（飞书）"登录，JIT 自动建号。axonhub 无 JIT 默认项目机制；**issue #73 起 shim 巡检线程 30s 级自动把新员工补进 Default 项目**（`auto_assign_project`，入项发飞书群通知），手工兜底 `./scripts/assign-default-project.sh`（幂等）。**issue #128 起收窄：只自动入项持 OIDC 身份（飞书 JIT）的用户，无 OIDC 身份的本地账号（邀请注册外部人员）跳过。**
 - **外部人员邀请注册（issue #128）**：非飞书组织的外部用户走邀请链接注册。操作纪律：① 邀请一律在**全局用户页（/users）的「邀请用户」按钮**发出，前端自动绑隔离项目 `External-Quarantine`（gid `gid://axonhub/Project/6`，无渠道/无额度档/成员空 scopes；项目不存在时按钮禁用），链接 7 天有效、单次使用；**beta7 起上游邀请创建强制 `roleID`**——前端自动绑隔离项目内零 scopes 的 `Invitee` 角色（gid `gid://axonhub/Role/20`，项目重建后须手工补建同名空 scopes 角色，缺失时按钮禁用并提示）；② 受邀者经 `控制台/sign-up?invite=<token>` 注册即激活登录，但落地零能力（playground 不可用、无任何模型调用路径）；③ 受邀者在控制台「我的 Key」自助提交新建 Key 申请，管理员在审批页**指定正式项目与额度档**后通过——执行侧自动把用户以空 scopes 移入正式项目并建 Key，同时**将用户迁出隔离项目**（批准即转正，迁出失败不回滚、结果摘要注明可人工移除），明文由申请人在「我的 Key」页自取。邀请接口路由：`/auth/invitations/*` 经 agentgateway → axonhub（publicGroup，无鉴权为上游设计）。
 - **公网访问（参考拓扑，2026-09-03 公开发布脱敏）**：推荐宿主 nginx 反代发布两条 HTTPS 入口（`<console-domain>`/`<sso-domain>` 为占位符，部署时替换为自己的域名并同步下文三处配置）：
-  - console+API：`https://<console-domain>`（→ host.docker.internal:3000；本机 localhost:3000 入口不受影响）
-  - Casdoor：`https://<sso-domain>`（→ host.docker.internal:8000）。**公网自助注册须在边缘封禁**：边缘对 `/signup`、`/api/signup` 返回 404（Casdoor 应用 `enable_sign_up` 保持 true——关掉会连带阻断新员工飞书 JIT，Casdoor `controllers/auth.go` 两处共用此开关）；飞书 SSO 走 `/api/login` 不受影响；管理员预建账号走本机 `localhost:8000`（2026-09-03 起 compose 绑定回环，内网直连取消）。
+  - console+API：`https://<console-domain>`（→ 边缘 Nginx 以**容器名** `ai4s-agentgateway:3000` 直连；本机 localhost:3000 入口不受影响）
+    2026-09-17 起本栈与边缘 Nginx 同机（lichunmac），Nginx 已加入 `ai4s_ai4s` 网络，不再经 `host.docker.internal`，
+    因而也不再需要 `resolver 127.0.0.11 ipv6=off` 规避双栈问题。规范入口为 `https://ai4s.echobyte.cn:8445`。
+  - Casdoor：`https://<sso-domain>`（→ 容器名 `ai4s-casdoor:8000` 直连；规范入口 `https://ai4s.echobyte.cn:8444`）。**公网自助注册须在边缘封禁**：边缘对 `/signup`、`/api/signup` 返回 404（Casdoor 应用 `enable_sign_up` 保持 true——关掉会连带阻断新员工飞书 JIT，Casdoor `controllers/auth.go` 两处共用此开关）；飞书 SSO 走 `/api/login` 不受影响；管理员预建账号走本机 `localhost:8000`（2026-09-03 起 compose 绑定回环，内网直连取消）。
   - 若 console 与其他 PWA 应用同 host 不同端口共存：Android intent-filter 按 host 匹配不认端口、WebAPK 会互相抢链接——建议 console 用独立（子）域名。SSO 规范名三处对齐：`axonhub/config.yml` 的 public_url/redirect_url、casdoor `ai4s` 应用 redirect_uris（localhost/正式域名多轨并存）、`casdoor/app.conf` origin（issuer 与 origin 必须一致）。
   - **前置依赖（飞书后台手工项）**：飞书开放平台应用 → 安全设置 → 重定向 URL 须含 `https://<sso-domain>/callback`，否则 SSO 最后一步报错误码 20029。
   - Casdoor 应用的 `redirect_uris` 追加项（含 console 域名回调）是运行时 DB 配置，`casdoor_data` volume 重建后需经 `/api/update-application` 重设（同下方 display_name 的恢复套路）。
