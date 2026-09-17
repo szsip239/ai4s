@@ -97,6 +97,7 @@ export default function DashboardPage() {
   const { isProjectOwner } = useRoutePermissions();
   const [modelTotalRequests, setModelTotalRequests] = useState(0);
   const [channelTotalRequests, setChannelTotalRequests] = useState(0);
+  const [successRateWindow, setSuccessRateWindow] = useState<TimePeriod>('month');
 
   const [channelTimePeriod, setChannelTimePeriod] = useState<TimePeriod>('allTime');
   const [channelTokensTimePeriod, setChannelTokensTimePeriod] = useState<TimePeriod>('allTime');
@@ -176,13 +177,16 @@ export default function DashboardPage() {
               <CardTitle>{t('dashboard.charts.channelSuccessRate')}</CardTitle>
               <CardDescription>{t('dashboard.charts.channelSuccessRateDescription')}</CardDescription>
               <CardAction>
-                <Link to='/dashboard/channel-success-rates' className='text-sm text-primary hover:underline'>
-                  {t('dashboard.viewAll')}
-                </Link>
+                <div className='flex items-center gap-3'>
+                  <TimePeriodSelector value={successRateWindow} onChange={setSuccessRateWindow} />
+                  <Link to='/dashboard/channel-success-rates' className='text-sm text-primary hover:underline'>
+                    {t('dashboard.viewAll')}
+                  </Link>
+                </div>
               </CardAction>
             </CardHeader>
             <CardContent>
-              <ChannelSuccessRate />
+              <ChannelSuccessRate timeWindow={successRateWindow} />
             </CardContent>
           </Card>
         </div>

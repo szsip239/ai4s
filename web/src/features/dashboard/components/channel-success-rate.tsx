@@ -4,9 +4,9 @@ import { formatNumber } from '@/utils/format-number';
 import { Skeleton } from '@/components/ui/skeleton';
 import { useChannelSuccessRates } from '../data/dashboard';
 
-export function ChannelSuccessRate() {
+export function ChannelSuccessRate({ timeWindow }: { timeWindow?: string }) {
   const { t } = useTranslation();
-  const { data: channels, isLoading, error } = useChannelSuccessRates();
+  const { data: channels, isLoading, error } = useChannelSuccessRates(undefined, timeWindow);
 
   if (isLoading) {
     return (

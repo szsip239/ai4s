@@ -174,6 +174,7 @@ export default function DashboardChannelSuccessRates() {
                 <SelectItem value="day">{t('dashboard.stats.today')}</SelectItem>
                 <SelectItem value="week">{t('dashboard.stats.thisWeek')}</SelectItem>
                 <SelectItem value="month">{t('dashboard.stats.thisMonth')}</SelectItem>
+                <SelectItem value="allTime">{t('dashboard.stats.all')}</SelectItem>
               </SelectContent>
             </Select>
 
