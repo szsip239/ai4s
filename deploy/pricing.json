@@ -1,5 +1,5 @@
 {
-  "version": "2026-09-15",
+  "version": "2026-09-24",
   "note": "credit 定价（issue #18）：1 credit = $1 官方原价消耗；配额档位见 axonhub Profile 模板与 docs/contracts/quota-tiers.md（2026-09-06 回调为 50/300/1000 credits 自然月）。渠道倍率无默认值，必须由管理员显式配置（订阅渠道 <1，按量渠道 1.0）；**倍率由 owner 自行维护，sync-pricing.py 只写官方锚、永不碰倍率**（2026-09-15 owner 拍板分工）。改倍率后跑 deploy/scripts/apply-pricing.py 生效。官方价锚由 deploy/scripts/sync-pricing.py 机制同步（models.dev 第一方 provider，--check 漂移报告 / --apply 写回）；cache_write 锚随同步进入，落库为第 4 价格项 prompt_write_cached_tokens（缺该项时上游缓存写入按 0 白送）。渠道侧命名与第一方目录不一致的模型（如 zenmux 的 deepseek/deepseek-v4.1-flash）在 official_aliases 节做显式映射（值格式 \"provider:官方模型id\"）后随官方目录同步；无官方对应的模型锚为手工维护，须对上游实际价目，shim 周检会发提醒卡。channels 节与各渠道 supportedModels 对齐（2026-09-14 漂移修复）；mock 类模型（mock-gpt/echo-test）不计价不进表。",
   "official_prices_per_million_usd": {
     "gpt-5.6-sol": {
@@ -80,9 +80,9 @@
       "cache_write": 0
     },
     "glm-5.3-flash": {
-      "prompt": 0.075,
-      "completion": 0.25,
-      "cached": 0.015,
+      "prompt": 0.15,
+      "completion": 0.5,
+      "cached": 0.03,
       "cache_write": 0
     },
     "qwen3.6-27b": {
