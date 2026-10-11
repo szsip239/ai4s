@@ -88,15 +88,15 @@ sys.exit(0 if (req_ok and cost_ok and per_ok) else 1)
 EOF
 check "employee-test-key 挂 test-测试档（3 次/月 + \$0.01/月）" $?
 
-# 5. 配额强制已开启且为 EXHAUSTED_ONLY
-gql 'query { quotaEnforcementSettings { enabled mode } }' '{}' > .local/i3-enf.json 2>/dev/null || echo '{"errors":"gql failed"}' > .local/i3-enf.json
+# 5. 配额路由已设置且为 REMOVE_ON_EXHAUSTED（beta11 起取代 quotaEnforcementSettings）
+gql 'query { quotaRoutingSettings { defaultMode } }' '{}' > .local/i3-enf.json 2>/dev/null || echo '{"errors":"gql failed"}' > .local/i3-enf.json
 python3 - <<'EOF'
 import json,sys
 d=json.load(open(".local/i3-enf.json"))
-s=(d.get("data") or {}).get("quotaEnforcementSettings") or {}
-sys.exit(0 if (s.get("enabled") is True and s.get("mode")=="EXHAUSTED_ONLY") else 1)
+s=(d.get("data") or {}).get("quotaRoutingSettings") or {}
+sys.exit(0 if s.get("defaultMode")=="REMOVE_ON_EXHAUSTED" else 1)
 EOF
-check "quotaEnforcementSettings = enabled + EXHAUSTED_ONLY" $?
+check "quotaRoutingSettings = REMOVE_ON_EXHAUSTED" $?
 
 # 6. 超限拒绝：最多连打 5 次，3 次配额用完后应被拒（重跑容忍：若此前已耗尽则首击即拒也算过）
 if [ -s .local/i3-test-key ]; then

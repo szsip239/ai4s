@@ -33,7 +33,7 @@ import {
   resetChannelQuotaNow,
   checkProviderQuotas,
 } from '@/features/system/data/quotas';
-import { useGeneralSettings, useQuotaEnforcementSettings, type QuotaEnforcementMode } from '@/features/system/data/system';
+import { useGeneralSettings, useQuotaRoutingSettings, type QuotaRoutingMode } from '@/features/system/data/system';
 import { capitalizeZenmuxTier, getZenmuxMonthlyQuotaUSD, getZenmuxUsagePercentage } from '@/features/system/data/zenmux-quota-display';
 
 const syntheticWeeklyRegenTickPct = 0.02;
@@ -118,6 +118,39 @@ function getLimitDurationPercent(limit: ProviderQuotaLimit): number | undefined 
   const end = new Date(limit.nextResetAt).getTime();
   if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return undefined;
   return Math.max(0, Math.min(100, ((Date.now() - start) / (end - start)) * 100));
+}
+
+// beta11 BACKPRESSURE 语义：任一计费窗口的用量进度超过时间进度即视为配额压力。
+// 与上游 features/channels/utils/quota-routing-status.ts 的窗口压力判定保持一致，
+// 内联于此以避免引入该文件依赖的 b11 渠道级类型。
+function hasQuotaWindowPressure(limits: ProviderQuotaLimit[]): boolean {
+  const now = Date.now();
+  return limits.some((limit) => {
+    if (
+      limit.window === 'pay_as_you_go' ||
+      limit.window === 'credits' ||
+      limit.status === 'exhausted' ||
+      !limit.periodStart ||
+      !limit.nextResetAt
+    ) {
+      return false;
+    }
+
+    const periodStart = Date.parse(limit.periodStart);
+    const nextResetAt = Date.parse(limit.nextResetAt);
+    if (
+      !Number.isFinite(periodStart) ||
+      !Number.isFinite(nextResetAt) ||
+      periodStart >= now ||
+      nextResetAt <= now ||
+      nextResetAt <= periodStart
+    ) {
+      return false;
+    }
+
+    const elapsedRatio = (now - periodStart) / (nextResetAt - periodStart);
+    return limit.usageRatio > elapsedRatio;
+  });
 }
 
 function getClineUsagePercent(window?: ClineQuotaWindow): number {
@@ -389,7 +422,7 @@ function PeriodQuotaEstimate({ limits }: { limits: ProviderQuotaLimit[] }) {
   );
 }
 
-function QuotaRow({ channel, enforcementMode, allowedChannelIDs }: { channel: ProviderQuotaChannel; enforcementMode?: QuotaEnforcementMode | null; allowedChannelIDs?: string[] | null }) {
+function QuotaRow({ channel, effectiveMode }: { channel: ProviderQuotaChannel; effectiveMode?: QuotaRoutingMode | null }) {
   const { t, i18n } = useTranslation();
   const queryClient = useQueryClient();
   const [isResetting, setIsResetting] = useState(false);
@@ -399,14 +432,17 @@ function QuotaRow({ channel, enforcementMode, allowedChannelIDs }: { channel: Pr
   const clinePassUnavailable = channel.type === 'cline' && isClineUnavailablePassQuotaData(channel.quotaStatus.quotaData);
   const statusLabel = clinePassUnavailable ? t('quota.status.cline_pass_unavailable') : t(STATUS_LABELS[status]);
 
-  const isAllowed = allowedChannelIDs?.includes(channel.id) ?? false;
-
-  const enforcementEffect =
-    enforcementMode && !isAllowed && (status === 'exhausted' || (status === 'warning' && enforcementMode === 'DE_PRIORITIZE'))
-      ? enforcementMode === 'EXHAUSTED_ONLY'
-        ? ('blocked' as const)
-        : ('deprioritized' as const)
-      : null;
+  // beta11 配额路由模式徽标，仅在配额压力下展示：IGNORE_QUOTA 渠道不受配额门控（不展示）；
+  // 配额耗尽的渠道被摘除（red）；BACKPRESSURE 下用量进度超过时间进度的渠道被限流（amber）。
+  // 全局默认模式不可解析（如查看者缺少 read_settings 权限）时不展示徽标，不做猜测。
+  let modeBadge: { key: string; color: 'red' | 'amber' } | null = null;
+  if (effectiveMode && effectiveMode !== 'IGNORE_QUOTA') {
+    if (status === 'exhausted') {
+      modeBadge = { key: 'quota.status.remove_on_exhausted', color: 'red' };
+    } else if (effectiveMode === 'BACKPRESSURE' && hasQuotaWindowPressure(quota.limits)) {
+      modeBadge = { key: 'quota.status.backpressure', color: 'amber' };
+    }
+  }
 
   const percentage = getChannelPercentage(channel);
   const batteryLevel = getBatteryLevel(percentage, status);
@@ -576,14 +612,9 @@ function QuotaRow({ channel, enforcementMode, allowedChannelIDs }: { channel: Pr
           >
             {statusLabel}
           </Badge>
-          {enforcementEffect && (
-            <Badge variant='outline' className={BADGE_COLOR_CLASSES[enforcementEffect === 'blocked' ? 'red' : 'amber']}>
-              {t(`quota.status.${enforcementEffect}`)}
-            </Badge>
-          )}
-          {isAllowed && (status === 'exhausted' || status === 'warning') && (
-            <Badge variant='outline' className={BADGE_COLOR_CLASSES.blue}>
-              {t('quota.status.bypassed')}
+          {modeBadge && (
+            <Badge variant='outline' className={BADGE_COLOR_CLASSES[modeBadge.color]}>
+              {t(modeBadge.key)}
             </Badge>
           )}
         </div>
@@ -2074,9 +2105,9 @@ function QuotaBadgeTrigger({ channels, isLoading, isError }: { channels: Provide
 export function QuotaBadges({ isRefreshing, onRefresh }: { isRefreshing: boolean; onRefresh: () => void }) {
   const { t } = useTranslation();
   const { channels, isLoading, isError, error } = useProviderQuotaStatuses();
-  const { data: enforcementSettings } = useQuotaEnforcementSettings();
-  const enforcementMode = enforcementSettings?.enabled ? enforcementSettings.mode : null;
-  const allowedChannelIDs = enforcementSettings?.enabled ? enforcementSettings.allowedChannelIDs : null;
+  const { data: routingSettings } = useQuotaRoutingSettings();
+  // 本仓渠道尚无 per-channel 路由模式（b11 渠道级 quotaRoutingMode 未引入），有效模式即全局默认模式。
+  const effectiveMode = routingSettings?.defaultMode ?? null;
 
   if (!isLoading && !isError && channels.length === 0) return null;
 
@@ -2131,7 +2162,7 @@ export function QuotaBadges({ isRefreshing, onRefresh }: { isRefreshing: boolean
         className={`max-h-[60vh] overflow-y-auto pr-1 pl-1 ${groupedChannels.length > 4 ? 'grid grid-cols-1 gap-x-4 sm:grid-cols-2' : ''}`}
       >
         {groupedChannels.map((channel: ProviderQuotaChannel) => (
-          <QuotaRow key={channel.id} channel={channel} enforcementMode={enforcementMode} allowedChannelIDs={allowedChannelIDs} />
+          <QuotaRow key={channel.id} channel={channel} effectiveMode={effectiveMode} />
         ))}
       </div>
     );

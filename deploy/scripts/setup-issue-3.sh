@@ -120,9 +120,9 @@ TEST_PROFILES_JSON=$(TEST_KEY_ID="$TEST_KEY_ID" MOCK_CH_ID="$MOCK_CH_ID" python3
 gql 'mutation UpdateProfiles($id: ID!, $input: UpdateAPIKeyProfilesInput!) { updateAPIKeyProfiles(id: $id, input: $input) { id profiles { activeProfile profiles { name } } } }' "$TEST_PROFILES_JSON"
 echo
 
-echo "==> 开启配额强制（EXHAUSTED_ONLY；可重放）"
-gql 'mutation UpdateEnf($input: UpdateQuotaEnforcementSettingsInput!) { updateQuotaEnforcementSettings(input: $input) }' \
-  '{"input":{"enabled":true,"mode":"EXHAUSTED_ONLY"}}'
+echo "==> 设置配额路由（REMOVE_ON_EXHAUSTED；beta11 起取代配额强制开关；可重放）"
+gql 'mutation UpdateRouting($input: UpdateQuotaRoutingSettingsInput!) { updateQuotaRoutingSettings(input: $input) }' \
+  '{"input":{"defaultMode":"REMOVE_ON_EXHAUSTED"}}'
 echo
 
 echo "完成。运行 ./scripts/verify-issue-3.sh 验证"

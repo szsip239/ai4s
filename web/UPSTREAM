@@ -3,3 +3,4 @@ remote-name: upstream
 vendored-at: v1.0.0-beta10 (tag, commit 939b2bc0)
 vendored-on: 2026-09-09
 sync: 跟随 axonhub release，每 2-4 周评审窗口内 git merge upstream/<tag>（见 docs/contracts/vendor-isolation.md）
+note: 运行栈已是 v1.0.0-beta11（2026-10-11 升级），本前端仍为 beta10 vendor + beta11 schema 适配 patch（2026-10-11，改动清单见 MOUNTPOINTS.md；评审报告 docs/research/2026-10-11-axonhub-beta11-review.md）。下次 vendor 全量 merge 到 beta11+ 时此 patch 由 merge 自然吸收，届时更新 vendored-at 并删除本 note。
