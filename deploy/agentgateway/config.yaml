@@ -19,6 +19,23 @@ frontendPolicies:
   http:
     maxBufferSize: 20971520
 routes:
+  # /v1/models 直通（2026-10-14）：下方 /v1 前缀路由的 ai policy 会把请求体按 Chat
+  # Completions schema 前置解析——GET /v1/models 无 body，解析报 EOF 400，请求根本到不了
+  # axonhub。模型列表无用户提示词内容，无需 promptGuard/DLP；key 鉴权由 axonhub 照常执行。
+  # exact 精确匹配优先于 /v1 前缀（同 /admin 段先例）；挂普通 host backend，不进 LLM 处理域。
+  # 注意：/v1/responses 不在此列——直通会绕开 DLP 且载荷 schema 不同，需单独设计。
+  - gateways: [default, mtls]
+    matches:
+      - path:
+          exact: /v1/models
+    policies:
+      transformations:
+        request:
+          add:
+            x-forwarded-for: source.address
+    backends:
+      - host: axonhub:8090
+
   # /v1：LLM 流量。ai policy 将该路由标记为 LLM 处理域，挂 promptGuard webhook（DLP shim）。
   # 阻断语义：shim 判定 reject 返回 451 + 规则 ID，且不触发渠道切换（agentgateway 层直接终答，请求不进入 axonhub）。
   - gateways: [default, mtls]
