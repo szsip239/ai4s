@@ -4,12 +4,19 @@ import { pageInfoSchema } from '@/gql/pagination';
 export const channelTagsMatchModeSchema = z.enum(['any', 'all', 'none']);
 export type ChannelTagsMatchMode = z.infer<typeof channelTagsMatchModeSchema>;
 
+// 活栈实证：axonhub 对缺省 channelTagsMatchMode 回落空串（同 apikeys issue #83），
+// 项目侧按「未设置」归一为 undefined，展示层沿用 || 'any' 缺省。
+const channelTagsMatchModeResponseSchema = z.preprocess(
+  (value) => (value === '' ? undefined : value),
+  channelTagsMatchModeSchema.optional().nullable()
+);
+
 // Project Profile schema
 export const projectProfileSchema = z.object({
   name: z.string(),
   channelIDs: z.array(z.number()).optional().nullable(),
   channelTags: z.array(z.string()).optional().nullable(),
-  channelTagsMatchMode: channelTagsMatchModeSchema.optional().nullable(),
+  channelTagsMatchMode: channelTagsMatchModeResponseSchema,
 });
 export type ProjectProfile = z.infer<typeof projectProfileSchema>;
 

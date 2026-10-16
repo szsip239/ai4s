@@ -21,6 +21,13 @@ const channelTagsMatchModeFieldSchema = z.preprocess((value) => {
   return value;
 }, channelTagsMatchModeSchema);
 
+// issue #81 语义：modelMappings 空则 []；直连 GraphQL 写入会落 null（beta10 后端对缺省
+// 字段回 null），解析侧统一归一为 []，与 shim load_tier_profile 兜底同源。
+const modelMappingsFieldSchema = z.preprocess(
+  (value) => value ?? [],
+  z.array(z.object({ from: z.string(), to: z.string() }))
+);
+
 /** Normalize legacy/empty routing policy values to the canonical "default". */
 export function normalizeRoutingPolicyValue(value?: string | null): string {
   if (!value || value === 'system_default') {
@@ -63,14 +70,7 @@ export const apiKeySchema = z.object({
             name: z.string(),
             templateID: z.number().optional().nullable(),
             templateName: z.string().optional().nullable(),
-            modelMappings: z
-              .array(
-                z.object({
-                  from: z.string(),
-                  to: z.string(),
-                })
-              )
-              .default([]),
+            modelMappings: modelMappingsFieldSchema,
             channelIDs: z.array(z.number()).optional().nullable(),
             channelTags: z.array(z.string()).optional().nullable(),
             channelTagsMatchMode: channelTagsMatchModeFieldSchema,
@@ -172,7 +172,7 @@ export const apiKeyProfileSchema = z.object({
   name: z.string(),
   templateID: z.number().optional().nullable(),
   templateName: z.string().optional().nullable(),
-  modelMappings: z.array(modelMappingSchema),
+  modelMappings: modelMappingsFieldSchema,
   channelIDs: z.array(z.number()).optional().nullable(),
   channelTags: z.array(z.string()).optional().nullable(),
   channelTagsMatchMode: channelTagsMatchModeFieldSchema,
