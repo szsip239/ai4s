@@ -1,6 +1,6 @@
 # AxonHub beta12 → rc.4 compatibility acceptance
 
-Issue: [#145](https://github.com/szsip239/ai4s/issues/145). Recorded 2026-11-16. This branch prepares a candidate; it does not authorize a production migration or cutover.
+Issue: [#145](https://github.com/szsip239/ai4s/issues/145). Recorded 2026-11-16. Candidate preparation and the subsequently authorized production cutover are recorded separately below. Preparation alone does not authorize production changes.
 
 ## Fixed source and scope
 
@@ -88,3 +88,26 @@ Before any production execution:
 5. Recheck all production navigation after installing the matching frontend, unregister SW/disable cache, verify health/version/quota/cost, and retain the old image and backup.
 
 Recovery order: stop candidate writes; restore the pre-cutover database; select the recorded beta12 digest; restore the matching archived frontend; start only the intended backend service and revalidate authz/DLP/quota. This rehearsal did not write, migrate, restart or deploy production services.
+
+
+## Authorized production execution — 2026-11-16
+
+The user subsequently approved merge and deployment. [PR #146](https://github.com/szsip239/ai4s/pull/146) was squash-merged as `b83738bc60b2509100cd2d20abb02a4a1ae29d3d`; its source tree equals the reviewed `0665098` tree. Independent Standards and Spec reviews had zero findings, and the independent browser recheck passed its recorded isolated scope. The initial isolated EDM 500 was a missing fixture fingerprint store; the existing ingest API initialized it, with beta12 and rc.4 both passing afterward. No product fallback was added.
+
+Production cutover completed at **2026-11-16 13:03:04 UTC / 21:03:04 Asia/Taipei**:
+
+- AxonHub image is `looplj/axonhub:v1.0.0-rc.4@sha256:86b5be6baf7517c7574976ed9c319ba1e6cea2c9a07bd749c678757ad2dfe6ed`; image and database `system_version` agree and the container is healthy.
+- Frontend was built from the merged source archive; deployed index and entry `/assets/index-DUWGuDuu.js` match that build. The other six components were not restarted or upgraded. Existing gateway, OIDC, Casdoor, DLP and pricing configuration remain unchanged.
+- Fresh private backup directory: `deploy/backups/rc4-cutover-20261116-125700/` on the deployment host. It retains the readable, fully decoded pre-cutover database dump, frontend archive, configuration archive and old/new image digests. The beta12 rollback image is retained; no image pruning or backup rotation was run.
+- Normal public API checks for the available Luna, Sol and local Qwen routes passed 18 cases before and 18 after cutover, including nonstream, SSE, tools and cache samples. Cost samples match existing prices/multipliers. The Claude route was disabled both before and after; it is not counted as passed.
+- Production authorization checks passed 17/17. Current enabled-policy DLP checks passed 41, skipped 24 disabled-layer cases, failed 0; global policy settings were not changed for testing.
+- An existing linked owner completed a fresh Casdoor/Feishu/OIDC login with the same identity. Major production pages and Analytics queries were checked in a real browser with SW/cache bypass. Canonical IPv4 and IPv6 HTTP checks both returned 200. No new real user, invitation notification or approval notification was created.
+- Temporary testing resources were removed. The original working directory's HEAD, twelve protected dirty-file snapshots and tracked diff were preserved, including its unpushed documentation commit.
+
+### Explicit residual scope
+
+Native Anthropic requests using GPT models through the current gateway remain a failed compatibility case, tracked separately in [147](https://github.com/szsip239/ai4s/issues/147). Equivalent valid nonstream/SSE/tools requests returned gateway 400 and direct AxonHub 200. Fixed gateway-v1.7.0 source and backend arrival show default Completions/GPT token normalization removes `max_tokens` while retaining `/v1/messages`. The beta12 and rc.4 inbound decoder/guard are identical. This attributes the mechanism; **an equivalent pre-cutover live beta12 sample was not recorded**, so no historical live pass/fail is claimed. No gateway route or policy was changed in this release.
+
+The known gateway Responses 400, unavailable native Claude channel, new JIT-user creation, notification-producing invitation/approval workflows, changes to real employee tiers, disabled-policy layers and destructive real-key quota/cancellation scenarios are not reported as production passes. Employee thread deep links also retain the documented nested Project-scope limitation; a populated beta12 branch was not exercised.
+
+Recovery still requires restoring the pre-upgrade database before starting the old image and restoring the archived frontend. The deployment was completed without exercising rollback.
