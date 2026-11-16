@@ -55,7 +55,7 @@ export const analyticsDimensionStatSchema = z.object({
 export type AnalyticsDimensionStat = z.infer<typeof analyticsDimensionStatSchema>;
 
 export const analyticsMetadataSchema = z.object({
-  earliestDate: z.string().nullable().optional(),
+  earliestTime: z.string().nullable().optional(),
 });
 
 export type AnalyticsMetadata = z.infer<typeof analyticsMetadataSchema>;
@@ -65,7 +65,7 @@ export type AnalyticsMetadata = z.infer<typeof analyticsMetadataSchema>;
 const ANALYTICS_METADATA_QUERY = `
   query GetAnalyticsMetadata {
     analyticsMetadata {
-      earliestDate
+      earliestTime
     }
   }
 `;
@@ -116,7 +116,7 @@ const ANALYTICS_DIMENSION_STATS_QUERY = `
 
 // --- Helper: convert filter to GraphQL input ---
 
-// 直接发 YYYY-MM-DD 字符串，后端用系统时区解析（同仪表盘模式）
+// 时间范围以 RFC3339 时间戳传递，后端按绝对时刻过滤。
 export function toGraphQLFilter(filter: AnalyticsFilter | null): Record<string, unknown> | null {
   if (!filter) return null;
 

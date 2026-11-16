@@ -14,7 +14,6 @@ import { useProjects } from '@/features/projects/data/projects';
 import { useUsers } from '@/features/users/data/users';
 import { AnalyticsFacetedFilter } from './analytics-faceted-filter';
 
-// Calendar Date → 'YYYY-MM-DD' 字符串（直接取本地年月日，不做时区转换）
 function formatDate(date: Date): string {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -22,10 +21,14 @@ function formatDate(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
-// 'YYYY-MM-DD' → Date（用于 Calendar selected）
+function formatTimestamp(date: Date, endOfDay = false): string {
+  const value = new Date(date);
+  value.setHours(endOfDay ? 23 : 0, endOfDay ? 59 : 0, endOfDay ? 59 : 0, endOfDay ? 999 : 0);
+  return value.toISOString();
+}
+
 function parseDate(dateStr: string): Date {
-  const [y, m, d] = dateStr.split('-').map(Number);
-  return new Date(y, m - 1, d);
+  return new Date(dateStr);
 }
 
 interface DateRangePickerProps {
@@ -79,7 +82,7 @@ function DateRangePicker({ startDate, endDate, onStartChange, onEndChange }: Dat
             className={cn('h-8 w-[130px] justify-start text-left text-xs font-normal', !startDate && 'text-muted-foreground')}
           >
             <IconCalendar className='mr-1 h-3 w-3' />
-            {startDate || t('analytics.filter.startDate')}
+            {startDate ? formatDate(parseDate(startDate)) : t('analytics.filter.startDate')}
           </Button>
         </PopoverTrigger>
         <PopoverContent className='w-auto p-0' align='start'>
@@ -96,7 +99,7 @@ function DateRangePicker({ startDate, endDate, onStartChange, onEndChange }: Dat
             className={cn('h-8 w-[130px] justify-start text-left text-xs font-normal', !endDate && 'text-muted-foreground')}
           >
             <IconCalendar className='mr-1 h-3 w-3' />
-            {endDate || t('analytics.filter.endDate')}
+            {endDate ? formatDate(parseDate(endDate)) : t('analytics.filter.endDate')}
           </Button>
         </PopoverTrigger>
         <PopoverContent className='w-auto p-0' align='start'>
@@ -114,10 +117,10 @@ function DateRangePicker({ startDate, endDate, onStartChange, onEndChange }: Dat
 }
 
 interface AnalyticsFilterBarProps {
-  earliestDate?: string | null;
+  earliestTime?: string | null;
 }
 
-export function AnalyticsFilterBar({ earliestDate }: AnalyticsFilterBarProps) {
+export function AnalyticsFilterBar({ earliestTime }: AnalyticsFilterBarProps) {
   const { t } = useTranslation();
   const filter = useAnalyticsFilterStore((state) => state.filter);
   const [apiKeySearch, setApiKeySearch] = useState('');
@@ -194,14 +197,14 @@ export function AnalyticsFilterBar({ earliestDate }: AnalyticsFilterBarProps) {
 
   const handleStartDate = useCallback(
     (date: Date | null) => {
-      setStartTime(date ? formatDate(date) : null);
+      setStartTime(date ? formatTimestamp(date) : null);
     },
     [setStartTime]
   );
 
   const handleEndDate = useCallback(
     (date: Date | null) => {
-      setEndTime(date ? formatDate(date) : null);
+      setEndTime(date ? formatTimestamp(date, true) : null);
     },
     [setEndTime]
   );
@@ -212,8 +215,8 @@ export function AnalyticsFilterBar({ earliestDate }: AnalyticsFilterBarProps) {
       const start = new Date();
       start.setDate(now.getDate() - days + 1);
       start.setHours(0, 0, 0, 0);
-      setStartTime(formatDate(start));
-      setEndTime(formatDate(now));
+      setStartTime(formatTimestamp(start));
+      setEndTime(formatTimestamp(now, true));
     },
     [setStartTime, setEndTime]
   );
@@ -221,23 +224,23 @@ export function AnalyticsFilterBar({ earliestDate }: AnalyticsFilterBarProps) {
   const setQuickMonth = useCallback(() => {
     const now = new Date();
     const start = new Date(now.getFullYear(), now.getMonth(), 1);
-    setStartTime(formatDate(start));
-    setEndTime(formatDate(now));
+    setStartTime(formatTimestamp(start));
+    setEndTime(formatTimestamp(now, true));
   }, [setStartTime, setEndTime]);
 
   const setQuickYear = useCallback(() => {
     const now = new Date();
     const start = new Date(now.getFullYear(), 0, 1);
-    setStartTime(formatDate(start));
-    setEndTime(formatDate(now));
+    setStartTime(formatTimestamp(start));
+    setEndTime(formatTimestamp(now, true));
   }, [setStartTime, setEndTime]);
 
   const setAllTime = useCallback(() => {
-    if (earliestDate) {
-      setStartTime(earliestDate);
-      setEndTime(formatDate(new Date()));
+    if (earliestTime) {
+      setStartTime(earliestTime);
+      setEndTime(formatTimestamp(new Date(), true));
     }
-  }, [earliestDate, setStartTime, setEndTime]);
+  }, [earliestTime, setStartTime, setEndTime]);
 
   const hasFilters =
     filter.startTime || filter.endTime || filter.projectIDs || filter.channelIDs || filter.modelIDs || filter.apiKeyIDs || filter.userIDs;
