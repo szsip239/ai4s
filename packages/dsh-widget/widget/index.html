@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AI4S</title>
+  <style>/* card styles */</style>
+</head>
+<body>
+  <a class="card" target="_blank" rel="noopener"></a>
+  <script type="module">
+    /* card view */
+
+    const widget = window.MosaicWidget
+    const card = document.querySelector('.card')
+    let data = widget.data.main
+    let privacy = widget.presentation.privacy
+
+    function fitRankings() {
+      const sections = Array.from(card.querySelectorAll('.keys, .models')).reverse()
+      for (const section of sections) section.hidden = false
+      for (const section of sections) {
+        if (card.scrollHeight > card.clientHeight) section.hidden = true
+      }
+    }
+
+    function render() {
+      card.innerHTML = renderCard(data, privacy)
+      fitRankings()
+    }
+
+    function setLink(config) {
+      const href = consoleHref(config.consoleUrl)
+      if (href) card.href = href
+      else card.removeAttribute('href')
+    }
+
+    const resize = new ResizeObserver(fitRankings)
+    resize.observe(card)
+    setLink(widget.config)
+    render()
+
+    const unsub = [
+      widget.onConfigChange(setLink),
+      widget.onDataChange((next) => { data = next.main; render() }),
+      widget.onPresentationChange((next) => {
+        if (privacy !== next.privacy) {
+          privacy = next.privacy
+          render()
+        }
+      }),
+    ]
+    window.addEventListener('pagehide', () => {
+      resize.disconnect()
+      for (const stop of unsub) stop()
+    }, { once: true })
+
+    if (data.status === 'empty') widget.emitIntent('refresh', {})
+  </script>
+</body>
+</html>
