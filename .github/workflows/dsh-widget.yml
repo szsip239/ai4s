@@ -1,0 +1,39 @@
+name: DSH widget
+
+on:
+  pull_request:
+    paths:
+      - "packages/dsh-widget/**"
+      - ".github/workflows/dsh-widget.yml"
+  push:
+    branches: [main]
+    paths:
+      - "packages/dsh-widget/**"
+      - ".github/workflows/dsh-widget.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  test-and-pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: "24"
+          package-manager-cache: false
+      - run: npm --prefix packages/dsh-widget test
+      - name: Pack the tested commit
+        run: |
+          mkdir -p "$RUNNER_TEMP/ai4s-widget"
+          npm pack ./packages/dsh-widget --pack-destination "$RUNNER_TEMP/ai4s-widget"
+          cd "$RUNNER_TEMP/ai4s-widget"
+          sha256sum ./*.tgz | tee SHA256SUMS
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ai4s-dsh-widget-${{ github.event.pull_request.head.sha || github.sha }}
+          path: ${{ runner.temp }}/ai4s-widget/

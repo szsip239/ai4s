@@ -1,0 +1,12 @@
+{
+  "name": "@ai4s/dsh-widget",
+  "version": "0.1.0",
+  "description": "AI4S snapshot card for Mosaic on DSH.",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "engines": { "node": "^22.19.0 || >=24" },
+  "exports": "./src/index.js",
+  "files": ["src", "widget"],
+  "peerDependencies": { "@mosaic/dsh-host": "^0.1.3" },
+  "scripts": { "test": "node --test" }
+}

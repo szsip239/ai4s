@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 2,
+  "id": "ai4s.dashboard",
+  "version": "1.0.0",
+  "title": "AI4S",
+  "description": "调用、费用与渠道状态",
+  "entry": "index.html",
+  "mark": "AI",
+  "schemas": {
+    "config": {
+      "type": "object",
+      "properties": { "consoleUrl": { "type": "string" } },
+      "additionalProperties": false
+    },
+    "state": { "type": "object", "additionalProperties": false },
+    "data": {
+      "type": "object",
+      "properties": {
+        "main": {
+          "type": "object",
+          "properties": {
+            "status": { "type": "string", "enum": ["empty", "ok", "error"] },
+            "error": { "type": "string", "enum": ["missing", "invalid", "unreadable"] },
+            "asOf": { "type": "string" },
+            "day": { "type": "string" },
+            "today": { "type": "boolean" },
+            "stale": { "type": "boolean" },
+            "currency": { "type": "string" },
+            "requests": { "type": "integer", "minimum": 0 },
+            "cost": { "type": "number" },
+            "models": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": { "name": { "type": "string" }, "requests": { "type": "integer", "minimum": 0 } },
+                "required": ["name", "requests"],
+                "additionalProperties": false
+              }
+            },
+            "channels": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "disabled": { "type": "boolean" },
+                  "attempts": { "type": "integer", "minimum": 0 },
+                  "successRatePct": { "type": "number", "minimum": 0, "maximum": 100 }
+                },
+                "required": ["name", "disabled", "attempts"],
+                "additionalProperties": false
+              }
+            },
+            "anomalies": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": { "name": { "type": "string" }, "reason": { "type": "string" } },
+                "required": ["name", "reason"],
+                "additionalProperties": false
+              }
+            },
+            "keys": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": { "name": { "type": "string" }, "cost": { "type": "number" } },
+                "required": ["name"],
+                "additionalProperties": false
+              }
+            }
+          },
+          "required": ["status"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["main"],
+      "additionalProperties": false
+    },
+    "intents": { "refresh": { "type": "object", "additionalProperties": false } }
+  },
+  "defaults": { "config": {}, "state": {}, "data": { "main": { "status": "empty" } } },
+  "summary": {
+    "values": [
+      { "id": "requests", "label": "调用", "pointer": "/data/main/requests", "unit": "次" },
+      { "id": "cost", "label": "费用", "pointer": "/data/main/cost" },
+      { "id": "currency", "label": "币种", "pointer": "/data/main/currency" },
+      { "id": "anomalies", "label": "异常渠道", "pointer": "/data/main/anomalies", "unit": "个" }
+    ],
+    "pending": ["anomalies"],
+    "list": { "pointer": "/data/main/anomalies", "title": "/name", "detail": "/reason", "max": 5 },
+    "updatedAt": "/data/main/asOf"
+  },
+  "identity": ["/data/main/keys/*/name"],
+  "uiHints": {
+    "defaultSize": "tall",
+    "preferredSize": { "w": 4, "h": 8 },
+    "inspector": { "/consoleUrl": { "control": "text", "label": "控制台地址" } }
+  },
+  "permissions": { "network": [] }
+}
