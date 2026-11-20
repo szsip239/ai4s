@@ -86,6 +86,7 @@ ul, ol { list-style: none; }
 .error { color: var(--error); }
 
 .channels h2 b, .abnormal .rate { color: var(--warn); }
+.channels ul { max-height: 128px; overflow-y: auto; }
 .channels li { display: flex; align-items: flex-start; gap: 8px; padding: 2px 0; }
 .channels .name { flex: 1; }
 .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -106,7 +107,7 @@ ul, ol { list-style: none; }
 .bar, .bar i { display: block; height: 6px; border-radius: 3px; }
 .bar { background: var(--track); }
 .bar i { background: var(--bar); }
-.n { text-align: right; }
+.n { min-width: 44px; text-align: right; }
 .keys li { grid-template-columns: minmax(0, 1fr) auto; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
 [hidden] { display: none !important; }
