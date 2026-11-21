@@ -39,7 +39,7 @@ body {
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
   height: 100%;
   padding: 16px 18px;
   overflow: auto;
@@ -49,7 +49,7 @@ body {
 }
 
 .card > * { flex-shrink: 0; }
-.content { display: flex; flex-direction: column; flex: 1 0 auto; gap: 12px; }
+.content { display: flex; flex-direction: column; flex: 1 0 auto; gap: 9px; }
 .open-page {
   align-self: flex-start;
   border: 1px solid var(--line);
@@ -87,7 +87,7 @@ ul, ol { list-style: none; }
 }
 
 .value small { font-size: 15px; font-weight: 600; }
-.sep { border-top: 1px solid var(--line); padding-top: 10px; }
+.sep { border-top: 1px solid var(--line); padding-top: 8px; }
 .state { flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 4px; }
 .state strong { font-size: 14px; font-weight: 600; }
 .notice { display: grid; gap: 3px; margin-top: -6px; font-size: 12px; }
@@ -107,7 +107,7 @@ ul, ol { list-style: none; }
   grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
-  padding: 2px 0;
+  padding: 1px 0;
 }
 
 .bar, .bar i { display: block; height: 6px; border-radius: 3px; }
