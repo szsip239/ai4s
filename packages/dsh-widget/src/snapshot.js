@@ -46,6 +46,10 @@ function decode(text) {
 
 function annotate(data, { minAttempts, minSuccessRatePct }) {
   const now = Date.now()
+  const measured = data.channels.filter(({ attempts, successRatePct }) => attempts > 0 && successRatePct !== undefined)
+  const attempts = measured.reduce((sum, channel) => sum + channel.attempts, 0)
+  const failing = measured.filter(({ successRatePct }) => successRatePct < 100)
+  const weightedFailures = failing.reduce((sum, channel) => sum + channel.attempts * (100 - channel.successRatePct), 0)
   const anomalies = data.channels
     .filter(({ disabled, attempts, successRatePct }) =>
       disabled || (attempts >= minAttempts && successRatePct !== undefined && successRatePct < minSuccessRatePct))
@@ -53,7 +57,13 @@ function annotate(data, { minAttempts, minSuccessRatePct }) {
       name, reason: disabled ? '已停用' : `成功率 ${successRatePct}%`,
     }))
   return {
-    ...data, anomalies, today: data.day === statDay.format(now),
+    ...data, anomalies,
+    channelCount: data.channels.length,
+    availableChannelCount: data.channels.filter(({ disabled }) => !disabled).length,
+    ...(attempts ? { failureRatePct: weightedFailures / attempts } : {}),
+    failingChannels: failing.map(({ name, successRatePct }) => ({ name, failureRatePct: 100 - successRatePct }))
+      .sort((a, b) => b.failureRatePct - a.failureRatePct),
+    today: data.day === statDay.format(now),
     stale: now - Date.parse(data.asOf) >= maxAge,
   }
 }
