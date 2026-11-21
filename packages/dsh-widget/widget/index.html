@@ -7,12 +7,17 @@
   <style>/* card styles */</style>
 </head>
 <body>
-  <a class="card" target="_blank" rel="noopener"></a>
+  <main class="card">
+    <div class="content"></div>
+    <button class="open-page" type="button">打开应用页</button>
+  </main>
   <script type="module">
     /* card view */
 
     const widget = window.MosaicWidget
     const card = document.querySelector('.card')
+    const content = card.querySelector('.content')
+    const openPage = card.querySelector('.open-page')
     let data = widget.data.main
     let privacy = widget.presentation.privacy
 
@@ -25,23 +30,17 @@
     }
 
     function render() {
-      card.innerHTML = renderCard(data, privacy)
+      content.innerHTML = renderCard(data, privacy)
       fitRankings()
     }
 
-    function setLink(config) {
-      const href = consoleHref(config.consoleUrl)
-      if (href) card.href = href
-      else card.removeAttribute('href')
-    }
+    openPage.addEventListener('click', () => widget.emitIntent('mosaic.external-app.open', {}))
 
     const resize = new ResizeObserver(fitRankings)
     resize.observe(card)
-    setLink(widget.config)
     render()
 
     const unsub = [
-      widget.onConfigChange(setLink),
       widget.onDataChange((next) => { data = next.main; render() }),
       widget.onPresentationChange((next) => {
         if (privacy !== next.privacy) {
@@ -54,8 +53,6 @@
       resize.disconnect()
       for (const stop of unsub) stop()
     }, { once: true })
-
-    if (data.status === 'empty') widget.emitIntent('refresh', {})
   </script>
 </body>
 </html>

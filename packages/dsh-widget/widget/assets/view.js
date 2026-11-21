@@ -2,20 +2,17 @@ const time = new Intl.DateTimeFormat('zh-CN', {
   timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
 })
 const integer = new Intl.NumberFormat('zh-CN')
+const decimal = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 })
 const readErrors = {
   missing: '快照文件不存在', invalid: '快照格式有误', unreadable: '无法读取快照',
 }
 const entities = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }
 const escape = (value) => String(value).replace(/[&<>"]/g, (char) => entities[char])
 
-export function consoleHref(value) {
-  if (!value) return
-  try {
-    const url = new URL(value)
-    if (['http:', 'https:'].includes(url.protocol) && !url.username && !url.password) return url.href
-  } catch (error) {
-    if (!(error instanceof TypeError)) throw error
-  }
+function formatRate(rate) {
+  if (rate === undefined) return '—'
+  if (rate > 0 && rate < 0.1) return '&lt;0.1%'
+  return `${decimal.format(rate)}%`
 }
 
 function mainCost(money, cost) {
@@ -26,25 +23,19 @@ function mainCost(money, cost) {
   return `<small>${money.resolvedOptions().currency}</small> ${whole}${fraction ? `<small>.${fraction}</small>` : ''}`
 }
 
-function channelSection({ channels, anomalies }) {
-  const flagged = new Set(anomalies.map(({ name }) => name))
-  const measured = channels.filter(({ name, successRatePct }) => !flagged.has(name) && successRatePct !== undefined)
-  if (!anomalies.length && !measured.length) {
-    return '<section class="channels sep"><p class="muted">暂无渠道样本</p></section>'
+function channelSection({ channels, anomalies, failureRatePct, failingChannels }) {
+  if (!failingChannels.length) {
+    const message = failureRatePct === 0 ? '<p class="normal muted">暂无失败渠道</p>' : '<p class="muted">暂无渠道样本</p>'
+    return `<section class="channels sep">${message}</section>`
   }
-  const byName = new Map(channels.map((channel) => [channel.name, channel]))
-  const abnormalRows = anomalies.map(({ name, reason }) => {
-    const { disabled, successRatePct } = byName.get(name)
-    const rate = successRatePct === undefined ? '' : `${successRatePct}%`
-    const detail = disabled && rate ? `${rate} · ${reason}` : disabled ? reason : rate
-    return `<li class="abnormal"><i class="dot" aria-hidden="true"></i><span class="name">${escape(name)}</span><span class="rate num">${escape(detail)}</span></li>`
+  const flagged = new Set(anomalies.map(({ name }) => name))
+  const disabled = new Set(channels.filter((channel) => channel.disabled).map(({ name }) => name))
+  const items = failingChannels.map(({ name, failureRatePct }) => {
+    const detail = `${formatRate(failureRatePct)}${disabled.has(name) ? ' · 已停用' : ''}`
+    const style = flagged.has(name) ? ' class="abnormal"' : ''
+    return `<li${style}><span class="name">${escape(name)}</span><span class="rate num">${detail}</span></li>`
   })
-  const measuredRows = measured.map(({ name, successRatePct }) =>
-    `<li class="measured"><span class="name">${escape(name)}</span><span class="rate num">${successRatePct}%</span></li>`)
-  const heading = anomalies.length
-    ? `<h2>异常渠道 <b class="num">${anomalies.length}</b></h2>`
-    : '<h2 class="normal">渠道都正常</h2>'
-  return `<section class="channels sep">${heading}<ul>${abnormalRows.join('')}${measuredRows.join('')}</ul></section>`
+  return `<section class="channels sep"><h2>渠道失败率</h2><ul>${items.join('')}</ul></section>`
 }
 
 function modelSection(models) {
@@ -84,5 +75,7 @@ export function renderCard(data, privacy) {
   return `${heading}${notice}<section class="metrics">
     <div><span class="muted">调用</span><span class="value num">${integer.format(data.requests)}</span></div>
     <div><span class="muted">费用</span><span class="value num">${mainCost(money, data.cost)}</span></div>
+    <div><span class="muted">渠道可用 / 总数</span><span class="value num">${integer.format(data.availableChannelCount)} / ${integer.format(data.channelCount)}</span></div>
+    <div><span class="muted">近期失败率</span><span class="value num">${formatRate(data.failureRatePct)}</span></div>
   </section>${channelSection(data)}${modelSection(data.models)}${keySection(data.keys, money, privacy)}`
 }

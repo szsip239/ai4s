@@ -3,12 +3,13 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { runInNewContext } from 'node:vm'
 import { apply } from '../src/index.js'
 
 const snapshot = JSON.parse(await readFile(new URL('../fixtures/snapshot.json', import.meta.url), 'utf8'))
 const asOf = new Date(snapshot.asOf)
 
-async function mount(t, config = {}) {
+async function mount(t, config = {}, lifecycle = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'ai4s-widget-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
   const snapshotPath = join(directory, 'snapshot.json')
@@ -18,12 +19,17 @@ async function mount(t, config = {}) {
       this.adapter = adapter
       return { dispose() {} }
     },
-    async registerWidgetLibrary(library) {
-      this.library = library
+    async registerExternalApp(contribution) {
+      this.contribution = contribution
       return { dispose() {} }
     },
+    state: () => ({ placements: [], packages: {} }),
+    onChange: () => () => {},
+    onAuthoringChange: () => () => {},
+    ...lifecycle,
   }
-  const dispose = await apply({ mosaicBoard: host }, { snapshotPath, ...config })
+  const logger = { warn: (...args) => assert.fail(args.join(' ')) }
+  const dispose = await apply({ mosaicBoard: host, logger }, { snapshotPath, ...config })
   t.after(dispose)
   return {
     host,
@@ -33,26 +39,89 @@ async function mount(t, config = {}) {
   }
 }
 
-test('the widget library binds the local snapshot action to /main every 600 seconds', async (t) => {
-  t.mock.timers.enable({ apis: ['Date'], now: asOf })
-  const { host, write, read } = await mount(t)
-  await write(snapshot)
-  const [widget] = host.library.catalog
-  const { automations, bindings } = host.library.compose({
-    package: widget, placementId: 'card-1', createdAt: asOf.toISOString(),
+test('the Launcher registers an empty page intent and the client resolves the owner URL', async (t) => {
+  const { host } = await mount(t)
+  const { plugin, launcher } = host.contribution
+  const manifest = readManifest(host)
+  assert.deepEqual(manifest.schemas.config, { type: 'object', additionalProperties: false })
+  assert.deepEqual(manifest.schemas.intents['mosaic.external-app.open'], {
+    type: 'object', additionalProperties: false,
   })
+  const html = Buffer.from(launcher.source.files.find(({ path }) => path === 'index.html').bytes).toString()
+  assert.match(html, /<button [^>]+>打开应用页<\/button>/)
+  assert.match(html, /emitIntent\('mosaic\.external-app\.open', \{\}\)/)
+  assert.doesNotMatch(html, /consoleUrl|https:\/\/ai4s\./)
+  const script = await readFile(new URL('../src/client.js', import.meta.url), 'utf8')
+  let provider
+  const mosaicAppPages = {
+    register(value) {
+      provider = value
+      return { dispose() { provider = undefined } }
+    },
+  }
+  let stop
+  runInNewContext(script, { window: { __ModuleLoader__: {
+    load({ id, factory }) {
+      assert.equal(id, plugin.packageName)
+      const client = factory()
+      assert.equal(client.__esModule, true)
+      assert.equal(client.inject[0], 'mosaicAppPages')
+      stop = client.apply({ mosaicAppPages })
+    },
+  } } })
+  assert.equal(provider.id, launcher.target.payload.pageId)
+  const signal = new AbortController().signal
+  assert.equal((await provider.resolve(signal)).url, 'https://ai4s.echobyte.cn:8445/')
+  stop()
+  assert.equal(provider, undefined)
+})
+
+function readManifest(host) {
+  const file = host.contribution.launcher.source.files.find(({ path }) => path === 'manifest.json')
+  return JSON.parse(Buffer.from(file.bytes))
+}
+
+test('the Launcher binds a first read and scheduled reads to /main', { timeout: 1000 }, async (t) => {
+  const id = 'ai4s.dashboard-launcher'
+  const placement = { id, instanceId: 'component.ai4s.dashboard-launcher', revisionVersion: '1.0.0',
+    createdAt: asOf.toISOString(), bindings: [] }
+  const ready = Promise.withResolvers()
+  const automations = []
+  const owner = {
+    async automationInspect() { throw Object.assign(new Error('missing'), { code: 'not_found' }) },
+    async automationApply({ automation }) { automations.push(automation) },
+    async boardApply({ operations }) { placement.bindings = operations[0].bindings },
+    async executeWidgetIntent(intent) { ready.resolve(intent) },
+  }
+  const { host } = await mount(t, {}, {
+    state: () => ({ packages: { [id]: { manifest: { id } } }, placements: [placement], revision: 1 }),
+    loadBoard: () => ({ id: 'testing' }),
+    onAuthoringChange(listener) { listener(owner); return () => {} },
+  })
+  const initial = await ready.promise
+  assert.equal(initial.placementId, id)
+  assert.equal(initial.name, 'refresh')
   const interval = automations.find(({ trigger }) => trigger.kind === 'interval')
   assert.equal(interval.trigger.everyMs, 600_000)
   assert.equal(interval.action.installationId, host.request.id)
   assert.deepEqual(interval.action.input.previous, {
-    kind: 'pointer', source: 'placement_data', placementId: 'card-1', pointer: '/main',
+    kind: 'pointer', source: 'placement_data', placementId: id, pointer: '/main',
   })
-  assert.equal(bindings.find(({ automationId }) => automationId === interval.id).target, '/main')
+  assert.deepEqual(placement.bindings.map(({ automationId, target }) => [automationId, target]),
+    automations.map(({ id }) => [id, '/main']))
+})
+
+test('the snapshot capability maps the fixture to the Launcher data shape', async (t) => {
+  t.mock.timers.enable({ apis: ['Date'], now: asOf })
+  const { write, read } = await mount(t)
+  await write(snapshot)
   assert.deepEqual(await read(), {
     status: 'ok', asOf: snapshot.asOf, day: snapshot.day, today: true, stale: false,
     currency: 'USD', requests: 32, models: snapshot.models, keys: snapshot.keys,
     channels: snapshot.channels,
     anomalies: [{ name: 'demo-channel', reason: '成功率 85%' }],
+    channelCount: 1, availableChannelCount: 1, failureRatePct: 15,
+    failingChannels: [{ name: 'demo-channel', failureRatePct: 15 }],
   })
 })
 
@@ -97,6 +166,52 @@ test('freshness and the gateway day use the successful timestamp and Shanghai mi
   assert.equal(preserved.today, false)
   assert.equal(preserved.stale, true)
   assert.equal(preserved.asOf, nearMidnight.asOf)
+  assert.equal(preserved.channelCount, 1)
+  assert.equal(preserved.availableChannelCount, 1)
+  assert.equal(preserved.failureRatePct, 15)
+  assert.deepEqual(preserved.failingChannels, [{ name: 'demo-channel', failureRatePct: 15 }])
+})
+
+test('counts all channels and weights the failure rate by attempts with measured results', async (t) => {
+  const { write, read } = await mount(t)
+  await write({
+    ...snapshot,
+    channels: [
+      { name: 'demo-standard', disabled: false, attempts: 20, successRatePct: 95 },
+      { name: 'demo-degraded', disabled: false, attempts: 20, successRatePct: 85 },
+      { name: 'demo-paused', disabled: true, attempts: 5, successRatePct: 100 },
+      { name: 'demo-small-sample', disabled: false, attempts: 1, successRatePct: 0 },
+      { name: 'demo-awaiting-result', disabled: false, attempts: 0, successRatePct: null },
+      { name: 'demo-idle', disabled: false, attempts: 0, successRatePct: null },
+      { name: 'demo-paused-idle', disabled: true, attempts: 0, successRatePct: null },
+    ],
+  })
+  const result = await read()
+  assert.equal(result.channelCount, 7)
+  assert.equal(result.availableChannelCount, 5)
+  assert.ok(Math.abs(result.failureRatePct - 500 / 46) < 1e-9)
+  assert.deepEqual(result.failingChannels, [
+    { name: 'demo-small-sample', failureRatePct: 100 },
+    { name: 'demo-degraded', failureRatePct: 15 },
+    { name: 'demo-standard', failureRatePct: 5 },
+  ])
+})
+
+test('zero traffic keeps the channel inventory and has no failure rate', async (t) => {
+  const { write, read } = await mount(t)
+  await write({
+    ...snapshot, requests: 0,
+    channels: [
+      { name: 'idle', disabled: false, attempts: 0, successRatePct: null },
+      { name: 'paused', disabled: true, attempts: 0, successRatePct: null },
+    ],
+  })
+  const result = await read()
+  assert.equal(result.channelCount, 2)
+  assert.equal(result.availableChannelCount, 1)
+  assert.equal(result.failureRatePct, undefined)
+  assert.deepEqual(result.failingChannels, [])
+  assert.deepEqual(result.anomalies, [{ name: 'paused', reason: '已停用' }])
 })
 
 test('ranks the top three and keeps only disabled or sufficiently sampled low-rate channels in pending', async (t) => {
@@ -121,9 +236,7 @@ test('ranks the top three and keeps only disabled or sufficiently sampled low-ra
     { name: 'below-threshold', reason: '成功率 89.5%' },
   ])
   assert.doesNotMatch(JSON.stringify(result), /demo-secret|failures/)
-  const [reference] = host.library.catalog
-  const template = await host.library.templates.read({ kind: 'widget', ...reference })
-  const manifest = JSON.parse(Buffer.from(template.files.find(({ path }) => path === 'manifest.json').bytes))
+  const manifest = readManifest(host)
   assert.deepEqual(manifest.summary.pending, ['anomalies'])
   assert.equal(manifest.summary.list.pointer, '/data/main/anomalies')
   assert.deepEqual(manifest.identity, ['/data/main/keys/*/name'])
