@@ -49,7 +49,7 @@ body {
 }
 
 .card > * { flex-shrink: 0; }
-.content { display: flex; flex-direction: column; flex: 1 0 auto; gap: 9px; }
+.content { display: flex; flex-direction: column; flex: 1 0 auto; gap: 8px; }
 .open-page {
   align-self: flex-start;
   border: 1px solid var(--line);
@@ -74,7 +74,7 @@ ul, ol { list-style: none; }
 .metrics {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 6px 12px;
+  gap: 4px 12px;
 }
 
 .value {
@@ -83,7 +83,7 @@ ul, ol { list-style: none; }
   font-size: 26px;
   font-weight: 700;
   letter-spacing: -.4px;
-  line-height: 32px;
+  line-height: 28px;
 }
 
 .value small { font-size: 15px; font-weight: 600; }
