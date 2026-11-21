@@ -21,22 +21,50 @@
     let data = widget.data.main
     let privacy = widget.presentation.privacy
 
-    function fitRankings() {
-      const sections = Array.from(card.querySelectorAll('.keys, .models')).reverse()
-      for (const section of sections) section.hidden = false
-      for (const section of sections) {
-        if (card.scrollHeight > card.clientHeight) section.hidden = true
+    const compact = matchMedia('(max-width: 150px)')
+
+    function fitChannels() {
+      const more = content.querySelector('.channels .more')
+      if (!more) return
+      const list = more.parentElement
+      const rows = Array.from(list.children).slice(0, -1)
+      for (const row of rows) row.hidden = false
+      more.hidden = true
+      if (!compact.matches || rows.length < 2) return
+
+      const needed = list.offsetHeight
+      const room = Math.min(128, needed - (content.scrollHeight - content.clientHeight))
+      if (needed <= room) return
+      more.textContent = `+${rows.length}`
+      more.hidden = false
+      let remaining = Math.max(rows[0].offsetHeight, room - more.offsetHeight)
+      let shown = 0
+      for (const row of rows) {
+        if (row.offsetHeight > remaining) break
+        remaining -= row.offsetHeight
+        shown++
+      }
+      for (const row of rows.slice(shown)) row.hidden = true
+      more.textContent = `+${rows.length - shown}`
+    }
+
+    function fitCard() {
+      fitChannels()
+      const keys = content.querySelector('.keys')
+      if (keys) {
+        keys.hidden = false
+        keys.hidden = content.scrollHeight > content.clientHeight
       }
     }
 
     function render() {
       content.innerHTML = renderCard(data, privacy)
-      fitRankings()
+      fitCard()
     }
 
     openPage.addEventListener('click', () => widget.emitIntent('mosaic.external-app.open', {}))
 
-    const resize = new ResizeObserver(fitRankings)
+    const resize = new ResizeObserver(fitCard)
     resize.observe(card)
     render()
 

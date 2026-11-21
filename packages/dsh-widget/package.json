@@ -13,5 +13,8 @@
   "files": ["src", "widget"],
   "dsh": { "client": { "inject": ["@mosaic/dsh-host"], "platform": "web" } },
   "peerDependencies": { "@mosaic/dsh-host": "^0.1.31" },
-  "scripts": { "test": "node --test" }
+  "scripts": {
+    "test": "node --test",
+    "test:layout": "{ node -p '\"const packageRoot = \" + JSON.stringify(process.cwd())'; cat test-ui/card-layout.mjs; } | ego-browser nodejs"
+  }
 }

@@ -42,16 +42,25 @@ body {
   gap: 10px;
   height: 100%;
   padding: 16px 18px;
-  overflow: auto;
-  scrollbar-width: none;
-  overscroll-behavior: contain;
+  overflow: hidden;
   border-radius: 16px;
 }
 
-.card > * { flex-shrink: 0; }
-.content { display: flex; flex-direction: column; flex: 1 0 auto; gap: 8px; }
+.content {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  gap: 8px;
+  overflow: auto;
+  scrollbar-width: none;
+  overscroll-behavior: contain;
+}
+.content > * { flex-shrink: 0; }
 .open-page {
   align-self: flex-start;
+  flex-shrink: 0;
+  max-width: 100%;
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 4px 8px;
@@ -96,7 +105,8 @@ ul, ol { list-style: none; }
 .abnormal .rate { color: var(--warn); }
 .channels ul { max-height: 128px; overflow-y: auto; }
 .channels li { display: flex; align-items: flex-start; gap: 8px; padding: 2px 0; }
-.channels .name { flex: 1; white-space: normal; overflow-wrap: anywhere; }
+.channels .name { flex: 1; }
+.channels .more { justify-content: flex-end; }
 .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rate { white-space: nowrap; }
 .normal { display: flex; align-items: center; gap: 6px; }
@@ -127,13 +137,27 @@ ul, ol { list-style: none; }
 }
 
 @container (max-width: 150px) {
-  .card { padding: 14px 12px; }
-  .content { gap: 10px; }
+  .card { padding: 12px; gap: 8px; }
+  .content { gap: 5px; }
+  .open-page { padding-inline: 4px; }
   header { flex-direction: column; gap: 2px; }
-  .value { font-size: 19px; line-height: 24px; }
+  .metrics { display: contents; }
+  .health { order: 1; }
+  .channels { order: 2; }
+  .usage { order: 3; display: flex; align-items: baseline; justify-content: space-between; gap: 3px; }
+  .usage .muted { flex-shrink: 0; }
+  .models { order: 4; }
+  .value { font-size: 19px; line-height: 21px; }
   .value small { font-size: 13px; }
-  .channels ul { max-height: 150px; }
-  .channels .name { word-break: break-all; font-size: 12px; }
+  .usage .value { font-size: 16px; line-height: 19px; text-align: right; }
+  .usage .value small { font-size: 11px; }
+  .channels ul { max-height: none; }
+  .channels .name, .models .name { font-size: 12px; }
   .channels .rate { max-width: 50%; text-align: right; white-space: normal; }
-  .models, .keys { display: none; }
+  .models .n { min-width: 0; }
+  .models .bar, .keys { display: none; }
+}
+
+@container (max-width: 100px) {
+  .models { display: none; }
 }

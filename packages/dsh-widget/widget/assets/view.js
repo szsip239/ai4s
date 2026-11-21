@@ -33,9 +33,9 @@ function channelSection({ channels, anomalies, failureRatePct, failingChannels }
   const items = failingChannels.map(({ name, failureRatePct }) => {
     const detail = `${formatRate(failureRatePct)}${disabled.has(name) ? ' · 已停用' : ''}`
     const style = flagged.has(name) ? ' class="abnormal"' : ''
-    return `<li${style}><span class="name">${escape(name)}</span><span class="rate num">${detail}</span></li>`
+    return `<li${style}><span class="name" title="${escape(name)}">${escape(name)}</span><span class="rate num">${detail}</span></li>`
   })
-  return `<section class="channels sep"><h2>渠道失败率</h2><ul>${items.join('')}</ul></section>`
+  return `<section class="channels sep"><h2>渠道失败率</h2><ul>${items.join('')}<li class="more muted num" hidden></li></ul></section>`
 }
 
 function modelSection(models) {
@@ -73,9 +73,9 @@ export function renderCard(data, privacy) {
   const notice = failed || delayed ? `<div class="notice">${failed}${delayed}</div>` : ''
   const money = new Intl.NumberFormat('zh-CN', { style: 'currency', currency: data.currency, currencyDisplay: 'code' })
   return `${heading}${notice}<section class="metrics">
-    <div><span class="muted">调用</span><span class="value num">${integer.format(data.requests)}</span></div>
-    <div><span class="muted">费用</span><span class="value num">${mainCost(money, data.cost)}</span></div>
-    <div><span class="muted">渠道可用 / 总数</span><span class="value num">${integer.format(data.availableChannelCount)} / ${integer.format(data.channelCount)}</span></div>
-    <div><span class="muted">近期失败率</span><span class="value num">${formatRate(data.failureRatePct)}</span></div>
+    <div class="usage"><span class="muted">调用</span><span class="value num">${integer.format(data.requests)}</span></div>
+    <div class="usage"><span class="muted">费用</span><span class="value num">${mainCost(money, data.cost)}</span></div>
+    <div class="health"><span class="muted">渠道可用 / 总数</span><span class="value num">${integer.format(data.availableChannelCount)} / ${integer.format(data.channelCount)}</span></div>
+    <div class="health"><span class="muted">近期失败率</span><span class="value num">${formatRate(data.failureRatePct)}</span></div>
   </section>${channelSection(data)}${modelSection(data.models)}${keySection(data.keys, money, privacy)}`
 }

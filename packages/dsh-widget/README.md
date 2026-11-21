@@ -37,6 +37,8 @@ dsh-dev --profile "$profile" --host 127.0.0.1 --port 3399 --no-open
 
 打开命令打印的 Web UI，在 Mosaic 看板添加「AI4S 调用统计」。在亮色、暗色和不同窗口宽度下检查卡片。打开看板隐私模式可核对 Key 名遮蔽。更换或移走虚构快照可复验读取更新和上次数据。应用页嵌入使用 AI4S Web 允许的 DSH 宿主 origin，端口以实际放行配置为准。
 
+本机安装 Ego Browser 后，可运行 `npm --prefix packages/dsh-widget run test:layout` 验证窄卡布局。150 CSS px 及以下的卡片优先显示渠道指标和失败列表，超出空间的条目以 `+N` 汇总。常用模型只在卡片宽度 100 CSS px 及以下隐藏。页面按钮固定在卡片底部，内容高度不足时可单独滚动。
+
 ## 刷新和展示口径
 
 - 新卡添加后读取一次，之后由 Host 每 600 秒读取。可在添加卡片前设置 `readIntervalSeconds: 5` 加速复验。
