@@ -9,6 +9,10 @@ export const name = 'ai4s-dashboard'
 export const inject = ['mosaicBoard']
 
 const widget = { id: manifest.id, version: manifest.version }
+const upgrade = {
+  packageId: widget.id, fromPackageVersion: '1.0.0', toPackageVersion: widget.version,
+  toInstanceRevisionVersion: '2.0.0',
+}
 const main = manifest.schemas.data.properties.main
 const emptyObject = { type: 'object', additionalProperties: false }
 const capability = {
@@ -32,13 +36,28 @@ const capability = {
   connectionRequirements: {},
 }
 
+async function cardFonts() {
+  const latin = 'U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD'
+  const faces = [
+    ['Geist', 'geist', 400], ['Geist', 'geist', 500], ['Geist', 'geist', 600],
+    ['Geist Mono', 'geist-mono', 400], ['Geist Mono', 'geist-mono', 500],
+  ]
+  return (await Promise.all(faces.map(async ([family, file, weight]) => {
+    const woff = await readFile(new URL(`../widget/assets/fonts/${file}-latin-${weight}-normal.woff2`, import.meta.url), 'base64')
+    return `@font-face { font-family: '${family}'; font-weight: ${weight}; font-display: swap;
+  src: url(data:font/woff2;base64,${woff}) format('woff2'); unicode-range: ${latin}; }`
+  }))).join('\n')
+}
+
 async function launcherSource() {
-  const [description, markup, styles, view] = await Promise.all(
-    ['manifest.json', 'index.html', 'assets/card.css', 'assets/view.js'].map(
+  const [description, markup, styles, view, fonts] = await Promise.all([
+    ...['manifest.json', 'index.html', 'assets/card.css', 'assets/view.js'].map(
       (path) => readFile(new URL(`../widget/${path}`, import.meta.url), 'utf8'),
     ),
-  )
-  const html = markup.replace('/* card styles */', () => styles).replace('/* card view */', () => view)
+    cardFonts(),
+  ])
+  const html = markup.replace('/* card fonts */', () => fonts)
+    .replace('/* card styles */', () => styles).replace('/* card view */', () => view)
   return {
     label: manifest.title,
     files: [
@@ -80,7 +99,7 @@ export async function apply({ mosaicBoard, logger }, {
       launcher: { source, target },
       activate() {},
     })
-    const stopDelivery = bindSnapshot(mosaicBoard, widget, readIntervalSeconds, (error) =>
+    const stopDelivery = bindSnapshot(mosaicBoard, upgrade, readIntervalSeconds, (error) =>
       logger.warn('AI4S 统计投递设置失败: %s', error.message))
     return () => { stopDelivery(); launcher.dispose(); service.dispose() }
   } catch (error) {

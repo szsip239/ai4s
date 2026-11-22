@@ -4,82 +4,54 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>AI4S</title>
-  <style>/* card styles */</style>
+  <style>/* card fonts */
+/* card styles */</style>
 </head>
 <body>
-  <main class="card">
-    <div class="content"></div>
-    <button class="open-page" type="button">打开应用页</button>
-  </main>
+  <main class="ai4s"></main>
   <script type="module">
     /* card view */
 
     const widget = window.MosaicWidget
-    const card = document.querySelector('.card')
-    const content = card.querySelector('.content')
-    const openPage = card.querySelector('.open-page')
+    const card = document.querySelector('.ai4s')
     let data = widget.data.main
-    let privacy = widget.presentation.privacy
+    let compact = false
+    let laneLimit = 1
 
-    const compact = matchMedia('(max-width: 150px)')
-
-    function fitChannels() {
-      const more = content.querySelector('.channels .more')
-      if (!more) return
-      const list = more.parentElement
-      const rows = Array.from(list.children).slice(0, -1)
-      for (const row of rows) row.hidden = false
-      more.hidden = true
-      if (!compact.matches || rows.length < 2) return
-
-      const needed = list.offsetHeight
-      const room = Math.min(128, needed - (content.scrollHeight - content.clientHeight))
-      if (needed <= room) return
-      more.textContent = `+${rows.length}`
-      more.hidden = false
-      let remaining = Math.max(rows[0].offsetHeight, room - more.offsetHeight)
-      let shown = 0
-      for (const row of rows) {
-        if (row.offsetHeight > remaining) break
-        remaining -= row.offsetHeight
-        shown++
-      }
-      for (const row of rows.slice(shown)) row.hidden = true
-      more.textContent = `+${rows.length - shown}`
-    }
-
-    function fitCard() {
-      fitChannels()
-      const keys = content.querySelector('.keys')
-      if (keys) {
-        keys.hidden = false
-        keys.hidden = content.scrollHeight > content.clientHeight
-      }
-    }
+    const resize = new ResizeObserver(() => {
+      const body = card.querySelector('.ai4s-body')
+      const lanes = body.querySelector('.ai4s-lanes')
+      const narrow = body.clientWidth < 240
+      const limit = lanes ? Math.max(1, Math.floor((lanes.clientHeight - 40) / 34)) : 1
+      if (compact === narrow && laneLimit === limit) return
+      compact = narrow
+      laneLimit = limit
+      render()
+    })
 
     function render() {
-      content.innerHTML = renderCard(data, privacy)
-      fitCard()
+      resize.disconnect()
+      card.innerHTML = renderCard(data, { compact, laneLimit })
+      resize.observe(card.querySelector('.ai4s-body'))
+      const lanes = card.querySelector('.ai4s-lanes')
+      if (lanes) resize.observe(lanes)
     }
 
-    openPage.addEventListener('click', () => widget.emitIntent('mosaic.external-app.open', {}))
+    card.addEventListener('click', (event) => {
+      event.target.closest('.ai4s-note > button')?.parentElement.toggleAttribute('data-open')
+    })
+    card.addEventListener('focusout', (event) => {
+      event.target.closest('.ai4s-note')?.removeAttribute('data-open')
+    })
+    card.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') event.target.closest('.ai4s-note')?.removeAttribute('data-open')
+    })
 
-    const resize = new ResizeObserver(fitCard)
-    resize.observe(card)
     render()
-
-    const unsub = [
-      widget.onDataChange((next) => { data = next.main; render() }),
-      widget.onPresentationChange((next) => {
-        if (privacy !== next.privacy) {
-          privacy = next.privacy
-          render()
-        }
-      }),
-    ]
+    const stop = widget.onDataChange((next) => { data = next.main; render() })
     window.addEventListener('pagehide', () => {
       resize.disconnect()
-      for (const stop of unsub) stop()
+      stop()
     }, { once: true })
   </script>
 </body>

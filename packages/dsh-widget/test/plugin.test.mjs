@@ -8,6 +8,11 @@ import { apply } from '../src/index.js'
 
 const snapshot = JSON.parse(await readFile(new URL('../fixtures/snapshot.json', import.meta.url), 'utf8'))
 const asOf = new Date(snapshot.asOf)
+const deliveredPeriods = {
+  day: { requests: 32, attempts: 40, failed: 6, input: 4200, output: 650, cached: 1800 },
+  week: { requests: 1262, attempts: 1376, failed: 18, input: 4800000, output: 612400, cached: 2900000 },
+  month: { requests: 18400, attempts: 22998, failed: 1300, input: 1200000000, output: 2000000, cached: 49800000 },
+}
 
 async function mount(t, config = {}, lifecycle = {}) {
   const directory = await mkdtemp(join(tmpdir(), 'ai4s-widget-'))
@@ -23,6 +28,7 @@ async function mount(t, config = {}, lifecycle = {}) {
       this.contribution = contribution
       return { dispose() {} }
     },
+    async applyPackageUpgrades() {},
     state: () => ({ placements: [], packages: {} }),
     onChange: () => () => {},
     onAuthoringChange: () => () => {},
@@ -48,8 +54,7 @@ test('the Launcher registers an empty page intent and the client resolves the ow
     type: 'object', additionalProperties: false,
   })
   const html = Buffer.from(launcher.source.files.find(({ path }) => path === 'index.html').bytes).toString()
-  assert.match(html, /<button [^>]+>打开应用页<\/button>/)
-  assert.match(html, /emitIntent\('mosaic\.external-app\.open', \{\}\)/)
+  assert.doesNotMatch(html, /打开应用页|emitIntent/)
   assert.doesNotMatch(html, /consoleUrl|https:\/\/ai4s\./)
   const script = await readFile(new URL('../src/client.js', import.meta.url), 'utf8')
   let provider
@@ -111,21 +116,65 @@ test('the Launcher binds a first read and scheduled reads to /main', { timeout: 
     automations.map(({ id }) => [id, '/main']))
 })
 
-test('the snapshot capability maps the fixture to the Launcher data shape', async (t) => {
+test('the Launcher retargets the existing placement and refreshes its already-bound snapshot', { timeout: 1000 }, async (t) => {
+  const id = 'ai4s.dashboard-launcher'
+  const placement = {
+    id, instanceId: 'component.ai4s.dashboard-launcher', revisionVersion: '1.0.0',
+    createdAt: asOf.toISOString(),
+    bindings: [
+      { id: `binding.automation.ai4s.refresh.${id}` },
+      { id: `binding.automation.ai4s.interval.${id}` },
+    ],
+  }
+  const refresh = Promise.withResolvers()
+  let upgrade
+  const { host } = await mount(t, {}, {
+    state: () => ({
+      placements: [placement],
+      packages: placement.revisionVersion === '2.0.0' ? { [id]: { manifest: { id } } } : {},
+    }),
+    async applyPackageUpgrades(plans) {
+      upgrade = plans
+      placement.revisionVersion = '2.0.0'
+    },
+    onAuthoringChange(listener) {
+      listener({ async executeWidgetIntent(intent) { refresh.resolve(intent) } })
+      return () => {}
+    },
+  })
+  assert.equal((await refresh.promise).placementId, id)
+  assert.deepEqual(upgrade, [{
+    packageId: id, fromPackageVersion: '1.0.0', toPackageVersion: readManifest(host).version,
+    toInstanceRevisionVersion: '2.0.0',
+  }])
+})
+
+test('the snapshot capability emits the three periods and ignores legacy usage fields', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: asOf })
   const { write, read } = await mount(t)
-  await write(snapshot)
+  await write({ ...snapshot, cost: 'unused', models: null, keys: null })
   assert.deepEqual(await read(), {
     status: 'ok', asOf: snapshot.asOf, day: snapshot.day, today: true, stale: false,
-    currency: 'USD', requests: 32, models: snapshot.models, keys: snapshot.keys,
+    periods: deliveredPeriods,
     channels: snapshot.channels,
     anomalies: [{ name: 'demo-channel', reason: '成功率 85%' }],
-    channelCount: 1, availableChannelCount: 1, failureRatePct: 15,
-    failingChannels: [{ name: 'demo-channel', failureRatePct: 15 }],
   })
 })
 
-test('missing or damaged files retain only the last valid aggregate and recover on replacement', async (t) => {
+test('all three periods and their counters are required', async (t) => {
+  const { write, read } = await mount(t)
+  for (const periods of [
+    undefined,
+    { ...snapshot.periods, week: undefined },
+    { ...snapshot.periods, day: { ...snapshot.periods.day, failed: undefined } },
+    { ...snapshot.periods, month: { ...snapshot.periods.month, cachedTokens: -1 } },
+  ]) {
+    await write({ ...snapshot, currency: 'USD', requests: 32, cost: null, models: [], keys: [], periods })
+    assert.deepEqual(await read(), { status: 'error', error: 'invalid' })
+  }
+})
+
+test('missing or damaged files retain the last valid aggregate and recover on replacement', async (t) => {
   t.mock.timers.enable({ apis: ['Date'], now: asOf })
   const { write, read, remove } = await mount(t)
   assert.deepEqual(await read(), { status: 'error', error: 'missing' })
@@ -136,16 +185,10 @@ test('missing or damaged files retain only the last valid aggregate and recover 
   const last = await read()
   await remove()
   assert.deepEqual(await read(last), { ...last, status: 'error', error: 'missing' })
-  await write({ ...snapshot, channels: [], keys: null })
+  await write({ ...snapshot, periods: null })
   assert.deepEqual(await read(last), { ...last, status: 'error', error: 'invalid' })
-
-  await write({ ...snapshot, requests: 0, cost: 0, models: [], channels: [], keys: [] })
-  const recovered = await read(last)
-  assert.equal(recovered.status, 'ok')
-  assert.equal(recovered.error, undefined)
-  assert.equal(recovered.requests, 0)
-  assert.equal(recovered.cost, 0)
-  assert.deepEqual(recovered.anomalies, [])
+  await write({ ...snapshot, channels: [] })
+  assert.deepEqual(await read(last), { ...last, channels: [], anomalies: [] })
 })
 
 test('freshness and the gateway day use the successful timestamp and Shanghai midnight', async (t) => {
@@ -166,80 +209,30 @@ test('freshness and the gateway day use the successful timestamp and Shanghai mi
   assert.equal(preserved.today, false)
   assert.equal(preserved.stale, true)
   assert.equal(preserved.asOf, nearMidnight.asOf)
-  assert.equal(preserved.channelCount, 1)
-  assert.equal(preserved.availableChannelCount, 1)
-  assert.equal(preserved.failureRatePct, 15)
-  assert.deepEqual(preserved.failingChannels, [{ name: 'demo-channel', failureRatePct: 15 }])
+  assert.deepEqual(preserved.periods, deliveredPeriods)
 })
 
-test('counts all channels and weights the failure rate by attempts with measured results', async (t) => {
-  const { write, read } = await mount(t)
-  await write({
-    ...snapshot,
-    channels: [
-      { name: 'demo-standard', disabled: false, attempts: 20, successRatePct: 95 },
-      { name: 'demo-degraded', disabled: false, attempts: 20, successRatePct: 85 },
-      { name: 'demo-paused', disabled: true, attempts: 5, successRatePct: 100 },
-      { name: 'demo-small-sample', disabled: false, attempts: 1, successRatePct: 0 },
-      { name: 'demo-awaiting-result', disabled: false, attempts: 0, successRatePct: null },
-      { name: 'demo-idle', disabled: false, attempts: 0, successRatePct: null },
-      { name: 'demo-paused-idle', disabled: true, attempts: 0, successRatePct: null },
-    ],
-  })
-  const result = await read()
-  assert.equal(result.channelCount, 7)
-  assert.equal(result.availableChannelCount, 5)
-  assert.ok(Math.abs(result.failureRatePct - 500 / 46) < 1e-9)
-  assert.deepEqual(result.failingChannels, [
-    { name: 'demo-small-sample', failureRatePct: 100 },
-    { name: 'demo-degraded', failureRatePct: 15 },
-    { name: 'demo-standard', failureRatePct: 5 },
-  ])
-})
-
-test('zero traffic keeps the channel inventory and has no failure rate', async (t) => {
-  const { write, read } = await mount(t)
-  await write({
-    ...snapshot, requests: 0,
-    channels: [
-      { name: 'idle', disabled: false, attempts: 0, successRatePct: null },
-      { name: 'paused', disabled: true, attempts: 0, successRatePct: null },
-    ],
-  })
-  const result = await read()
-  assert.equal(result.channelCount, 2)
-  assert.equal(result.availableChannelCount, 1)
-  assert.equal(result.failureRatePct, undefined)
-  assert.deepEqual(result.failingChannels, [])
-  assert.deepEqual(result.anomalies, [{ name: 'paused', reason: '已停用' }])
-})
-
-test('ranks the top three and keeps only disabled or sufficiently sampled low-rate channels in pending', async (t) => {
+test('pending includes only enabled channels with enough attempts and a rate below threshold', async (t) => {
   const { host, write, read } = await mount(t)
   await write({
-    ...snapshot, token: 'demo-secret', failures: 9,
-    models: [2, 6, 3, 8].map((requests) => ({ name: `model-${requests}`, requests, credential: 'demo-secret' })),
-    keys: [2, 6, 3, 8].map((cost) => ({ name: `key-${cost}`, cost, value: 'demo-secret' })),
+    ...snapshot, currency: 'USD', requests: 32, cost: null, models: [], keys: [],
+    token: 'demo-secret',
     channels: [
       { name: 'small-sample', disabled: false, attempts: 9, successRatePct: 20 },
       { name: 'at-threshold', disabled: false, attempts: 10, successRatePct: 90 },
       { name: 'never-used', disabled: false, attempts: 0, successRatePct: null },
-      { name: 'disabled', disabled: true, attempts: 0, successRatePct: null },
-      { name: 'below-threshold', disabled: false, attempts: 10, successRatePct: 89.5, rawError: 'demo-secret' },
+      { name: 'disabled-idle', disabled: true, attempts: 0, successRatePct: null },
+      { name: 'disabled-active', disabled: true, attempts: 20, successRatePct: 10 },
+      { name: 'below-threshold', disabled: false, attempts: 10, successRatePct: 89.46, rawError: 'demo-secret' },
     ],
   })
   const result = await read()
-  assert.deepEqual(result.models.map(({ name }) => name), ['model-8', 'model-6', 'model-3'])
-  assert.deepEqual(result.keys.map(({ name }) => name), ['key-8', 'key-6', 'key-3'])
-  assert.deepEqual(result.anomalies, [
-    { name: 'disabled', reason: '已停用' },
-    { name: 'below-threshold', reason: '成功率 89.5%' },
-  ])
-  assert.doesNotMatch(JSON.stringify(result), /demo-secret|failures/)
+  assert.deepEqual(result.anomalies, [{ name: 'below-threshold', reason: '成功率 89.5%' }])
+  assert.equal(result.channels.find(({ name }) => name === 'disabled-active').disabled, true)
+  assert.doesNotMatch(JSON.stringify(result), /demo-secret/)
   const manifest = readManifest(host)
   assert.deepEqual(manifest.summary.pending, ['anomalies'])
   assert.equal(manifest.summary.list.pointer, '/data/main/anomalies')
-  assert.deepEqual(manifest.identity, ['/data/main/keys/*/name'])
 })
 
 test('applies configured thresholds to a measured zero rate and ignores missing rates', async (t) => {

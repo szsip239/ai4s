@@ -1,9 +1,9 @@
 {
   "schemaVersion": 2,
   "id": "ai4s.dashboard-launcher",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "title": "AI4S 调用统计",
-  "description": "调用、费用与渠道状态",
+  "description": "调用、Token 与渠道状态",
   "entry": "index.html",
   "mark": "AI",
   "schemas": {
@@ -14,6 +14,7 @@
       "properties": {
         "main": {
           "type": "object",
+          "description": "旧版可选字段用于 Host 原位升级时保留已保存的数据。",
           "properties": {
             "status": { "type": "string", "enum": ["empty", "ok", "error"] },
             "error": { "type": "string", "enum": ["missing", "invalid", "unreadable"] },
@@ -21,6 +22,52 @@
             "day": { "type": "string" },
             "today": { "type": "boolean" },
             "stale": { "type": "boolean" },
+            "periods": {
+              "type": "object",
+              "properties": {
+                "day": {
+                  "type": "object",
+                  "properties": {
+                    "requests": { "type": "integer", "minimum": 0 },
+                    "attempts": { "type": "integer", "minimum": 0 },
+                    "failed": { "type": "integer", "minimum": 0 },
+                    "input": { "type": "integer", "minimum": 0 },
+                    "output": { "type": "integer", "minimum": 0 },
+                    "cached": { "type": "integer", "minimum": 0 }
+                  },
+                  "required": ["requests", "attempts", "failed", "input", "output", "cached"],
+                  "additionalProperties": false
+                },
+                "week": {
+                  "type": "object",
+                  "properties": {
+                    "requests": { "type": "integer", "minimum": 0 },
+                    "attempts": { "type": "integer", "minimum": 0 },
+                    "failed": { "type": "integer", "minimum": 0 },
+                    "input": { "type": "integer", "minimum": 0 },
+                    "output": { "type": "integer", "minimum": 0 },
+                    "cached": { "type": "integer", "minimum": 0 }
+                  },
+                  "required": ["requests", "attempts", "failed", "input", "output", "cached"],
+                  "additionalProperties": false
+                },
+                "month": {
+                  "type": "object",
+                  "properties": {
+                    "requests": { "type": "integer", "minimum": 0 },
+                    "attempts": { "type": "integer", "minimum": 0 },
+                    "failed": { "type": "integer", "minimum": 0 },
+                    "input": { "type": "integer", "minimum": 0 },
+                    "output": { "type": "integer", "minimum": 0 },
+                    "cached": { "type": "integer", "minimum": 0 }
+                  },
+                  "required": ["requests", "attempts", "failed", "input", "output", "cached"],
+                  "additionalProperties": false
+                }
+              },
+              "required": ["day", "week", "month"],
+              "additionalProperties": false
+            },
             "currency": { "type": "string" },
             "requests": { "type": "integer", "minimum": 0 },
             "cost": { "type": "number" },
@@ -96,19 +143,16 @@
   "defaults": { "config": {}, "state": {}, "data": { "main": { "status": "empty" } } },
   "summary": {
     "values": [
-      { "id": "requests", "label": "调用", "pointer": "/data/main/requests", "unit": "次" },
-      { "id": "cost", "label": "费用", "pointer": "/data/main/cost" },
-      { "id": "currency", "label": "币种", "pointer": "/data/main/currency" },
+      { "id": "requests", "label": "调用", "pointer": "/data/main/periods/day/requests", "unit": "次" },
       { "id": "anomalies", "label": "异常渠道", "pointer": "/data/main/anomalies", "unit": "个" }
     ],
     "pending": ["anomalies"],
     "list": { "pointer": "/data/main/anomalies", "title": "/name", "detail": "/reason", "max": 5 },
     "updatedAt": "/data/main/asOf"
   },
-  "identity": ["/data/main/keys/*/name"],
   "uiHints": {
     "defaultSize": "tall",
-    "preferredSize": { "w": 4, "h": 8 },
+    "preferredSize": { "w": 4, "h": 6 },
     "inspector": {}
   },
   "permissions": { "network": [] }
