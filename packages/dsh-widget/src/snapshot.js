@@ -51,7 +51,7 @@ function annotate({ asOf, day, periods, channels }, { minAttempts, minSuccessRat
   const anomalies = channels
     .filter(({ disabled, attempts, successRatePct }) =>
       !disabled && attempts >= minAttempts && successRatePct < minSuccessRatePct)
-    .map(({ name, successRatePct }) => ({ name, reason: `成功率 ${successRatePct}%` }))
+    .map(({ name, successRatePct }) => ({ name, reason: `成功率 ${Math.round(successRatePct * 10) / 10}%` }))
   return {
     asOf, day, periods, channels, anomalies,
     today: day === statDay.format(now),

@@ -223,7 +223,7 @@ test('pending includes only enabled channels with enough attempts and a rate bel
       { name: 'never-used', disabled: false, attempts: 0, successRatePct: null },
       { name: 'disabled-idle', disabled: true, attempts: 0, successRatePct: null },
       { name: 'disabled-active', disabled: true, attempts: 20, successRatePct: 10 },
-      { name: 'below-threshold', disabled: false, attempts: 10, successRatePct: 89.5, rawError: 'demo-secret' },
+      { name: 'below-threshold', disabled: false, attempts: 10, successRatePct: 89.46, rawError: 'demo-secret' },
     ],
   })
   const result = await read()
