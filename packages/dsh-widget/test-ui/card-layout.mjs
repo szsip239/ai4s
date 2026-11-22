@@ -18,86 +18,103 @@ const stop = await apply({ mosaicBoard: {
 } }, { snapshotPath: join(temp, 'unused.json') })
 stop()
 
-const task = await taskSpace('codex ai4s 151 narrow layout')
+const task = await taskSpace('codex ai4s 153 layout')
 const page = task.page('p1')
 console.log('Task space', task.spaceId)
 
-function fixture(count) {
-  const failingChannels = Array.from({ length: count }, (_, index) => ({
-    name: `provider-west-dashboard-${index + 1}`,
-    failureRatePct: index ? 15 : 100,
-  }))
-  return {
-    status: 'ok', stale: true, today: true, asOf: '2026-11-21T01:16:00Z', day: '2026-11-21',
-    channelCount: count + 4, availableChannelCount: count + 2, failureRatePct: 10.9,
-    channels: failingChannels.map(({ name }, index) => ({ name, disabled: index === 1 })),
-    anomalies: [], failingChannels, requests: 47, currency: 'CNY', cost: 4.625,
-    models: [26, 12, 7].map((requests, index) => ({ name: `demo-model-${index + 1}`, requests })),
-    keys: [],
-  }
+const period = { requests: 987654, attempts: 999999, failed: 123,
+  input: 987600000, output: 876500000, cached: 1234500000 }
+const fixture = {
+  status: 'ok', today: true, asOf: '2026-11-22T06:20:00Z', day: '2026-11-22',
+  periods: { day: period, week: period, month: period },
+  channels: [
+    ...Array.from({ length: 9 }, (_, index) => ({
+      name: `a-very-long-virtual-channel-name-for-layout-review-${index}`,
+      disabled: index === 1, attempts: 123456 - index * 1000,
+    })),
+    { name: 'idle-channel', disabled: false, attempts: 0 },
+    { name: 'paused-channel', disabled: true, attempts: 0 },
+  ],
+  anomalies: [{ name: 'a-very-long-virtual-channel-name-for-layout-review-0', reason: '成功率 87%' }],
 }
 
-const failures = []
 try {
-  for (const [label, width, height, count] of [
-    ['390 default card', 114, 476, 3],
-    ['short card with more failures', 114, 340, 12],
-    ['above model breakpoint', 101, 520, 3],
-    ['extremely narrow card', 100, 520, 3],
+  const file = join(temp, 'card.html')
+  const bridge = `{ data: { main: ${JSON.stringify(fixture)} }, onDataChange() { return () => {} } }`
+  await writeFile(file, cardMarkup.replace('window.MosaicWidget', () => bridge))
+  const resize = (width, height) => page.cdp('Emulation.setDeviceMetricsOverride',
+    { width, height, deviceScaleFactor: 1, mobile: false })
+  await resize(392, 388)
+  await page.goto(pathToFileURL(file).href)
+
+  for (const [width, height, tiles, rows, note] of [
+    [392, 388, 3, 4, '+5 在跑 · 1 空闲 · 1 停用'],
+    [290, 388, 3, 4, '+5 在跑 · 1 空闲 · 1 停用'],
+    [190, 318, 1, 2, '另 9 个渠道'],
+    [114, 354, 1, 2, '另 9 个渠道'],
+    [271, 388, 1, 4, '另 7 个渠道'],
+    [272, 388, 3, 4, '+5 在跑 · 1 空闲 · 1 停用'],
   ]) {
-    await page.cdp('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: false })
-    const file = join(temp, 'card.html')
-    const bridge = `{ data: { main: ${JSON.stringify(fixture(count))} }, presentation: {},
-      onDataChange() {}, onPresentationChange() {}, emitIntent() {} }`
-    await writeFile(file, cardMarkup.replace('window.MosaicWidget', () => bridge))
-    await page.goto(pathToFileURL(file).href + '?' + encodeURIComponent(label))
-    await page.waitForSelector('.channels li')
+    await resize(width, height)
+    await page.waitForFunction(([tiles, rows]) =>
+      document.querySelectorAll('.ai4s-period').length === tiles &&
+      document.querySelectorAll('.ai4s-lane').length === rows, [tiles, rows], { timeout: 5000 })
     const layout = await page.evaluate(() => {
-      const card = document.querySelector('.card')
-      const content = document.querySelector('.content')
-      const frame = card.getBoundingClientRect()
-      const body = content.getBoundingClientRect()
-      const inside = (element, area) => {
-        if (!element?.getClientRects().length) return false
-        const rect = element.getBoundingClientRect()
-        return rect.top >= area.top && rect.bottom <= area.bottom && rect.left >= area.left && rect.right <= area.right
-      }
-      const names = [...document.querySelectorAll('.channels li .name')].filter((name) => name.getClientRects().length)
-      const list = document.querySelector('.channels ul')
-      const more = [...list.children].find((row) => /^\+\d+$/.test(row.textContent.trim()) && row.getClientRects().length)
-      const metric = (label) => [...document.querySelectorAll('.metrics .muted')]
-        .find((node) => node.textContent === label)?.parentElement
+      const lanes = document.querySelector('.ai4s-lanes').getBoundingClientRect()
+      const periods = document.querySelector('.ai4s-periods').getBoundingClientRect()
+      const buttons = [...document.querySelectorAll('.ai4s-note > button')]
+      const names = [...document.querySelectorAll('.ai4s-lane-name')]
       return {
-        button: inside(document.querySelector('.open-page'), frame),
-        oneLine: names.every((name) => getComputedStyle(name).whiteSpace === 'nowrap'),
-        ellipsis: names.some((name) => getComputedStyle(name).textOverflow === 'ellipsis' && name.scrollWidth > name.clientWidth),
-        rows: names.length,
-        visibleRows: names.filter((name) => inside(name, body) && inside(name, list.getBoundingClientRect())).length,
-        hiddenCount: more ? Number(more.textContent.trim().slice(1)) : 0,
-        moreVisible: more ? inside(more, body) && inside(more, list.getBoundingClientRect()) : false,
-        health: ['渠道可用 / 总数', '近期失败率'].every((label) => inside(metric(label), body)),
-        usage: ['调用', '费用'].every((label) => inside(metric(label), body)),
-        healthFirst: metric('近期失败率').getBoundingClientRect().bottom <= list.getBoundingClientRect().top &&
-          list.getBoundingClientRect().bottom <= metric('调用').getBoundingClientRect().top,
-        models: inside(document.querySelector('.models'), body),
+        note: document.querySelector('.ai4s-channel-note > button').textContent,
+        fullyVisible: buttons.every((button) => {
+          const rect = button.getBoundingClientRect()
+          return rect.left >= 0 && rect.right <= innerWidth &&
+            rect.bottom <= (button.closest('.ai4s-periods') ? periods.bottom : lanes.bottom)
+        }),
+        ellipsis: names.some((name) => name.scrollWidth > name.clientWidth &&
+          getComputedStyle(name).textOverflow === 'ellipsis'),
+        ordered: lanes.bottom < periods.top && periods.bottom === innerHeight - 16,
       }
     })
-    console.log(label, JSON.stringify(layout))
-    const expect = (condition, issue) => { if (!condition) failures.push(`${label}: ${issue}`) }
-    expect(layout.button, 'the full application button must stay inside the card')
-    expect(layout.health, 'both channel metrics must be visible')
-    expect(layout.healthFirst, 'channel health and failures must precede calls and cost')
-    expect(layout.oneLine && layout.ellipsis, 'long channel names must truncate on a single line')
-    expect(layout.rows === layout.visibleRows && layout.rows >= 1, 'all listed failures must be visible')
-    if (label === '390 default card') expect(layout.rows === 3, 'all three reported failures must fit on the default card')
-    if (count === 3) expect(layout.rows === 3 || layout.moreVisible, 'show all failures or an overflow count')
-    if (count === 12) expect(layout.moreVisible && layout.rows + layout.hiddenCount === count, 'show the exact +N count for hidden rows')
-    if (height >= 476) {
-      expect(layout.usage, 'calls and cost must fit at the default height')
-      expect(layout.models === (width > 100), 'model ranking must stay visible above 100px')
-    }
+    assert.deepEqual(layout, { note, fullyVisible: true, ellipsis: true, ordered: true }, `${width} × ${height}`)
+    console.log(`${width} × ${height}: ${tiles} periods, ${rows} channel rows`)
   }
-  assert.deepEqual(failures, [])
+
+  await resize(114, 354)
+  await page.waitForFunction(() => document.querySelectorAll('.ai4s-period').length === 1)
+  for (const [trigger, text] of [
+    ['.ai4s-channel-note > button', '在跑：'],
+    ['.ai4s-rate button', '失败率按全部尝试计算'],
+    ['.ai4s-lane-danger > button', '成功率 87%'],
+  ]) {
+    const tooltip = await page.evaluate((trigger) => document.querySelector(trigger).getAttribute('aria-describedby'), trigger)
+    await page.hover(trigger)
+    await page.waitForSelector('#' + tooltip, { state: 'visible' })
+    const positioned = await page.evaluate((tooltip) => {
+      const pop = document.getElementById(tooltip)
+      const rect = pop.getBoundingClientRect()
+      return rect.left === 12 && rect.right === innerWidth - 12 && rect.bottom === innerHeight - 12
+        ? pop.textContent : ''
+    }, tooltip)
+    assert.ok(positioned.startsWith(text), `${tooltip} fits the narrow card`)
+    await page.mouse.move(0, 0)
+    await page.focus(trigger)
+    await page.keyboard.press('Enter')
+    await page.waitForSelector('#' + tooltip, { state: 'visible' })
+    await page.keyboard.press('Escape')
+    await page.waitForSelector('#' + tooltip, { state: 'hidden' })
+  }
+
+  const glyphs = await page.evaluate(async () => {
+    await Promise.all([...document.fonts].map((face) => face.load()))
+    return [...document.fonts].map((face) => [face.family, face.weight, face.status])
+  })
+  assert.deepEqual(glyphs, [
+    ['Geist', '400', 'loaded'], ['Geist', '500', 'loaded'], ['Geist', '600', 'loaded'],
+    ['Geist Mono', '400', 'loaded'], ['Geist Mono', '500', 'loaded'],
+  ])
+  console.log('Three annotation triggers and five embedded Latin font faces verified')
 } finally {
   await rm(temp, { recursive: true })
+  await task.finish({ keep: [] })
 }

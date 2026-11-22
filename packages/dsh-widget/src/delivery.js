@@ -27,24 +27,33 @@ function delivery({ id, createdAt }, readIntervalSeconds) {
   return { automations, bindings }
 }
 
-export function bindSnapshot(board, widget, readIntervalSeconds, reportError) {
+export function bindSnapshot(board, upgrade, readIntervalSeconds, reportError) {
   let authoring
   let configuring
+  let upgraded = false
 
   function findPlacement(state) {
-    return state.placements.find(({ id }) => state.packages[id]?.manifest.id === widget.id)
+    return state.placements.find(({ id }) => id === upgrade.packageId)
   }
 
   function configure() {
     const owner = authoring
     if (!owner || configuring) return
-    const placement = findPlacement(board.state())
-    if (!placement) return
-    const { automations, bindings } = delivery(placement, readIntervalSeconds)
-    if (bindings.every(({ id }) => placement.bindings.some((binding) => binding.id === id))) return
-
     configuring = (async () => {
-      for (const automation of automations) {
+      const previousRevision = findPlacement(board.state())?.revisionVersion
+      if (!upgraded) {
+        await board.applyPackageUpgrades([upgrade])
+        upgraded = true
+      }
+      const placement = findPlacement(board.state())
+      if (owner !== authoring || !placement) return
+      const revisionChanged = previousRevision !== placement.revisionVersion
+      const { automations, bindings } = delivery(placement, readIntervalSeconds)
+      const missing = bindings.filter(({ id }) => !placement.bindings.some((binding) => binding.id === id))
+      if (missing.length === 0 && !revisionChanged) return
+
+      for (const { automationId } of missing) {
+        const automation = automations.find(({ id }) => id === automationId)
         try {
           await owner.automationInspect({ automationId: automation.id })
         } catch (error) {
@@ -57,13 +66,15 @@ export function bindSnapshot(board, widget, readIntervalSeconds, reportError) {
       const state = board.state()
       const current = findPlacement(state)
       if (owner !== authoring || current?.id !== placement.id) return
-      const missing = bindings.filter(({ id }) => !current.bindings.some((binding) => binding.id === id))
-      await owner.boardApply({
-        operationId: `ai4s.bind.${current.instanceId}.${current.revisionVersion}`,
-        boardId: board.loadBoard().id,
-        expectedBoardRevision: state.revision,
-        operations: [{ kind: 'set_bindings', placementId: current.id, bindings: [...current.bindings, ...missing] }],
-      })
+      const unbound = missing.filter(({ id }) => !current.bindings.some((binding) => binding.id === id))
+      if (unbound.length) {
+        await owner.boardApply({
+          operationId: `ai4s.bind.${current.instanceId}.${current.revisionVersion}`,
+          boardId: board.loadBoard().id,
+          expectedBoardRevision: state.revision,
+          operations: [{ kind: 'set_bindings', placementId: current.id, bindings: [...current.bindings, ...unbound] }],
+        })
+      }
       await owner.executeWidgetIntent({
         operationId: `ai4s.refresh.${randomUUID()}`, placementId: current.id, name: 'refresh', payload: {},
       })

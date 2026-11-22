@@ -8,7 +8,12 @@ const timestamp = /^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)
 const object = (value) => typeof value === 'object' && value !== null && !Array.isArray(value)
 const name = (value) => typeof value === 'string' && value.trim().length > 0
 const count = (value) => Number.isSafeInteger(value) && value >= 0
-const amount = (value) => value === null || Number.isFinite(value)
+const periodNames = ['day', 'week', 'month']
+// Host reserves field names containing "token" in persisted data.
+const periodFields = {
+  requests: 'requests', attempts: 'attempts', failed: 'failed',
+  inputTokens: 'input', outputTokens: 'output', cachedTokens: 'cached',
+}
 
 function date(value) {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
@@ -19,57 +24,43 @@ function date(value) {
 function decode(text) {
   const data = JSON.parse(text)
   if (!object(data)) return
-  const { asOf, day, currency, requests, cost, models, channels, keys } = data
+  const { asOf, day, periods, channels } = data
   if (typeof asOf !== 'string' ||
       !timestamp.test(asOf) ||
       !date(asOf.slice(0, 10)) || !Number.isFinite(Date.parse(asOf)) ||
-      !date(day) || typeof currency !== 'string' || !/^[A-Z]{3}$/.test(currency) ||
-      !count(requests) || !amount(cost) ||
-      !Array.isArray(models) || !Array.isArray(channels) || !Array.isArray(keys)) return
-  if (!models.every((row) => object(row) && name(row.name) && count(row.requests)) ||
-      !channels.every((row) => object(row) && name(row.name) && typeof row.disabled === 'boolean' &&
-        count(row.attempts) && (row.successRatePct === null ||
-          (Number.isFinite(row.successRatePct) && row.successRatePct >= 0 && row.successRatePct <= 100))) ||
-      !keys.every((row) => object(row) && name(row.name) && amount(row.cost))) return
+      !date(day) || !object(periods) || !Array.isArray(channels)) return
+  if (!periodNames.every((key) => object(periods[key]) &&
+      Object.keys(periodFields).every((field) => count(periods[key][field])))) return
+  if (!channels.every((row) => object(row) && name(row.name) && typeof row.disabled === 'boolean' &&
+      count(row.attempts) && (row.successRatePct === null ||
+        (Number.isFinite(row.successRatePct) && row.successRatePct >= 0 && row.successRatePct <= 100)))) return
 
   return {
-    asOf, day, currency, requests, ...(cost === null ? {} : { cost }),
-    models: models.map(({ name, requests }) => ({ name, requests }))
-      .sort((a, b) => b.requests - a.requests).slice(0, 3),
+    asOf, day,
+    periods: Object.fromEntries(periodNames.map((key) => [
+      key, Object.fromEntries(Object.entries(periodFields).map(([field, target]) => [target, periods[key][field]])),
+    ])),
     channels: channels.map(({ name, disabled, attempts, successRatePct }) => ({
       name, disabled, attempts, ...(successRatePct === null ? {} : { successRatePct }),
     })),
-    keys: keys.map(({ name, cost }) => ({ name, ...(cost === null ? {} : { cost }) }))
-      .sort((a, b) => (b.cost ?? -Infinity) - (a.cost ?? -Infinity)).slice(0, 3),
   }
 }
 
-function annotate(data, { minAttempts, minSuccessRatePct }) {
+function annotate({ asOf, day, periods, channels }, { minAttempts, minSuccessRatePct }) {
   const now = Date.now()
-  const measured = data.channels.filter(({ attempts, successRatePct }) => attempts > 0 && successRatePct !== undefined)
-  const attempts = measured.reduce((sum, channel) => sum + channel.attempts, 0)
-  const failing = measured.filter(({ successRatePct }) => successRatePct < 100)
-  const weightedFailures = failing.reduce((sum, channel) => sum + channel.attempts * (100 - channel.successRatePct), 0)
-  const anomalies = data.channels
+  const anomalies = channels
     .filter(({ disabled, attempts, successRatePct }) =>
-      disabled || (attempts >= minAttempts && successRatePct !== undefined && successRatePct < minSuccessRatePct))
-    .map(({ name, disabled, successRatePct }) => ({
-      name, reason: disabled ? '已停用' : `成功率 ${successRatePct}%`,
-    }))
+      !disabled && attempts >= minAttempts && successRatePct < minSuccessRatePct)
+    .map(({ name, successRatePct }) => ({ name, reason: `成功率 ${successRatePct}%` }))
   return {
-    ...data, anomalies,
-    channelCount: data.channels.length,
-    availableChannelCount: data.channels.filter(({ disabled }) => !disabled).length,
-    ...(attempts ? { failureRatePct: weightedFailures / attempts } : {}),
-    failingChannels: failing.map(({ name, successRatePct }) => ({ name, failureRatePct: 100 - successRatePct }))
-      .sort((a, b) => b.failureRatePct - a.failureRatePct),
-    today: data.day === statDay.format(now),
-    stale: now - Date.parse(data.asOf) >= maxAge,
+    asOf, day, periods, channels, anomalies,
+    today: day === statDay.format(now),
+    stale: now - Date.parse(asOf) >= maxAge,
   }
 }
 
 function readError(previous, options, error) {
-  const last = previous.asOf ? annotate(previous, options) : {}
+  const last = previous.periods ? annotate(previous, options) : {}
   return { ...last, status: 'error', error }
 }
 
