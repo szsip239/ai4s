@@ -152,10 +152,10 @@ body { font: 14px/20px var(--font-sans); }
   background: var(--card);
   box-shadow: var(--shadow-xs);
 }
-.ai4s-period-head { gap: 2px 4px; }
+.ai4s-period-head { gap: 2px; }
 .ai4s-period-label { color: var(--muted-foreground); font-size: 12px; line-height: 16px; }
 .ai4s-rate {
-  padding: 1px 6px;
+  padding: 1px 4px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--muted);
