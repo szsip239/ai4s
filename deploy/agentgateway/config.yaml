@@ -84,13 +84,13 @@ routes:
         # 无改写目标时回退原 model——注意 eval 失败会删 model 键，故必须 has() 守卫不抛错
         transformations:
           model: 'has(extauthz.resolved_model) && extauthz.resolved_model != null && extauthz.resolved_model != "" ? extauthz.resolved_model : llmRequest.model'
-          # K3 族统一 temperature=1：kimi 渠道 k3/k3-256k 为思考模型，上游只接受 temperature=1，
+          # K3 族统一 temperature=1：包括 k3 及以 k3. 或 k3- 开头的版本，上游只接受 temperature=1，
           # 客户端传其他值直接报错——收口网关，客户端免各自适配。非 K3 原样透传；客户端未提供
           # temperature 时表达式 eval 失败→删键=no-op（键本不存在），语义同上方 model 注。
           # 双来源匹配：transformations 对原始 llmRequest 快照求值，auto 路由经 extAuthz 改写为
           # K3 时 llmRequest.model 仍是 "auto"，故同时匹配 extauthz.resolved_model（has() 守卫
           # 同上方 model 表达式；/classify 不出改写目标时守卫为假，行为退化为仅匹配客户端 model）。
-          temperature: '(llmRequest.model in ["k3", "k3-256k"] || (has(extauthz.resolved_model) && extauthz.resolved_model != null && extauthz.resolved_model in ["k3", "k3-256k"])) ? 1.0 : llmRequest.temperature'
+          temperature: '(llmRequest.model.matches("^k3($|[.-])") || (has(extauthz.resolved_model) && extauthz.resolved_model != null && extauthz.resolved_model.matches("^k3($|[.-])"))) ? 1.0 : llmRequest.temperature'
         promptGuard:
           request:
             # issue #140：L1/L1.5 格式规则（secrets reject / PII mask）判定收回下方 shim
@@ -152,7 +152,7 @@ routes:
       # 不动 model、无 promptGuard，Key 全绕 DLP 语义不变）。
       ai:
         transformations:
-          temperature: 'llmRequest.model in ["k3", "k3-256k"] ? 1.0 : llmRequest.temperature'
+          temperature: 'llmRequest.model.matches("^k3($|[.-])") ? 1.0 : llmRequest.temperature'
       extAuthz:
         host: shim:8080
         failureMode: deny  # fail-closed：绕行门在 shim 故障时常闭
